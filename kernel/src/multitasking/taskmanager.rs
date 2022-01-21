@@ -6,12 +6,14 @@ use alloc::{
 };
 use spin::Mutex;
 use x86_64::{
-    instructions::hlt,
+    instructions::{hlt, interrupts::without_interrupts},
     structures::idt::{InterruptStackFrame, InterruptStackFrameValue},
     VirtAddr,
 };
 
-use crate::{assembly::registers::Registers, memory::get_uefi_active_mapper, syscall::exit};
+use crate::{
+    assembly::registers::Registers, memory::get_uefi_active_mapper, pit::get_uptime, syscall::exit,
+};
 
 use super::{Task, TaskID, TaskManager};
 
@@ -19,6 +21,7 @@ lazy_static! {
     static ref TASKS: Mutex<BTreeMap<TaskID, Task>> = Mutex::new(BTreeMap::new());
     static ref TASK_QUEUE: Mutex<VecDeque<TaskID>> = Mutex::new(VecDeque::new());
     static ref YIELDED_TASKS: Mutex<VecDeque<TaskID>> = Mutex::new(VecDeque::new());
+    static ref SLEPT_TASKS: Mutex<VecDeque<(usize, TaskID)>> = Mutex::new(VecDeque::new());
     static ref NOP_TASK: Task = {
         let mut mapper = unsafe { get_uefi_active_mapper() };
         let mut t = Task::new(&mut mapper);
@@ -29,10 +32,41 @@ lazy_static! {
 
 extern "C" fn nop_task() {
     loop {
-        // Push all yielded tasks backinto the queue
-        TASK_QUEUE.lock().append(&mut YIELDED_TASKS.lock());
+        // Refresh the task lists
+        if let Err(e) = check_task_lists() {
+            println!("{}", e)
+        }
+        // Sleep for now as otherwise we will spin up the CPU consistenly in this loop
         hlt();
     }
+}
+
+fn check_task_lists() -> Result<(), &'static str> {
+    without_interrupts(|| {
+        // Lock task queue mutex
+        let mut task_queue = TASK_QUEUE
+            .try_lock()
+            .ok_or("Task queue couldn't be locked")?;
+
+        // Push all yielded tasks backinto the queue
+        task_queue.append(&mut YIELDED_TASKS.lock());
+
+        // Lock slept tasks mutex
+        let mut slept_tasks = SLEPT_TASKS
+            .try_lock()
+            .ok_or("Slept task queue could't be locked")?;
+
+        // Find at what point in the list all wait times have elapesd given that it is sorted
+        let end = slept_tasks
+            .binary_search_by_key(&get_uptime(), |&(t, _)| t)
+            .into_ok_or_err();
+
+        // Add tasks back into queue
+        for (_, task_id) in slept_tasks.drain(..end) {
+            task_queue.push_back(task_id)
+        }
+        Ok(())
+    })
 }
 
 impl TaskManager {
@@ -49,9 +83,8 @@ impl TaskManager {
     pub fn yield_now(&mut self, stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
         if let Some(task) = self.current_task {
             TASKS.lock().get_mut(&task).unwrap().save(stack_frame, regs);
-            YIELDED_TASKS.lock().push_back(self.current_task.unwrap());
+            YIELDED_TASKS.lock().push_back(task);
         };
-
         self.switch_to_next_task(stack_frame, regs);
     }
 
@@ -74,6 +107,26 @@ impl TaskManager {
 
             unsafe { set_nop_task(stack_frame, regs) };
         }
+    }
+
+    pub fn sleep(&mut self, stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
+        if let Some(task) = self.current_task {
+            TASKS.lock().get_mut(&task).unwrap().save(stack_frame, regs);
+
+            let mut sleeped_tasks = SLEPT_TASKS.lock();
+
+            let end_sleep = regs.r8 + get_uptime();
+
+            // Find the index where this sleeped task can go maintaing sorted order
+            let index = sleeped_tasks
+                .binary_search_by_key(&end_sleep, |&(timestamp, _)| timestamp)
+                .into_ok_or_err();
+
+            sleeped_tasks.insert(index, (end_sleep, task));
+        };
+
+        // Get a new task
+        self.switch_to_next_task(stack_frame, regs);
     }
 }
 

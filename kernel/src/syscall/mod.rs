@@ -31,7 +31,7 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
         ECHO => echo_handler(regs),
         YIELD_NOW => task_manager.yield_now(stack_frame, regs),
         SPAWN_THREAD => spawn(regs),
-        // SLEEP => task_manager.sleep(stack_frame, regs),
+        SLEEP => task_manager.sleep(stack_frame, regs),
         EXIT => task_manager.exit(stack_frame, regs),
         _ => println!("Unknown syscall class: {}", regs.rax),
     })
@@ -67,9 +67,9 @@ where
     TaskID::from(res)
 }
 
-// pub fn sleep(ms: usize) {
-//     unsafe { syscall1(SLEEP, ms) };
-// }
+pub fn sleep(ms: usize) {
+    unsafe { syscall1(SLEEP, ms) };
+}
 
 pub fn exit() -> ! {
     unsafe { syscall1(EXIT, 0) };

@@ -8,6 +8,7 @@
 #![feature(asm_sym)]
 #![feature(naked_functions)]
 #![feature(fn_traits)]
+#![feature(result_into_ok_or_err)]
 //* */
 #![macro_use]
 extern crate alloc;
@@ -35,10 +36,10 @@ use types::BootInfo;
 use crate::{
     memory::uefi::{identity_map_all_memory, FRAME_ALLOCATOR},
     pci::enumerate_pci,
-    pit::{set_frequency, sleep, start_switching_tasks},
+    pit::{set_frequency, start_switching_tasks},
     ps2::PS2Controller,
     screen::gop::WRITER,
-    syscall::{spawn_thread, yield_now},
+    syscall::{sleep, spawn_thread, yield_now},
 };
 
 #[panic_handler]
@@ -114,40 +115,20 @@ pub extern "C" fn _start(info: *const BootInfo<'static>) -> ! {
         // Check for new ps2 packets
         ps2_controller.check_packets();
 
-        // Wake up slept tasks
-        // sleep_waker();
-
         yield_now();
     });
 
-    // spawn_thread(|| {
-    //     for i in 0..50 {
-    //         println!("{}", i);
-    //         sleep(1000);
-    //     }
-    // });
+    spawn_thread(|| {
+        for i in 0..60 {
+            println!("{}", i);
+            sleep(1000);
+        }
+    });
 
-    // spawn_thread(|| loop {
-    //     print!(".");
-    //     yield_now()
-    // });
-
-    // spawn_thread(|| loop {
-    //     println!("1 Minute");
-    //     sleep(1000 * 60);
-    // });
-
-    // spawn_thread(|| loop {
-    //     println!("1/2");
-    //     sleep(ms);
-    // });
-
-    // for i in 0..5 {
-    //     print!("{} ", get_uptime() / 1000);
-    //     sleep(1000);
-    // }
-
-    // set_frequency(1);
+    spawn_thread(|| loop {
+        sleep(1000 * 60);
+        println!("1 Minute");
+    });
 
     println!("Begin task manager");
     start_switching_tasks();
@@ -155,24 +136,3 @@ pub extern "C" fn _start(info: *const BootInfo<'static>) -> ! {
     // Wait a tick for the timer interrupt to trigger the multitasking
     loop {}
 }
-
-// #[derive(Clone)]
-// pub struct FioxaAcpiHandler;
-
-// impl acpi::AcpiHandler for FioxaAcpiHandler {
-//     unsafe fn map_physical_region<T>(
-//         &self,
-//         physical_address: usize,
-//         size: usize,
-//     ) -> acpi::PhysicalMapping<Self, T> {
-//         PhysicalMapping::new(
-//             physical_address,
-//             NonNull::new(physical_address as *mut T).unwrap(),
-//             size,
-//             size,
-//             Self,
-//         )
-//     }
-
-//     fn unmap_physical_region<T>(_region: &PhysicalMapping<Self, T>) {}
-// }

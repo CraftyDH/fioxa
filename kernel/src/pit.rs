@@ -65,13 +65,13 @@ pub fn get_uptime() -> usize {
     TIME_SINCE_BOOT.load(Ordering::Relaxed)
 }
 
-pub fn sleep(ms: usize) {
-    let end_time = get_uptime() + ms;
-    while get_uptime() < end_time {
-        // Let next process have a go
-        yield_now();
-    }
-}
+// pub fn sleep(ms: usize) {
+//     let end_time = get_uptime() + ms;
+//     while get_uptime() < end_time {
+//         // Let next process have a go
+//         yield_now();
+//     }
+// }
 
 pub fn start_switching_tasks() {
     SWITCH_TASK.store(true, Ordering::Relaxed)
