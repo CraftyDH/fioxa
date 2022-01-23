@@ -27,6 +27,8 @@ fn main() {
             "qemu64",
             "-m",
             "256M",
+            "-serial",
+            "stdio",
             "-drive",
             "if=pflash,format=raw,file=ovmf/OVMF-pure-efi.fd",
             "-drive",

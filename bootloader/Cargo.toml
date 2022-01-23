@@ -6,9 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-uefi = { version = "0.12", features = ["exts"] }
-types = { path = "../types" }
-uefi-services = "0.9"
+uefi = { version = "0.12", features = ["logger"] }
 log = "0.4"
 
 lazy_static = {version = "1.4", features = ["spin_no_std"]}

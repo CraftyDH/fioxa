@@ -2,17 +2,10 @@
 #![no_main]
 #![feature(abi_efiapi)]
 #![feature(asm)]
-#![feature(slice_pattern)]
 
-mod fs;
-mod gop;
-mod kernel;
-mod psf1;
+use core::slice;
 
-use core::slice::{self};
-
-use alloc::vec::Vec;
-use types::{BootInfo, RSDP2};
+use bootloader::{fs, gop, kernel::load_kernel, psf1, BootInfo};
 use uefi::{
     prelude::entry,
     table::{
@@ -22,12 +15,17 @@ use uefi::{
     Handle, ResultExt, Status,
 };
 
-use crate::kernel::load_kernel;
+/// Global logger object
+static mut LOGGER: Option<uefi::logger::Logger> = None;
 
 #[macro_use]
 extern crate log;
 
-extern crate alloc;
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    error!("Panic: {}", info);
+    loop {}
+}
 
 #[entry]
 fn _start(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
@@ -35,8 +33,20 @@ fn _start(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 }
 
 fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
+    // Initalize Logger
+    let logger = unsafe {
+        LOGGER = Some(uefi::logger::Logger::new(system_table.stdout()));
+        LOGGER.as_ref().unwrap()
+    };
+
+    // Will only fail if allready initialized
+    log::set_logger(logger).unwrap();
+
+    // Log everything
+    log::set_max_level(log::LevelFilter::Info);
+
     // Initalize UEFI boot services
-    uefi_services::init(&mut system_table).unwrap_success();
+    // uefi_services::init(&mut system_table).unwrap_success();
 
     // If run on debug mode show debug messages
     #[cfg(debug_assertions)]
@@ -69,6 +79,7 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
 
     let gop_info = gop::get_gop_info(gop);
 
+    // Create a memory region to store the boot info in
     let mut boot_info = {
         let size = core::mem::size_of::<BootInfo>();
         let ptr = boot_services
@@ -89,15 +100,31 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
             .unwrap()
             .unwrap();
         let buffer = unsafe { slice::from_raw_parts_mut(ptr, size) };
+        // boot_info.mmap = unsafe { slice::from_raw_parts(ptr as *const MemoryDescriptor, size) };
+
         buffer
     };
-
     let (_key, mmap) = boot_services
         .memory_map(memory_map_buffer)
         .unwrap()
         .unwrap();
 
-    let x: Vec<MemoryDescriptor> = mmap.copied().collect();
+    let memory_map_buffer2 = {
+        let size = mmap.len() * core::mem::size_of::<MemoryDescriptor>();
+        let ptr = boot_services
+            .allocate_pool(MemoryType::BOOT_SERVICES_DATA, size)
+            .unwrap()
+            .unwrap() as *mut MemoryDescriptor;
+        let buffer = unsafe { slice::from_raw_parts_mut(ptr, mmap.len()) };
+        buffer
+    };
+
+    for (i, m) in mmap.copied().enumerate() {
+        memory_map_buffer2[i] = m;
+    }
+
+    boot_info.mmap = memory_map_buffer2;
+
     let system_table_cop = unsafe { system_table.unsafe_clone() };
     let config_table = system_table_cop.config_table();
 
@@ -105,7 +132,7 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
     for entry in config_table {
         // We want last correct entry so keep interating
         if entry.guid == uefi::table::cfg::ACPI2_GUID {
-            boot_info.rsdp = unsafe { &*(entry.address as *const RSDP2) };
+            boot_info.rsdp_address = Some(entry.address as usize);
         }
     }
 
@@ -118,10 +145,10 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
             }
         };
 
-    boot_info.mmap = x.as_slice();
-
-    // let kernel_entry: fn(BootInfo) -> u64 =
+    // let kernel_entry: fn(*const BootInfo) -> u64 =
     //     unsafe { core::mem::transmute(entry_point as *const ()) };
+
+    // kernel_entry(boot_info as *const BootInfo);
 
     unsafe { asm!("push 0; jmp {}", in (reg) entry_point, in("rdi") boot_info as *const BootInfo) }
 

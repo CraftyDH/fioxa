@@ -1,11 +1,36 @@
 use core::slice;
 
-use types::{PSF1Font, PSF1FontHeader, PSF1_MAGIC};
 use uefi::{
     prelude::BootServices,
     proto::media::file::{Directory, File, FileAttribute, FileInfo, FileMode, FileType},
     table::boot::MemoryType,
     Status,
+};
+
+pub const PSF1_MAGIC: [u8; 2] = [0x36, 0x04];
+
+#[derive(Debug, Clone, Copy)]
+pub struct PSF1FontHeader {
+    pub magic: [u8; 2],
+    pub mode_512: u8,
+    pub charsize: u8,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PSF1Font {
+    pub psf1_header: PSF1FontHeader,
+    pub glyph_buffer: &'static [u8],
+    pub unicode_buffer: &'static [u8],
+}
+
+pub const PSF1_FONT_NULL: PSF1Font = PSF1Font {
+    psf1_header: PSF1FontHeader {
+        magic: PSF1_MAGIC,
+        mode_512: 0,
+        charsize: 0,
+    },
+    glyph_buffer: &[0],
+    unicode_buffer: &[0],
 };
 
 pub fn load_psf1_font(boot_services: &BootServices, root: &mut Directory, path: &str) -> PSF1Font {

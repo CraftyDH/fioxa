@@ -1,8 +1,9 @@
 use alloc::collections::BTreeMap;
+use bootloader::gop::GopInfo;
+use bootloader::psf1::{PSF1Font, PSF1_FONT_NULL};
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
 use lazy_static::lazy_static;
-use types::{GopInfo, PSF1Font, PSF1_FONT_NULL};
 
 #[derive(Clone, Copy)]
 pub struct Pos {
@@ -215,7 +216,6 @@ impl core::fmt::Write for Writer {
 }
 
 use spin::Mutex;
-use x86_64::instructions::interrupts::without_interrupts;
 
 lazy_static! {
     pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
@@ -257,8 +257,8 @@ use core::fmt::Arguments;
 
 #[doc(hidden)]
 pub fn _print(args: Arguments) {
-    // let mut write = &mut *;
-    without_interrupts(|| {
-        WRITER.lock().write_fmt(args).unwrap();
-    })
+    WRITER
+        .try_lock()
+        .and_then(|mut w| w.write_fmt(args).ok())
+        .unwrap();
 }

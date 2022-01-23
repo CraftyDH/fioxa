@@ -2,17 +2,39 @@ use core::slice;
 
 use uefi::{
     prelude::BootServices,
-    proto::media::file::{Directory, File, FileAttribute, FileInfo, FileMode, FileType},
+    proto::{
+        device_path::DevicePath,
+        loaded_image::LoadedImage,
+        media::{
+            file::{Directory, File, FileAttribute, FileInfo, FileMode, FileType},
+            fs::SimpleFileSystem,
+        },
+    },
     table::boot::MemoryType,
     Handle, Status,
 };
 
 pub fn get_root_fs(boot_services: &BootServices, image_handle: Handle) -> Directory {
-    // Retrieve a pointer to the filesystem booted from
-    // Retrieve a pointer to the filesystem booted from
+    let loaded_image = boot_services
+        .handle_protocol::<LoadedImage>(image_handle)
+        .unwrap()
+        .expect("Failed to get Loaded Image from the Handle");
+    let loaded_image = unsafe { &*loaded_image.get() };
+
+    let device_path = boot_services
+        .handle_protocol::<DevicePath>(loaded_image.device())
+        .unwrap()
+        .expect("Failed to get Device Path from image Handle");
+    let device_path = unsafe { &mut *device_path.get() };
+
+    let device_handle = boot_services
+        .locate_device_path::<SimpleFileSystem>(device_path)
+        .unwrap()
+        .unwrap();
+
     let fs = boot_services
-        .get_image_file_system(image_handle)
-        .expect("Failed to get a filesystem pointer")
+        .handle_protocol::<SimpleFileSystem>(device_handle)
+        .unwrap()
         .unwrap();
 
     // Get access to the pointer

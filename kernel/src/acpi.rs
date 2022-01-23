@@ -2,7 +2,6 @@ use core::ptr::NonNull;
 
 use acpi::{AcpiError, AcpiHandler, AcpiTables, PhysicalMapping};
 
-use types::RSDP2;
 use x86_64::{
     structures::paging::{
         mapper::{MapToError, UnmapError},
@@ -13,10 +12,9 @@ use x86_64::{
 
 use crate::memory::{get_active_mapper, uefi::FRAME_ALLOCATOR};
 
-pub fn prepare_acpi(rsdp: &RSDP2) -> Result<AcpiTables<FioxaAcpiHandler>, AcpiError> {
+pub fn prepare_acpi(rsdp: usize) -> Result<AcpiTables<FioxaAcpiHandler>, AcpiError> {
     // let handler = FioxaAcpiHandler::new(frame_allocator);
-    let root_acpi_handler =
-        unsafe { acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, rsdp as *const RSDP2 as usize) }?;
+    let root_acpi_handler = unsafe { acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, rsdp) }?;
 
     println!("ACPI");
     for y in &root_acpi_handler.sdts {

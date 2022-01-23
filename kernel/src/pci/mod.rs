@@ -1,5 +1,6 @@
 use crate::{acpi::FioxaAcpiHandler, pci::mcfg::get_mcfg};
 
+use acpi::AcpiError;
 use alloc::{boxed::Box, format};
 
 mod express;
@@ -8,26 +9,26 @@ mod mcfg;
 mod pci_descriptors;
 mod port_based;
 
-pub fn enumerate_pci(acpi_tables: &acpi::AcpiTables<FioxaAcpiHandler>) {
-    // Get MCFG;
-    let mcfg = get_mcfg(acpi_tables);
+pub fn enumerate_pci(acpi_tables: Result<acpi::AcpiTables<FioxaAcpiHandler>, AcpiError>) {
+    // Get MCFG
+    let mcfg = acpi_tables.and_then(|acpi| get_mcfg(&acpi));
 
-    if let Err(e) = &mcfg {
-        println!("Error with getting MCFG table: {:?}", e)
-    }
-    if let Ok(mcfg) = &mcfg {
-        println!("Enumerating MCFG");
-        let mut pci_bus = express::ExpressPCI::new(mcfg);
-        for entry in mcfg.entries() {
-            for bus_number in entry.bus_number_start..entry.bus_number_end {
-                enumerate_bus(&mut pci_bus, entry.pci_segment_group, bus_number)
+    // Enumerate PCI using mcfg;
+    match &mcfg {
+        Ok(mcfg) => {
+            println!("Enumerating PCI using MCFG...");
+            let mut pci_bus = express::ExpressPCI::new(mcfg);
+            for entry in mcfg.entries() {
+                for bus_number in entry.bus_number_start..entry.bus_number_end {
+                    enumerate_bus(&mut pci_bus, entry.pci_segment_group, bus_number)
+                }
             }
         }
+        Err(e) => println!("Error with getting MCFG table: {:?}", e),
     }
-
-    // Enumerate using legacy
+    // Enumerate using legacy port based
     {
-        println!("Enum PCI using legacy");
+        println!("Enumerating PCI using legacy ports...");
         let mut pci_bus = legacy::LegacyPCI {};
         for bus_number in 0..255 {
             enumerate_bus(&mut pci_bus, 0, bus_number)

@@ -1,7 +1,18 @@
 use core::sync::atomic::AtomicPtr;
 
-use types::GopInfo;
 use uefi::proto::console::gop::GraphicsOutput;
+
+use uefi::proto::console::gop::PixelFormat;
+
+#[derive(Debug)]
+pub struct GopInfo {
+    pub buffer: AtomicPtr<u8>,
+    pub buffer_size: usize,
+    pub horizonal: usize,
+    pub vertical: usize,
+    pub stride: usize,
+    pub pixel_format: PixelFormat,
+}
 
 pub fn initialize_gop(bt: &uefi::table::boot::BootServices) -> &mut GraphicsOutput {
     let gop = match bt.locate_protocol::<GraphicsOutput>() {

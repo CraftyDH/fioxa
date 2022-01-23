@@ -9,7 +9,6 @@ use crate::{
     assembly::registers::Registers,
     interrupts::hardware::{PIC1_OFFSET, PICS},
     multitasking::TASKMANAGER,
-    syscall::yield_now,
     wrap_function_registers,
 };
 
@@ -32,7 +31,7 @@ pub fn set_divisor(mut divisor: u16) {
     let bytes = divisor.to_le_bytes();
 
     without_interrupts(|| {
-        let prev_divisor = PIT_DIVISOR.swap(divisor, Ordering::SeqCst);
+        PIT_DIVISOR.store(divisor, Ordering::SeqCst);
 
         // let mut cmd: Port<u8> = Port::new(0x43);
         let mut data: Port<u8> = Port::new(0x40);
