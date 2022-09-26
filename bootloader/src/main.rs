@@ -1,9 +1,8 @@
 #![no_std]
 #![no_main]
 #![feature(abi_efiapi)]
-#![feature(asm)]
 
-use core::slice;
+use core::{mem::transmute, slice};
 
 use bootloader::{fs, gop, kernel::load_kernel, psf1, BootInfo};
 use uefi::{
@@ -91,17 +90,24 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
 
     boot_info.gop = gop_info;
     boot_info.font = font;
-    // Exit boot services
 
-    let mut memory_map_buffer = {
+    let stack = unsafe {
+        let stack = boot_services
+            .allocate_pool(MemoryType::BOOT_SERVICES_DATA, 1024 * 1024 * 10) // 10 Mb
+            .unwrap()
+            .unwrap();
+        // .add(4096 * 16)
+        core::ptr::write_bytes(stack, 0, 1024 * 1024 * 10);
+        stack.add(1024 * 1024 * 10)
+    };
+
+    let memory_map_buffer = {
         let size = boot_services.memory_map_size() + 8 * core::mem::size_of::<MemoryDescriptor>();
         let ptr = boot_services
             .allocate_pool(MemoryType::BOOT_SERVICES_DATA, size)
             .unwrap()
             .unwrap();
         let buffer = unsafe { slice::from_raw_parts_mut(ptr, size) };
-        // boot_info.mmap = unsafe { slice::from_raw_parts(ptr as *const MemoryDescriptor, size) };
-
         buffer
     };
     let (_key, mmap) = boot_services
@@ -109,7 +115,8 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
         .unwrap()
         .unwrap();
 
-    let memory_map_buffer2 = {
+    // Collect mmap into a slice
+    let mmap_buf = {
         let size = mmap.len() * core::mem::size_of::<MemoryDescriptor>();
         let ptr = boot_services
             .allocate_pool(MemoryType::BOOT_SERVICES_DATA, size)
@@ -119,15 +126,18 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
         buffer
     };
 
-    for (i, m) in mmap.copied().enumerate() {
-        memory_map_buffer2[i] = m;
+    for (i, m) in mmap.enumerate() {
+        mmap_buf[i] = *m;
     }
 
-    boot_info.mmap = memory_map_buffer2;
+    boot_info.mmap = mmap_buf.as_mut_ptr();
+    boot_info.mmap_size = mmap_buf.len();
 
     let system_table_cop = unsafe { system_table.unsafe_clone() };
     let config_table = system_table_cop.config_table();
 
+    // Ensure a successful init
+    boot_info.rsdp_address = None;
     // Find RSDP
     for entry in config_table {
         // We want last correct entry so keep interating
@@ -136,21 +146,23 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
         }
     }
 
-    let (_runtime_table, _) =
-        match system_table.exit_boot_services(image_handle, &mut memory_map_buffer) {
-            Ok(table) => table.unwrap(),
-            Err(e) => {
-                error!("Error: {:?}", e);
-                loop {}
-            }
-        };
+    let (_runtime_table, _) = match system_table.exit_boot_services(image_handle, memory_map_buffer)
+    {
+        Ok(table) => table.unwrap(),
+        Err(e) => {
+            error!("Error: {:?}", e);
+            loop {}
+        }
+    };
 
     // let kernel_entry: fn(*const BootInfo) -> u64 =
     //     unsafe { core::mem::transmute(entry_point as *const ()) };
 
     // kernel_entry(boot_info as *const BootInfo);
 
-    unsafe { asm!("push 0; jmp {}", in (reg) entry_point, in("rdi") boot_info as *const BootInfo) }
+    unsafe {
+        core::arch::asm!("mov rsp, {}; push 0; jmp {}", in(reg) stack, in (reg) entry_point, in("rdi") boot_info as *const BootInfo)
+    }
 
     unreachable!()
 }

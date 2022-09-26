@@ -3,7 +3,7 @@ use x86_64::{
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
 };
 
-use crate::gdt::tss;
+use crate::{gdt::tss, screen::gop::WRITER};
 
 /// Generates a handler for each PIC lane.
 /// Calls the appropiate handler in the HANDLERS list
@@ -12,7 +12,8 @@ macro_rules! exception_handler {
     ($handler: ident, $error:expr) => {
         extern "x86-interrupt" fn $handler(stack_frame: InterruptStackFrame) {
             // Find the relevent handler and call it
-            panic!("EXCEPTION: {} caught, frame: {:?}", $error, stack_frame)
+
+            panic!("EXCEPTION: caught {}, frame: {:?}", $error, stack_frame)
         }
     };
 }
@@ -71,9 +72,12 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
 
 extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
-    _error_code: u64,
+    error_code: u64,
 ) -> ! {
-    panic!("EXCEPTION: DOUBLE FAULT\n{:#?}", stack_frame);
+    WRITER.lock().fill_screen(0xFF_00_00);
+    WRITER.lock().pos.y = 0;
+
+    panic!("EXCEPTION: DOUBLE FAULT {}\n{:#?}", error_code, stack_frame);
 }
 
 extern "x86-interrupt" fn general_protection_handler(
@@ -95,10 +99,12 @@ extern "x86-interrupt" fn page_fault_handler(
     error_code: PageFaultErrorCode,
 ) {
     // unsafe { WRITER.force_unlock() };
+    WRITER.lock().fill_screen(0xFF_00_00);
+    WRITER.lock().pos.y = 0;
     println!("EXCEPTION: PAGE FAULT");
-    println!("Error Code: {:?}", error_code);
-    println!("{:#?}", stack_frame);
     println!("Accessed Address: {:?}", Cr2::read());
+    println!("{:#?}", stack_frame);
+    println!("Error Code: {:?}", error_code);
 
     loop {}
 }

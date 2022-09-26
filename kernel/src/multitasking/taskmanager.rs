@@ -1,4 +1,4 @@
-use core::ptr::write_volatile;
+use core::ptr::{write_unaligned, write_volatile};
 
 use alloc::{
     boxed::Box,
@@ -12,7 +12,7 @@ use x86_64::{
 };
 
 use crate::{
-    assembly::registers::Registers, memory::get_uefi_active_mapper, pit::get_uptime, syscall::exit,
+    assembly::registers::Registers, paging::get_uefi_active_mapper, pit::get_uptime, syscall::exit,
 };
 
 use super::{Task, TaskID, TaskManager};
@@ -57,9 +57,8 @@ fn check_task_lists() -> Result<(), &'static str> {
             .ok_or("Slept task queue could't be locked")?;
 
         // Find at what point in the list all wait times have elapesd given that it is sorted
-        let end = slept_tasks
-            .binary_search_by_key(&get_uptime(), |&(t, _)| t)
-            .into_ok_or_err();
+        let end = slept_tasks.binary_search_by_key(&get_uptime(), |&(t, _)| t);
+        let end = end.unwrap_or_else(|a| a);
 
         // Add tasks back into queue
         for (_, task_id) in slept_tasks.drain(..end) {
@@ -70,7 +69,14 @@ fn check_task_lists() -> Result<(), &'static str> {
 }
 
 impl TaskManager {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        {
+            TASKS.lock();
+            TASK_QUEUE.lock();
+            YIELDED_TASKS.lock();
+            SLEPT_TASKS.lock();
+            let _ = &NOP_TASK;
+        }
         Self { current_task: None }
     }
 
@@ -118,10 +124,8 @@ impl TaskManager {
             let end_sleep = regs.r8 + get_uptime();
 
             // Find the index where this sleeped task can go maintaing sorted order
-            let index = sleeped_tasks
-                .binary_search_by_key(&end_sleep, |&(timestamp, _)| timestamp)
-                .into_ok_or_err();
-
+            let index = sleeped_tasks.binary_search_by_key(&end_sleep, |&(timestamp, _)| timestamp);
+            let index = index.unwrap_or_else(|a| a);
             sleeped_tasks.insert(index, (end_sleep, task));
         };
 
@@ -143,12 +147,11 @@ unsafe fn set_registers(
     // TODO: Make this work again
     // stack_frame.as_mut().write(task.state_isf.clone());
     // Bad solution
-    write_volatile(
+    // write_volatile(
+    write_unaligned(
         stack_frame.as_mut().extract_inner() as *mut InterruptStackFrameValue,
         task.state_isf.clone(),
     );
-    // let sf = stack_frame.as_mut().extract_inner();
-    // sf.instruction_pointer = task.state_isf.instruction_pointer;
 
     // Write the new tasks CPU registers
     write_volatile(regs, task.state_reg.clone());
@@ -176,7 +179,7 @@ pub fn spawn(regs: &mut Registers) {
     regs.rax = task.id.0;
 
     // Set startpoint to bootstraper
-    task.state_isf.instruction_pointer = *THREAD_BOOTSTRAPER;
+    // task.state_isf.instruction_pointer = *THREAD_BOOTSTRAPER;
 
     // Pass function to first param
     task.state_reg.rdi = regs.r8;
@@ -189,7 +192,8 @@ pub fn spawn(regs: &mut Registers) {
 
 use lazy_static::lazy_static;
 lazy_static! {
-    static ref THREAD_BOOTSTRAPER: VirtAddr = VirtAddr::from_ptr(thread_bootstraper as *mut usize);
+    pub static ref THREAD_BOOTSTRAPER: VirtAddr =
+        VirtAddr::from_ptr(thread_bootstraper as *mut usize);
 }
 
 extern "C" fn thread_bootstraper(main: usize) {

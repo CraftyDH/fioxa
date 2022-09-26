@@ -1,10 +1,6 @@
 use alloc::boxed::Box;
-use x86_64::{
-    structures::paging::{mapper::MapToError, Mapper, PageTableFlags, PhysFrame, Size4KiB},
-    PhysAddr, VirtAddr,
-};
 
-use crate::memory::{get_active_mapper, uefi::FRAME_ALLOCATOR};
+use crate::paging::get_uefi_active_mapper;
 
 use super::{mcfg::MCFG, PCIBus, PCIDeviceCommonHeader};
 
@@ -115,30 +111,11 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
         let addr = self.get_address(segment, bus, device, function).unwrap()
             as *mut PCIDeviceCommonHeaderExpressInternal;
 
-        let mut mapper = unsafe { get_active_mapper(VirtAddr::new(0)) };
-        fail_mapper(&mut mapper, addr as u64);
+        let mut mapper = unsafe { get_uefi_active_mapper() };
+
+        mapper.map_memory(addr as u64, addr as u64).unwrap();
+        mapper.flush_cr3();
 
         Box::new(PCIDeviceCommonHeaderExpress { internal: addr })
-    }
-}
-
-pub fn fail_mapper(mapper: &mut impl Mapper<Size4KiB>, addr: u64) {
-    unsafe {
-        let res = mapper.identity_map(
-            PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(addr)),
-            PageTableFlags::WRITABLE | PageTableFlags::PRESENT,
-            &mut *FRAME_ALLOCATOR.lock(),
-        );
-
-        if let Err(e) = res {
-            match e {
-                MapToError::FrameAllocationFailed => panic!("{:?}", e),
-                // Ignore
-                MapToError::ParentEntryHugePage => {}
-                MapToError::PageAlreadyMapped(a) => println!("Allready Mapped: {:?}", a),
-            }
-        } else {
-            res.unwrap().flush();
-        }
     }
 }

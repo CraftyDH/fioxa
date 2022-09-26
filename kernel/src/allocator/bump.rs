@@ -3,9 +3,11 @@ use core::{
     ptr,
 };
 
+use linked_list_allocator::align_up;
+
 use crate::locked_mutex::Locked;
 
-use super::align_up;
+// use super::align_up;
 
 pub struct BumpAllocator {
     heap_start: usize,
@@ -39,6 +41,11 @@ impl BumpAllocator {
 unsafe impl GlobalAlloc for Locked<BumpAllocator> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let mut bump = self.lock();
+
+        println!("ALLOC");
+        if bump.heap_start == 0 {
+            return ptr::null_mut();
+        }
 
         let alloc_start = align_up(bump.next, layout.align());
         let alloc_end = match alloc_start.checked_add(layout.size()) {

@@ -2,15 +2,7 @@ use core::ptr::NonNull;
 
 use acpi::{AcpiError, AcpiHandler, AcpiTables, PhysicalMapping};
 
-use x86_64::{
-    structures::paging::{
-        mapper::{MapToError, UnmapError},
-        Mapper, Page, PageTableFlags, PhysFrame, Size4KiB,
-    },
-    PhysAddr, VirtAddr,
-};
-
-use crate::memory::{get_active_mapper, uefi::FRAME_ALLOCATOR};
+use crate::paging::get_uefi_active_mapper;
 
 pub fn prepare_acpi(rsdp: usize) -> Result<AcpiTables<FioxaAcpiHandler>, AcpiError> {
     // let handler = FioxaAcpiHandler::new(frame_allocator);
@@ -32,24 +24,11 @@ impl AcpiHandler for FioxaAcpiHandler {
         physical_address: usize,
         size: usize,
     ) -> acpi::PhysicalMapping<Self, T> {
-        let mut mapper = get_active_mapper(VirtAddr::from_ptr(0 as *const u8));
+        let mut mapper = get_uefi_active_mapper();
 
-        let res = mapper.identity_map(
-            PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(physical_address as u64)),
-            PageTableFlags::WRITABLE | PageTableFlags::PRESENT,
-            &mut *FRAME_ALLOCATOR.lock(),
-        );
+        mapper.map_memory(physical_address as u64, physical_address as u64);
 
-        if let Err(e) = res {
-            match e {
-                MapToError::FrameAllocationFailed => panic!("{:?}", e),
-                // Doesn't matter, we are identity mapped
-                MapToError::ParentEntryHugePage => {}
-                MapToError::PageAlreadyMapped(a) => println!("Allready Mapped: {:?}", a),
-            }
-        } else {
-            res.unwrap().flush();
-        }
+        mapper.flush_cr3();
 
         PhysicalMapping::new(
             physical_address,
@@ -61,21 +40,9 @@ impl AcpiHandler for FioxaAcpiHandler {
     }
 
     fn unmap_physical_region<T>(region: &acpi::PhysicalMapping<Self, T>) {
-        println!("Unmap");
-        let mut mapper = unsafe { get_active_mapper(VirtAddr::from_ptr(0 as *const u8)) };
+        let mapper = unsafe { get_uefi_active_mapper() };
 
-        let res = mapper.unmap(Page::<Size4KiB>::containing_address(VirtAddr::new(
-            region.virtual_start().as_ptr() as u64,
-        )));
-
-        if let Err(e) = res {
-            match e {
-                UnmapError::InvalidFrameAddress(a) => panic!("Invalid Frame addr: {:?}", a),
-                UnmapError::ParentEntryHugePage => println!("Parent Mapped"),
-                UnmapError::PageNotMapped => println!("Not Mapped"),
-            }
-        } else {
-            res.unwrap().1.flush();
-        }
+        mapper.unmap_memory(region.virtual_start().as_ptr() as u64);
+        mapper.flush_cr3();
     }
 }

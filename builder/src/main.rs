@@ -1,4 +1,5 @@
 use std::{
+    env::args,
     fs::{copy, DirBuilder},
     io::BufReader,
     process::{Command, Stdio},
@@ -18,24 +19,31 @@ fn main() {
     copy(bootloader, "fioxa/EFI/BOOT/BootX64.efi").unwrap();
     copy(kernel, "fioxa/fioxa.elf").unwrap();
 
-    Command::new("qemu-system-x86_64")
-        .args([
-            // Args
-            "-machine",
-            "q35",
-            "-cpu",
-            "qemu64",
-            "-m",
-            "256M",
-            "-serial",
-            "stdio",
-            "-drive",
-            "if=pflash,format=raw,file=ovmf/OVMF-pure-efi.fd",
-            "-drive",
-            "format=raw,file=fat:rw:fioxa",
-        ])
-        .spawn()
-        .unwrap();
+    let mut args = args();
+
+    if args.any(|a| a == "qemu") {
+        Command::new("qemu-system-x86_64")
+            .args([
+                // GDB server
+                "-s",
+                "-S",
+                // Args
+                "-machine",
+                "q35",
+                "-cpu",
+                "qemu64",
+                "-m",
+                "256M",
+                "-serial",
+                "stdio",
+                "-drive",
+                "if=pflash,format=raw,file=ovmf/OVMF-pure-efi.fd",
+                "-drive",
+                "format=raw,file=fat:rw:fioxa",
+            ])
+            .spawn()
+            .unwrap();
+    }
 }
 
 fn build(name: &str) -> Result<Utf8PathBuf, String> {

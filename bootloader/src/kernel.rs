@@ -1,3 +1,5 @@
+use core::cmp::{max, min};
+
 use uefi::{
     prelude::BootServices,
     table::boot::{AllocateType, MemoryType},
@@ -67,55 +69,54 @@ pub fn load_kernel(boot_services: &BootServices, kernel_data: &[u8]) -> u64 {
         panic!("Kernel Header Invalid")
     }
 
+    let headers = (elf_header.e_phoff..((elf_header.e_phnum * elf_header.e_phentsize).into()))
+        .step_by(elf_header.e_phentsize.into());
+
+    let mut base = u64::MAX;
+    let mut size = u64::MIN;
+
+    for program_header_ptr in headers.clone() {
+        let program_header = unsafe {
+            *(kernel_data.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr)
+        };
+        base = min(base, program_header.p_vaddr);
+        size = max(size, program_header.p_vaddr + program_header.p_memsz);
+    }
+
+    let mem_start = (base / 0x1000) * 0x1000;
+    // The size from start to finish
+    let size = size - base;
+    let pages = size / 4096 + 1;
+
+    let _ = match boot_services.allocate_pages(
+        AllocateType::Address(mem_start.try_into().unwrap()),
+        MemoryType::LOADER_DATA,
+        pages as usize,
+    ) {
+        Err(err) => {
+            panic!("Couldn't allocate page {:?}", err);
+        }
+        Ok(_) => (),
+    };
+
+    // Ensure all memory is zeroed
+    unsafe { core::ptr::write_bytes(mem_start as *mut u8, 0, size as usize) }
+
     // Iterate over each header
-    for program_header_ptr in (elf_header.e_phoff
-        ..((elf_header.e_phnum * elf_header.e_phentsize).into()))
-        .step_by(elf_header.e_phentsize.into())
-    {
+    for program_header_ptr in headers {
         // Transpose the program header as an elf header
         let program_header = unsafe {
             *(kernel_data.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr)
         };
         if program_header.p_type == PT_LOAD {
-            // We need to load the section
-            // Round size needed to the next page
-            let pages = (program_header.p_memsz + 0x1000 - 1) / 0x1000;
-            // Round start address to start of a page
-            let addr = (program_header.p_paddr / 0x1000) * 0x1000;
-            // Allocate page
-            let _ = match boot_services.allocate_pages(
-                AllocateType::Address(addr.try_into().unwrap()),
-                MemoryType::LOADER_DATA,
-                pages as usize,
-            ) {
-                Err(err) => {
-                    panic!("Couldn't allocate page {:?}", err);
-                }
-                Ok(_) => (),
-            };
-
-            info!("{:?}", program_header);
-
             unsafe {
                 core::ptr::copy::<u8>(
                     kernel_data
                         .as_ptr()
                         .offset(program_header.p_offset.try_into().unwrap()),
-                    program_header.p_paddr as *mut u8,
+                    program_header.p_vaddr as *mut u8,
                     program_header.p_filesz.try_into().unwrap(),
                 )
-            }
-
-            // Handle .bss section (mem_size > file_size)
-            if program_header.p_memsz > program_header.p_filesz {
-                // info!(
-                //     "Mem: {}, File: {}",
-                //     program_header.p_memsz, program_header.p_filesz
-                // );
-                // Just clear all the ram
-                let start = program_header.p_paddr + program_header.p_filesz;
-                let size = program_header.p_memsz - program_header.p_filesz;
-                unsafe { core::ptr::write_bytes(start as *mut u8, 0, size as usize) }
             }
         }
     }

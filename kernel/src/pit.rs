@@ -9,6 +9,7 @@ use crate::{
     assembly::registers::Registers,
     interrupts::hardware::{PIC1_OFFSET, PICS},
     multitasking::TASKMANAGER,
+    syscall::yield_now,
     wrap_function_registers,
 };
 
@@ -31,7 +32,7 @@ pub fn set_divisor(mut divisor: u16) {
     let bytes = divisor.to_le_bytes();
 
     without_interrupts(|| {
-        PIT_DIVISOR.store(divisor, Ordering::SeqCst);
+        PIT_DIVISOR.store(divisor, Ordering::Release);
 
         // let mut cmd: Port<u8> = Port::new(0x43);
         let mut data: Port<u8> = Port::new(0x40);
@@ -47,7 +48,7 @@ pub fn set_divisor(mut divisor: u16) {
 }
 
 pub fn get_frequency() -> usize {
-    return PIT_BASE_FREQUENCY / PIT_DIVISOR.load(Ordering::Relaxed) as usize;
+    return PIT_BASE_FREQUENCY / PIT_DIVISOR.load(Ordering::Acquire) as usize;
 }
 
 pub fn set_frequency(frequency: usize) {
@@ -61,23 +62,23 @@ pub fn set_frequency(frequency: usize) {
 
 // Returns system uptime in milliseconds
 pub fn get_uptime() -> usize {
-    TIME_SINCE_BOOT.load(Ordering::Relaxed)
+    TIME_SINCE_BOOT.load(Ordering::Acquire)
 }
 
-// pub fn sleep(ms: usize) {
-//     let end_time = get_uptime() + ms;
-//     while get_uptime() < end_time {
-//         // Let next process have a go
-//         yield_now();
-//     }
-// }
+pub fn sleep(ms: usize) {
+    let end_time = get_uptime() + ms;
+    while get_uptime() < end_time {
+        // Let next process have a go
+        yield_now();
+    }
+}
 
 pub fn start_switching_tasks() {
-    SWITCH_TASK.store(true, Ordering::Relaxed)
+    SWITCH_TASK.store(true, Ordering::Release)
 }
 
 pub fn stop_switching_tasks() {
-    SWITCH_TASK.store(false, Ordering::Relaxed)
+    SWITCH_TASK.store(false, Ordering::Release)
 }
 
 wrap_function_registers!(tick => tick_handler);
@@ -86,10 +87,12 @@ extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
     // Get the amount of milliseconds per interrupt
     let freq = 1000 / get_frequency();
     // Increment the uptime counter
-    TIME_SINCE_BOOT.fetch_add(freq, Ordering::Relaxed);
+    TIME_SINCE_BOOT.fetch_add(freq, Ordering::Release);
+
+    // print!(".");
 
     // If timer is used for switching tasks switch task
-    if SWITCH_TASK.load(Ordering::Relaxed) {
+    if SWITCH_TASK.load(Ordering::Acquire) {
         TASKMANAGER
             .try_lock()
             .unwrap()

@@ -38,7 +38,7 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
 }
 
 unsafe fn syscall1(mut syscall_number: usize, arg1: usize) -> usize {
-    asm!("int 0x80", inout("rax") syscall_number, in("r8") arg1, options(nostack));
+    core::arch::asm!("int 0x80", inout("rax") syscall_number, in("r8") arg1, options(nostack));
     syscall_number
 }
 

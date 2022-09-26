@@ -8,8 +8,8 @@ use x86_64::structures::idt::InterruptStackFrameValue;
 use crate::assembly::registers::Registers;
 
 // Start stack at this address
-static STACK_ADDR: AtomicU64 = AtomicU64::new(0x69_000_000);
-const STACK_SIZE: usize = 4096;
+static STACK_ADDR: AtomicU64 = AtomicU64::new(0x100_000_000_000);
+const STACK_SIZE: usize = 0x10000; // 64 Kb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskID(usize);

@@ -3,6 +3,7 @@ use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
+pub const PAGE_FAULT_IST_INDEX: u16 = 1;
 
 lazy_static! {
     pub static ref TSS: TaskStateSegment = {

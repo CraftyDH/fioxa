@@ -1,43 +1,27 @@
-use x86_64::{
-    structures::paging::{
-        mapper::MapToError, FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
-    },
-    VirtAddr,
-};
+use x86_64::structures::paging::{mapper::MapToError, Size4KiB};
 
-use crate::{locked_mutex::Locked, memory::uefi::FRAME_ALLOCATOR};
+use crate::{
+    locked_mutex::Locked,
+    paging::{page_allocator::request_page, page_table_manager::PageTableManager},
+};
 
 use self::fixed_size_block::FixedSizeBlockAllocator;
 
-pub const HEAP_START: usize = 0x4444_4444_0000;
+pub const HEAP_START: usize = 0x4_4444_0000;
 pub const HEAP_SIZE: usize = 1024 * 1024; // 1 MiB
 
-// pub mod bump;
+pub mod bump;
 pub mod fixed_size_block;
-// pub mod linked_list;
+pub mod linked_list;
 
-pub fn init_heap(mapper: &mut impl Mapper<Size4KiB>) -> Result<(), MapToError<Size4KiB>> {
-    let page_range = {
-        let heap_start = VirtAddr::new(HEAP_START as u64);
-        let heap_end = heap_start + HEAP_SIZE - 1u64;
-        let heap_start_page = Page::containing_address(heap_start);
-        let heap_end_page = Page::containing_address(heap_end);
-        Page::range_inclusive(heap_start_page, heap_end_page)
-    };
-
-    for page in page_range {
-        let frame = FRAME_ALLOCATOR
-            .lock()
-            .allocate_frame()
-            // Convert None to an error of FrameAllocationFailed
-            .ok_or(MapToError::FrameAllocationFailed)?;
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-        unsafe {
-            mapper
-                .map_to(page, frame, flags, &mut *FRAME_ALLOCATOR.lock())?
-                .flush()
-        };
+pub fn init_heap(mapper: &mut PageTableManager) -> Result<(), MapToError<Size4KiB>> {
+    for page in (HEAP_START..(HEAP_START + HEAP_SIZE - 1)).step_by(4096) {
+        let frame = request_page().ok_or(MapToError::FrameAllocationFailed)?;
+        // let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        mapper.map_memory(page as u64, frame as u64);
     }
+
+    mapper.flush_cr3();
 
     unsafe {
         ALLOCATOR.lock().init(HEAP_START, HEAP_SIZE);

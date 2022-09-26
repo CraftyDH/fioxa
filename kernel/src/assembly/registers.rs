@@ -28,7 +28,7 @@ macro_rules! wrap_function_registers {
         #[naked]
         pub extern "x86-interrupt" fn $w(_: InterruptStackFrame) {
             unsafe {
-            asm!(
+            core::arch::asm!(
                 "push rbp",
                 "push rax",
                 "push rbx",

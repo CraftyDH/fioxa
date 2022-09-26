@@ -4,6 +4,7 @@ use bootloader::psf1::{PSF1Font, PSF1_FONT_NULL};
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
 use lazy_static::lazy_static;
+use x86_64::instructions::interrupts::without_interrupts;
 
 #[derive(Clone, Copy)]
 pub struct Pos {
@@ -62,15 +63,15 @@ impl Writer {
 
         // let glyphbuf = font.glyph_buffer;
 
+        let ptr = self.gop.buffer.get_mut();
+
         for y in yoff..(yoff + 16) {
             let glyph = self.font.glyph_buffer[addr];
             for x in xoff..(xoff + 8) {
                 // Fancy math to check if bit is on.
                 if (glyph & (0b10_000_000 >> (x - xoff))) > 0 {
                     let loc = (x + (y * self.gop.stride)) * 4;
-                    unsafe {
-                        core::ptr::write(self.gop.buffer.get_mut().add(loc) as *mut u32, colour)
-                    }
+                    unsafe { core::ptr::write(ptr.add(loc) as *mut u32, colour) }
                 }
             }
             addr += 1;
@@ -172,7 +173,10 @@ impl Writer {
                 if (line & (0b10_000_000_000_000 >> x)) > 0 {
                     let loc = ((x + pos.x) + ((y + pos.y) * self.gop.stride)) * 4;
                     unsafe {
-                        core::ptr::write(self.gop.buffer.get_mut().add(loc) as *mut u32, colour)
+                        core::ptr::write_unaligned(
+                            self.gop.buffer.get_mut().add(loc) as *mut u32,
+                            colour,
+                        )
                     }
                 }
             }
@@ -186,20 +190,39 @@ impl Writer {
             self.pos.x = 0;
             self.pos.y += 16;
         }
+        let max = self.gop.vertical - (self.gop.vertical % 16);
         // Check if next line will excede height
-        if self.pos.y + 16 > res.1 {
+        if self.pos.y + 16 > max {
             // Start copying line line in
             let size_of_line = 16 * 4 * self.gop.stride;
+            // self.gop.vertical;
             // As such copy the hole buffer less that line
-            let size_of_buffer = self.gop.buffer_size - size_of_line;
+            let size_of_buffer = (self.gop.horizonal * 4 * self.gop.vertical) - size_of_line;
 
             let buf = self.gop.buffer.get_mut();
             unsafe {
                 // Copy memory from bottom to top (aka scroll)
                 core::ptr::copy(buf.offset(size_of_line as isize), *buf, size_of_buffer);
+                core::ptr::write_bytes(buf.offset(size_of_buffer as isize), 0, size_of_line);
+
+                // Naive implementation
+                // for l in 16..max {
+                //     core::ptr::copy_nonoverlapping(
+                //         buf.offset((l * self.gop.stride * 4) as isize),
+                //         buf.offset(((l - 16) * self.gop.stride * 4) as isize),
+                //         self.gop.horizonal * 4,
+                //     );
+                // }
+
+                // for l in (max - 16)..max {
+                //     core::ptr::write_bytes(
+                //         buf.offset((l * self.gop.stride * 4) as isize),
+                //         0,
+                //         self.gop.horizonal * 4,
+                //     )
+                // }
 
                 // Clear the bottom line by writing zeros
-                core::ptr::write_bytes(buf.offset(size_of_buffer as isize), 0, size_of_line);
             }
 
             self.pos.y -= 16;
@@ -257,8 +280,10 @@ use core::fmt::Arguments;
 
 #[doc(hidden)]
 pub fn _print(args: Arguments) {
-    WRITER
-        .try_lock()
-        .and_then(|mut w| w.write_fmt(args).ok())
-        .unwrap();
+    without_interrupts(|| {
+        WRITER
+            .try_lock()
+            .and_then(|mut w| w.write_fmt(args).ok())
+            .unwrap();
+    });
 }
