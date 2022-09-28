@@ -97,7 +97,7 @@ impl TaskManager {
     pub fn switch_task(&mut self, stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
         if let Some(task) = self.current_task {
             TASKS.lock().get_mut(&task).unwrap().save(stack_frame, regs);
-            TASK_QUEUE.lock().push_back(task);
+            YIELDED_TASKS.lock().push_back(task);
         };
 
         self.switch_to_next_task(stack_frame, regs);

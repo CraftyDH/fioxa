@@ -20,8 +20,8 @@ use kernel::paging::page_table_manager::PageTableManager;
 use kernel::pci::enumerate_pci;
 use kernel::pit::{set_frequency, start_switching_tasks};
 use kernel::ps2::PS2Controller;
-use kernel::screen::gop;
-use kernel::syscall::{sleep, spawn_thread, yield_now};
+use kernel::screen::gop::{self, WRITER};
+use kernel::syscall::{exit, sleep, spawn_thread, yield_now};
 use kernel::{allocator, gdt, paging};
 use spin::mutex::Mutex;
 
@@ -52,7 +52,7 @@ pub fn main(info: *const BootInfo) -> ! {
     let mmap = unsafe { &*slice_from_raw_parts_mut(boot_info.mmap, boot_info.mmap_size) };
 
     GLOBAL_FRAME_ALLOCATOR.init_once(|| {
-        let allocator = paging::page_allocator::PageFrameAllocator::new(mmap);
+        let allocator = unsafe { paging::page_allocator::PageFrameAllocator::new(mmap) };
         Mutex::new(allocator)
     });
 
@@ -82,6 +82,11 @@ pub fn main(info: *const BootInfo) -> ! {
     log!("Initializing HEAP...");
     allocator::init_heap(&mut page_table_mngr).expect("Heap initialization failed");
 
+    // Set unicode mapping buffer (for more chacters than ascii)
+    WRITER
+        .lock()
+        .generate_unicode_mapping(boot_info.font.unicode_buffer);
+
     log!("Enabling interrupts");
     x86_64::instructions::interrupts::enable();
 
@@ -92,7 +97,8 @@ pub fn main(info: *const BootInfo) -> ! {
         log!("Initalizing PS2 devices...");
         let mut ps2_controller = PS2Controller::new();
         if let Err(e) = ps2_controller.initialize() {
-            log!("PS2 Controller failed to init because: {}", e)
+            log!("PS2 Controller failed to init because: {}", e);
+            exit();
         }
         loop {
             ps2_controller.check_packets();
@@ -113,20 +119,10 @@ pub fn main(info: *const BootInfo) -> ! {
     });
 
     spawn_thread(|| {
-        println!("LOLCAT");
         for i in 0.. {
-            println!("LOCAT: {i}");
+            println!("UPTIME: {i}s");
             sleep(1000);
         }
-    });
-
-    spawn_thread(|| {
-        println!("BS");
-        for i in 0.. {
-            println!("BS: {i}");
-            sleep(2000);
-        }
-        loop {}
     });
 
     start_switching_tasks();

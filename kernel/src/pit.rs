@@ -29,20 +29,18 @@ pub fn set_divisor(mut divisor: u16) {
         divisor = (PIT_BASE_FREQUENCY / 1000) as u16
     }
 
-    let bytes = divisor.to_le_bytes();
-
     without_interrupts(|| {
         PIT_DIVISOR.store(divisor, Ordering::Release);
 
-        // let mut cmd: Port<u8> = Port::new(0x43);
+        let mut cmd: Port<u8> = Port::new(0x43);
         let mut data: Port<u8> = Port::new(0x40);
 
         unsafe {
-            // cmd.write((3 << 4) | 3);
+            cmd.write(0b00_11_011_0);
             // Write first 8 bits
-            data.write(bytes[0]);
+            data.write((divisor & 0xFF) as u8);
             // Write upper 8 bits
-            data.write(bytes[1]);
+            data.write((divisor & 0xFF00 >> 8) as u8);
         }
     })
 }

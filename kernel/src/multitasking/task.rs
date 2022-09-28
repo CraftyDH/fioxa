@@ -1,10 +1,7 @@
 use core::{convert::TryInto, sync::atomic::Ordering};
 
 use x86_64::{
-    structures::{
-        idt::{InterruptStackFrame, InterruptStackFrameValue},
-        paging::{Mapper, Page, PageTableFlags, Size4KiB},
-    },
+    structures::idt::{InterruptStackFrame, InterruptStackFrameValue},
     VirtAddr,
 };
 
