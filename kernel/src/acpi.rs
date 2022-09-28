@@ -26,9 +26,10 @@ impl AcpiHandler for FioxaAcpiHandler {
     ) -> acpi::PhysicalMapping<Self, T> {
         let mut mapper = get_uefi_active_mapper();
 
-        mapper.map_memory(physical_address as u64, physical_address as u64);
-
-        mapper.flush_cr3();
+        mapper
+            .map_memory(physical_address as u64, physical_address as u64)
+            .unwrap()
+            .flush();
 
         PhysicalMapping::new(
             physical_address,
@@ -42,7 +43,9 @@ impl AcpiHandler for FioxaAcpiHandler {
     fn unmap_physical_region<T>(region: &acpi::PhysicalMapping<Self, T>) {
         let mapper = unsafe { get_uefi_active_mapper() };
 
-        mapper.unmap_memory(region.virtual_start().as_ptr() as u64);
-        mapper.flush_cr3();
+        mapper
+            .unmap_memory(region.virtual_start().as_ptr() as u64)
+            .unwrap()
+            .flush();
     }
 }

@@ -64,9 +64,12 @@ pub fn main(info: *const BootInfo) -> ! {
 
     let frame = request_page().unwrap();
 
-    page_table_mngr.map_memory(0x600000000, frame as u64);
+    page_table_mngr.load_into_cr3();
 
-    unsafe { asm!("mov cr3, {}", in(reg) pml4_addr, options(nostack, preserves_flags)) };
+    page_table_mngr
+        .map_memory(0x600000000, frame as u64)
+        .unwrap()
+        .flush();
 
     unsafe {
         let frame = frame as *mut u64;

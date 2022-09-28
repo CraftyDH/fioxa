@@ -18,10 +18,11 @@ pub fn init_heap(mapper: &mut PageTableManager) -> Result<(), MapToError<Size4Ki
     for page in (HEAP_START..(HEAP_START + HEAP_SIZE - 1)).step_by(4096) {
         let frame = request_page().ok_or(MapToError::FrameAllocationFailed)?;
         // let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-        mapper.map_memory(page as u64, frame as u64);
+        mapper
+            .map_memory(page as u64, frame as u64)
+            .unwrap()
+            .flush();
     }
-
-    mapper.flush_cr3();
 
     unsafe {
         ALLOCATOR.lock().init(HEAP_START, HEAP_SIZE);

@@ -9,14 +9,14 @@ pub fn identity_map(mapper: &mut PageTableManager, mmap: &[MemoryDescriptor]) {
         if i % 10000 == 0 {
             print!(".");
         }
-        mapper.map_memory(i * 4096, i * 4096);
+        mapper.map_memory(i * 4096, i * 4096).unwrap().ignore();
     }
 
     let fb_base = *WRITER.lock().gop.buffer.get_mut() as u64 / 4096;
     let fb_size = fb_base + (WRITER.lock().gop.buffer_size as u64 / 4096);
 
     for i in fb_base..fb_size {
-        mapper.map_memory(i * 4096, i * 4096);
+        mapper.map_memory(i * 4096, i * 4096).unwrap().ignore();
     }
 
     unsafe {

@@ -113,8 +113,7 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
 
         let mut mapper = unsafe { get_uefi_active_mapper() };
 
-        mapper.map_memory(addr as u64, addr as u64).unwrap();
-        mapper.flush_cr3();
+        mapper.map_memory(addr as u64, addr as u64).unwrap().flush();
 
         Box::new(PCIDeviceCommonHeaderExpress { internal: addr })
     }

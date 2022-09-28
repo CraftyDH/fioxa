@@ -22,10 +22,8 @@ impl Task {
         for addr in (stack_base..(stack_base + STACK_SIZE as u64)).step_by(0x1000) {
             let frame = request_page().unwrap();
 
-            mapper.map_memory(addr, frame as u64);
+            mapper.map_memory(addr, frame as u64).unwrap().flush();
         }
-
-        mapper.flush_cr3();
 
         let state_isf = InterruptStackFrameValue {
             instruction_pointer: *THREAD_BOOTSTRAPER,

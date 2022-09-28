@@ -100,8 +100,6 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
         // Ensure first 256 pages arn't handed out
         alloc.lock_pages(0, 0x100);
 
-        println!("LOc: {}", allocator_zone.phys_start);
-
         println!(
             "Page allocator structures are using: {}Kb\nFree memory: {}Mb",
             bitmap_pages * 4096 / 1024,
