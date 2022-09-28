@@ -2,7 +2,7 @@
 #![no_main]
 #![feature(abi_efiapi)]
 
-use core::{mem::transmute, slice};
+use core::slice;
 
 use bootloader::{fs, gop, kernel::load_kernel, psf1, BootInfo};
 use uefi::{
@@ -11,7 +11,7 @@ use uefi::{
         boot::{MemoryDescriptor, MemoryType},
         Boot, SystemTable,
     },
-    Handle, ResultExt, Status,
+    Handle, Status,
 };
 
 /// Global logger object
@@ -55,24 +55,37 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
     system_table
         .stdout()
         .reset(false)
-        .expect_success("Failed to reset output buffer");
+        .expect("Failed to reset output buffer");
 
     info!("Starting Fioxa bootloader...");
 
     let boot_services = system_table.boot_services();
 
     info!("Initializing GOP...");
-    let gop = gop::initialize_gop(boot_services);
+    let gop = &mut *gop::initialize_gop(boot_services);
 
     info!("Retreiving Root Filesystem...");
-    let mut root_fs = fs::get_root_fs(boot_services, image_handle);
+    let mut root_fs = unsafe { fs::get_root_fs(boot_services, image_handle) };
 
     info!("Retreiving kernel...");
 
-    let kernel_data = fs::read_file(boot_services, &mut root_fs, "fioxa.elf").unwrap();
+    const KERN_PATH: &str = "fioxa.elf";
+    let mut buf = [0; KERN_PATH.len() + 1];
+    let kernel_data = fs::read_file(
+        boot_services,
+        &mut root_fs,
+        uefi::CStr16::from_str_with_buf(KERN_PATH, &mut buf).unwrap(),
+    )
+    .unwrap();
 
     info!("Loading PSF1 Font...");
-    let font = psf1::load_psf1_font(boot_services, &mut root_fs, "font.psf");
+    const FONT_PATH: &str = "font.psf";
+    let mut buf = [0; FONT_PATH.len() + 1];
+    let font = psf1::load_psf1_font(
+        boot_services,
+        &mut root_fs,
+        uefi::CStr16::from_str_with_buf(FONT_PATH, &mut buf).unwrap(),
+    );
 
     let entry_point = load_kernel(boot_services, kernel_data);
 
@@ -83,7 +96,6 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
         let size = core::mem::size_of::<BootInfo>();
         let ptr = boot_services
             .allocate_pool(MemoryType::BOOT_SERVICES_DATA, size)
-            .unwrap()
             .unwrap();
         unsafe { &mut *(ptr as *mut BootInfo) }
     };
@@ -94,33 +106,26 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
     let stack = unsafe {
         let stack = boot_services
             .allocate_pool(MemoryType::BOOT_SERVICES_DATA, 1024 * 1024 * 10) // 10 Mb
-            .unwrap()
             .unwrap();
-        // .add(4096 * 16)
         core::ptr::write_bytes(stack, 0, 1024 * 1024 * 10);
         stack.add(1024 * 1024 * 10)
     };
 
     let memory_map_buffer = {
-        let size = boot_services.memory_map_size() + 8 * core::mem::size_of::<MemoryDescriptor>();
+        let size = boot_services.memory_map_size().map_size;
         let ptr = boot_services
             .allocate_pool(MemoryType::BOOT_SERVICES_DATA, size)
-            .unwrap()
             .unwrap();
         let buffer = unsafe { slice::from_raw_parts_mut(ptr, size) };
         buffer
     };
-    let (_key, mmap) = boot_services
-        .memory_map(memory_map_buffer)
-        .unwrap()
-        .unwrap();
+    let (_key, mmap) = boot_services.memory_map(memory_map_buffer).unwrap();
 
     // Collect mmap into a slice
     let mmap_buf = {
         let size = mmap.len() * core::mem::size_of::<MemoryDescriptor>();
         let ptr = boot_services
             .allocate_pool(MemoryType::BOOT_SERVICES_DATA, size)
-            .unwrap()
             .unwrap() as *mut MemoryDescriptor;
         let buffer = unsafe { slice::from_raw_parts_mut(ptr, mmap.len()) };
         buffer
@@ -133,8 +138,7 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
     boot_info.mmap = mmap_buf.as_mut_ptr();
     boot_info.mmap_size = mmap_buf.len();
 
-    let system_table_cop = unsafe { system_table.unsafe_clone() };
-    let config_table = system_table_cop.config_table();
+    let config_table = system_table.config_table();
 
     // Ensure a successful init
     boot_info.rsdp_address = None;
@@ -148,7 +152,7 @@ fn uefi_entry(image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
 
     let (_runtime_table, _) = match system_table.exit_boot_services(image_handle, memory_map_buffer)
     {
-        Ok(table) => table.unwrap(),
+        Ok(table) => table,
         Err(e) => {
             error!("Error: {:?}", e);
             loop {}

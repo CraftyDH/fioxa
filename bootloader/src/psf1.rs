@@ -4,7 +4,7 @@ use uefi::{
     prelude::BootServices,
     proto::media::file::{Directory, File, FileAttribute, FileInfo, FileMode, FileType},
     table::boot::MemoryType,
-    Status,
+    CStr16, Status,
 };
 
 pub const PSF1_MAGIC: [u8; 2] = [0x36, 0x04];
@@ -33,10 +33,14 @@ pub const PSF1_FONT_NULL: PSF1Font = PSF1Font {
     unicode_buffer: &[0],
 };
 
-pub fn load_psf1_font(boot_services: &BootServices, root: &mut Directory, path: &str) -> PSF1Font {
+pub fn load_psf1_font(
+    boot_services: &BootServices,
+    root: &mut Directory,
+    path: &CStr16,
+) -> PSF1Font {
     // Find the font and open it
     let psf1 = match File::open(root, path, FileMode::Read, FileAttribute::READ_ONLY) {
-        Ok(psf1) => psf1.unwrap(),
+        Ok(psf1) => psf1,
         Err(e) => {
             info!("Cant find {:?}", e);
             loop {}
@@ -44,7 +48,7 @@ pub fn load_psf1_font(boot_services: &BootServices, root: &mut Directory, path: 
     };
 
     // Font must be a file
-    let mut psf1 = match psf1.into_type().unwrap().expect("Failed to get psf1 font") {
+    let mut psf1 = match psf1.into_type().expect("Failed to get psf1 font") {
         FileType::Regular(file) => file,
         FileType::Dir(_) => {
             info!("psf1 is a dir ???");
@@ -57,13 +61,12 @@ pub fn load_psf1_font(boot_services: &BootServices, root: &mut Directory, path: 
         let size = 0x1000;
         let ptr = boot_services
             .allocate_pool(MemoryType::LOADER_DATA, size)
-            .unwrap()
             .unwrap();
         unsafe { slice::from_raw_parts_mut(ptr, size) }
     };
 
     let info = match File::get_info::<FileInfo>(&mut psf1, &mut info_buffer) {
-        Ok(file) => file.unwrap(),
+        Ok(file) => file,
         Err(e) if e.status() == Status::BUFFER_TOO_SMALL => {
             panic!("Buffer too small");
         }
@@ -77,13 +80,12 @@ pub fn load_psf1_font(boot_services: &BootServices, root: &mut Directory, path: 
         let size = core::mem::size_of::<PSF1FontHeader>();
         let ptr = boot_services
             .allocate_pool(MemoryType::LOADER_DATA, size)
-            .unwrap()
             .unwrap();
         unsafe { slice::from_raw_parts_mut(ptr, size) }
     };
 
     // let mut psf1_font = vec![0; core::mem::size_of::<PSF1FontHeader>()];
-    let _bytes_read = psf1.read(&mut psf1_font_header_buffer).unwrap().unwrap();
+    let _bytes_read = psf1.read(&mut psf1_font_header_buffer).unwrap();
 
     let psf1_font_header = unsafe { psf1_font_header_buffer.align_to::<PSF1FontHeader>().1[0] };
 
@@ -102,24 +104,22 @@ pub fn load_psf1_font(boot_services: &BootServices, root: &mut Directory, path: 
         let size = glyph_buffer_size;
         let ptr = boot_services
             .allocate_pool(MemoryType::LOADER_DATA, size)
-            .unwrap()
             .unwrap();
         unsafe { slice::from_raw_parts_mut(ptr, size) }
     };
 
-    let _bytes_read = psf1.read(&mut psf1_font).unwrap().unwrap();
+    let _bytes_read = psf1.read(&mut psf1_font).unwrap();
 
     let mut unicode_table_buffer = {
         let size =
             info.file_size() as usize - glyph_buffer_size - core::mem::size_of::<PSF1FontHeader>();
         let ptr = boot_services
             .allocate_pool(MemoryType::LOADER_DATA, size)
-            .unwrap()
             .unwrap();
         unsafe { slice::from_raw_parts_mut(ptr, size) }
     };
 
-    let _bytes_read = psf1.read(&mut unicode_table_buffer).unwrap().unwrap();
+    let _bytes_read = psf1.read(&mut unicode_table_buffer).unwrap();
 
     return PSF1Font {
         psf1_header: psf1_font_header,

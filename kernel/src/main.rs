@@ -7,7 +7,6 @@ extern crate alloc;
 #[macro_use]
 extern crate kernel;
 
-use core::arch::asm;
 use core::ptr::slice_from_raw_parts_mut;
 
 use ::acpi::{AcpiError, RsdpError};
@@ -18,7 +17,7 @@ use kernel::paging::identity_map::identity_map;
 use kernel::paging::page_allocator::{request_page, GLOBAL_FRAME_ALLOCATOR};
 use kernel::paging::page_table_manager::PageTableManager;
 use kernel::pci::enumerate_pci;
-use kernel::pit::{set_frequency, start_switching_tasks};
+use kernel::pit::{set_divisor, set_frequency, start_switching_tasks};
 use kernel::ps2::PS2Controller;
 use kernel::screen::gop::{self, WRITER};
 use kernel::syscall::{exit, sleep, spawn_thread, yield_now};
@@ -94,7 +93,8 @@ pub fn main(info: *const BootInfo) -> ! {
     x86_64::instructions::interrupts::enable();
 
     // Set PIC timer frequency
-    set_frequency(100);
+    // set_frequency(100);
+    set_divisor(65535);
 
     spawn_thread(|| {
         log!("Initalizing PS2 devices...");

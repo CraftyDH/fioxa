@@ -74,7 +74,7 @@ impl Keyboard {
 
     pub fn check_packets(&mut self) {
         if let Ok(queue) = SCANCODE_QUEUE.try_get() {
-            while let Ok(scan_code) = queue.pop() {
+            while let Some(scan_code) = queue.pop() {
                 self.handle_code(scan_code)
             }
         }

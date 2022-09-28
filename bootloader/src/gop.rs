@@ -15,8 +15,8 @@ pub struct GopInfo {
 }
 
 pub fn initialize_gop(bt: &uefi::table::boot::BootServices) -> &mut GraphicsOutput {
-    let gop = match bt.locate_protocol::<GraphicsOutput>() {
-        Ok(status) => unsafe { &mut *status.unwrap().get() },
+    let gop = match unsafe { bt.locate_protocol::<GraphicsOutput>() } {
+        Ok(status) => unsafe { &mut *status.get() },
         Err(e) => {
             error!("Cannot locate GOP: {:?}", e);
             loop {}
@@ -36,7 +36,7 @@ pub fn initialize_gop(bt: &uefi::table::boot::BootServices) -> &mut GraphicsOutp
     let mut best_mode = None;
 
     for mode in gop.modes() {
-        let mode = mode.unwrap();
+        let mode = mode;
         let info = mode.info();
         let (x, y) = info.resolution();
         if x <= maxx && y <= maxy {
@@ -48,15 +48,17 @@ pub fn initialize_gop(bt: &uefi::table::boot::BootServices) -> &mut GraphicsOutp
         // let mode = modes.last().unwrap();
         info!("{:?}", mode.info());
 
-        let gop2 = match bt.locate_protocol::<GraphicsOutput>() {
-            Ok(status) => unsafe { &mut *status.unwrap().get() },
-            Err(e) => {
-                error!("Cannot locate GOP: {:?}", e);
-                loop {}
-            }
-        };
+        gop.set_mode(&mode).unwrap();
 
-        gop2.set_mode(&mode).unwrap().unwrap();
+        // let gop2 = match unsafe { bt.locate_protocol::<GraphicsOutput>() } {
+        //     Ok(status) => unsafe { &mut *status.get() },
+        //     Err(e) => {
+        //         error!("Cannot locate GOP: {:?}", e);
+        //         loop {}
+        //     }
+        // };
+
+        // gop2.set_mode(&mode).unwrap();
     }
     gop
 }

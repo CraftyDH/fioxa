@@ -51,6 +51,7 @@ static PACKET_0: AtomicU8 = AtomicU8::new(0);
 static PACKET_1: AtomicU8 = AtomicU8::new(0);
 static PACKET_2: AtomicU8 = AtomicU8::new(0);
 
+#[derive(Debug)]
 enum MousePacketState {
     ThreePackets(u8, u8, u8),
     FourPackets(u8, u8, u8, u8),
@@ -131,7 +132,7 @@ impl Mouse {
 
     pub fn check_packets(&mut self) {
         if let Ok(packet_queue) = MOUSEPACKET_QUEUE.try_get() {
-            while let Ok(packet) = packet_queue.pop() {
+            while let Some(packet) = packet_queue.pop() {
                 self.handle_packet(packet)
             }
         }
