@@ -1,8 +1,11 @@
 use core::sync::atomic::AtomicPtr;
 
+use uefi::proto::console::gop::BltOp;
+use uefi::proto::console::gop::BltPixel;
 use uefi::proto::console::gop::GraphicsOutput;
 
 use uefi::proto::console::gop::PixelFormat;
+use uefi::table::boot::ScopedProtocol;
 
 #[derive(Debug)]
 pub struct GopInfo {
@@ -14,14 +17,11 @@ pub struct GopInfo {
     pub pixel_format: PixelFormat,
 }
 
-pub fn initialize_gop(bt: &uefi::table::boot::BootServices) -> &mut GraphicsOutput {
-    let gop = match unsafe { bt.locate_protocol::<GraphicsOutput>() } {
-        Ok(status) => unsafe { &mut *status.get() },
-        Err(e) => {
-            error!("Cannot locate GOP: {:?}", e);
-            loop {}
-        }
-    };
+pub fn initialize_gop(bt: &uefi::table::boot::BootServices) -> ScopedProtocol<GraphicsOutput> {
+    let mut gop = bt
+        .get_handle_for_protocol::<GraphicsOutput>()
+        .and_then(|handle| bt.open_protocol_exclusive::<GraphicsOutput>(handle))
+        .unwrap();
 
     // The max resolution to choose
     // let maxx = 1600;
@@ -44,28 +44,17 @@ pub fn initialize_gop(bt: &uefi::table::boot::BootServices) -> &mut GraphicsOutp
         }
     }
 
-    if let Some(mode) = best_mode {
-        // let mode = modes.last().unwrap();
-        info!("{:?}", mode.info());
+    if let Some(mode) = &best_mode {
+        info!("Choosing GOP mode: {:?}", mode.info());
 
         gop.set_mode(&mode).unwrap();
-
-        // let gop2 = match unsafe { bt.locate_protocol::<GraphicsOutput>() } {
-        //     Ok(status) => unsafe { &mut *status.get() },
-        //     Err(e) => {
-        //         error!("Cannot locate GOP: {:?}", e);
-        //         loop {}
-        //     }
-        // };
-
-        // gop2.set_mode(&mode).unwrap();
     }
+
     gop
 }
 
 pub fn get_gop_info(gop: &mut GraphicsOutput) -> GopInfo {
     let gopinfo = gop.current_mode_info();
-    gopinfo.pixel_format();
     let mut gopbuf = gop.frame_buffer();
     let (horizonal, vertical) = gopinfo.resolution();
 

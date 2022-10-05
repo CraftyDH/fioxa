@@ -7,35 +7,51 @@ extern crate alloc;
 #[macro_use]
 extern crate kernel;
 
+use core::ffi::c_void;
 use core::ptr::slice_from_raw_parts_mut;
 
 use ::acpi::{AcpiError, RsdpError};
 use bootloader::{entry_point, BootInfo};
 use kernel::interrupts::{self};
 
+use kernel::memory::MemoryMapIter;
 use kernel::paging::identity_map::identity_map;
 use kernel::paging::page_allocator::{request_page, GLOBAL_FRAME_ALLOCATOR};
 use kernel::paging::page_table_manager::PageTableManager;
 use kernel::pci::enumerate_pci;
-use kernel::pit::{set_divisor, set_frequency, start_switching_tasks};
+use kernel::pit::{set_divisor, start_switching_tasks};
 use kernel::ps2::PS2Controller;
 use kernel::screen::gop::{self, WRITER};
+use kernel::screen::psf1;
 use kernel::syscall::{exit, sleep, spawn_thread, yield_now};
+use kernel::uefi::get_config_table;
 use kernel::{allocator, gdt, paging};
 use spin::mutex::Mutex;
+use uefi::table::cfg::ACPI2_GUID;
+use uefi::table::runtime::ResetType;
+use uefi::table::{Runtime, SystemTable};
+use uefi::Status;
 
 // #[no_mangle]
 entry_point!(main);
 pub fn main(info: *const BootInfo) -> ! {
     let boot_info = unsafe { core::ptr::read(info) };
 
-    gop::WRITER.lock().set_gop(boot_info.gop, boot_info.font);
+    let font = psf1::load_psf1_font(boot_info.font);
+
+    gop::WRITER.lock().set_gop(boot_info.gop, font);
     // Test screen colours
     // gop::WRITER.lock().fill_screen(0xFF_00_00);
     // gop::WRITER.lock().fill_screen(0x00_FF_00);
     // gop::WRITER.lock().fill_screen(0x00_00_FF);
     gop::WRITER.lock().fill_screen(0);
     log!("Welcome to Fioxa...");
+
+    log!("Getting UEFI runtime table");
+    let runtime_table =
+        unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
+            .unwrap();
+    let runtime_services = unsafe { runtime_table.runtime_services() };
 
     log!("Disabling interrupts...");
     x86_64::instructions::interrupts::disable();
@@ -48,10 +64,17 @@ pub fn main(info: *const BootInfo) -> ! {
 
     // Init the frame allocator
     log!("Initializing Frame Allocator...");
-    let mmap = unsafe { &*slice_from_raw_parts_mut(boot_info.mmap, boot_info.mmap_size) };
+
+    let mmap_buf = unsafe {
+        &*slice_from_raw_parts_mut(
+            boot_info.mmap_buf,
+            boot_info.mmap_len * boot_info.mmap_entry_size,
+        )
+    };
+    let mmap = MemoryMapIter::new(mmap_buf, boot_info.mmap_entry_size, boot_info.mmap_len);
 
     GLOBAL_FRAME_ALLOCATOR.init_once(|| {
-        let allocator = unsafe { paging::page_allocator::PageFrameAllocator::new(mmap) };
+        let allocator = unsafe { paging::page_allocator::PageFrameAllocator::new(mmap.clone()) };
         Mutex::new(allocator)
     });
 
@@ -85,9 +108,7 @@ pub fn main(info: *const BootInfo) -> ! {
     allocator::init_heap(&mut page_table_mngr).expect("Heap initialization failed");
 
     // Set unicode mapping buffer (for more chacters than ascii)
-    WRITER
-        .lock()
-        .generate_unicode_mapping(boot_info.font.unicode_buffer);
+    WRITER.lock().generate_unicode_mapping(font.unicode_buffer);
 
     log!("Enabling interrupts");
     x86_64::instructions::interrupts::enable();
@@ -110,22 +131,26 @@ pub fn main(info: *const BootInfo) -> ! {
         }
     });
 
-    spawn_thread(|| {
+    let config_tables = runtime_table.config_table();
+
+    let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
+        .ok_or(AcpiError::Rsdp(RsdpError::NoValidRsdp))
+        .and_then(|acpi2_table| kernel::acpi::prepare_acpi(acpi2_table.address as usize))
+        .unwrap();
+
+    spawn_thread(move || {
         log!("Enumnerating PCI...");
 
-        // Convert option to AcpiError
-        let rsdp = boot_info
-            .rsdp_address
-            .ok_or(AcpiError::Rsdp(RsdpError::NoValidRsdp));
-        let acpi_tables = rsdp.and_then(|r| kernel::acpi::prepare_acpi(r));
         enumerate_pci(acpi_tables);
     });
 
     spawn_thread(|| {
-        for i in 0.. {
-            println!("UPTIME: {i}s");
+        for i in (0..100).rev() {
+            println!("Time to shutdown: {i}s");
             sleep(1000);
         }
+        println!("Shutting down");
+        runtime_services.reset(ResetType::Shutdown, Status::SUCCESS, None);
     });
 
     start_switching_tasks();

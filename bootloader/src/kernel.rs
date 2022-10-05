@@ -5,6 +5,8 @@ use uefi::{
     table::boot::{AllocateType, MemoryType},
 };
 
+use crate::OwnedBuffer;
+
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct Elf64Ehdr {
@@ -47,9 +49,9 @@ const EM_X86_64: u16 = 62; // AMD x86-64 architecture
 // For the ELF Program Header https://refspecs.linuxbase.org/elf/gabi4+/ch5.pheader.html
 const PT_LOAD: u32 = 1; // A loadable segment
 
-pub fn load_kernel(boot_services: &BootServices, kernel_data: &[u8]) -> u64 {
+pub fn load_kernel(boot_services: &BootServices, kernel_data: OwnedBuffer) -> u64 {
     // Transpose the header as an elf header
-    let elf_header = unsafe { *(kernel_data.as_ptr() as *const Elf64Ehdr) };
+    let elf_header = unsafe { *(kernel_data.buf.as_ptr() as *const Elf64Ehdr) };
     // Ensure that all the header flags are suitable
     if &elf_header.e_ident[0..6]
         == [
@@ -77,7 +79,7 @@ pub fn load_kernel(boot_services: &BootServices, kernel_data: &[u8]) -> u64 {
 
     for program_header_ptr in headers.clone() {
         let program_header = unsafe {
-            *(kernel_data.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr)
+            *(kernel_data.buf.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr)
         };
         base = min(base, program_header.p_vaddr);
         size = max(size, program_header.p_vaddr + program_header.p_memsz);
@@ -106,12 +108,13 @@ pub fn load_kernel(boot_services: &BootServices, kernel_data: &[u8]) -> u64 {
     for program_header_ptr in headers {
         // Transpose the program header as an elf header
         let program_header = unsafe {
-            *(kernel_data.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr)
+            *(kernel_data.buf.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr)
         };
         if program_header.p_type == PT_LOAD {
             unsafe {
                 core::ptr::copy::<u8>(
                     kernel_data
+                        .buf
                         .as_ptr()
                         .offset(program_header.p_offset.try_into().unwrap()),
                     program_header.p_vaddr as *mut u8,

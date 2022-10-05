@@ -7,8 +7,8 @@
 #![feature(naked_functions)]
 #![feature(fn_traits)]
 //* Testing
-#![feature(custom_test_frameworks)]
-#![test_runner(test_runner)]
+// #![feature(custom_test_frameworks)]
+// #![test_runner(test_runner)]
 #![feature(panic_info_message)]
 
 //* */
@@ -30,6 +30,7 @@ pub mod pci;
 pub mod pit;
 pub mod ps2;
 pub mod syscall;
+pub mod uefi;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {

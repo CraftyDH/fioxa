@@ -4,7 +4,9 @@ use bitvec::view::BitView;
 use conquer_once::spin::OnceCell;
 
 use spin::mutex::Mutex;
-use uefi::table::boot::{MemoryDescriptor, MemoryType};
+use uefi::table::boot::MemoryType;
+
+use crate::memory::MemoryMapIter;
 
 pub static GLOBAL_FRAME_ALLOCATOR: OnceCell<Mutex<PageFrameAllocator>> = OnceCell::uninit();
 
@@ -35,17 +37,15 @@ pub struct PageFrameAllocator<'bit> {
 
 impl<'mmap, 'bit> PageFrameAllocator<'bit> {
     /// Unsafe because this must only be called once (ever) since it hands out pages based on it's own state
-    pub unsafe fn new(mmap: &'mmap [MemoryDescriptor]) -> Self {
+    pub unsafe fn new(mmap: MemoryMapIter) -> Self {
         // Can inner self to get safe type checking
         Self::new_inner(mmap)
     }
 
-    fn new_inner(mmap: &'mmap [MemoryDescriptor]) -> Self {
+    fn new_inner(mmap: MemoryMapIter) -> Self {
         // Memory types we will use
-        let conventional = mmap
-            .clone()
-            .iter()
-            .filter(|r| r.ty == MemoryType::CONVENTIONAL && r.phys_start > 0x100 * 0x1000);
+        let conventional =
+            mmap.filter(|r| r.ty == MemoryType::CONVENTIONAL && r.phys_start > 0x100 * 0x1000);
 
         let memory_regions_cnt = conventional.clone().count();
 

@@ -1,6 +1,5 @@
 use crate::{acpi::FioxaAcpiHandler, pci::mcfg::get_mcfg};
 
-use acpi::AcpiError;
 use alloc::{boxed::Box, format};
 
 mod express;
@@ -9,9 +8,9 @@ mod mcfg;
 mod pci_descriptors;
 mod port_based;
 
-pub fn enumerate_pci(acpi_tables: Result<acpi::AcpiTables<FioxaAcpiHandler>, AcpiError>) {
+pub fn enumerate_pci(acpi_tables: acpi::AcpiTables<FioxaAcpiHandler>) {
     // Get MCFG
-    let mcfg = acpi_tables.and_then(|acpi| get_mcfg(&acpi));
+    let mcfg = get_mcfg(&acpi_tables);
 
     // Enumerate PCI using mcfg;
     match &mcfg {

@@ -1,5 +1,3 @@
-use core::slice;
-
 use uefi::{
     prelude::BootServices,
     proto::{
@@ -10,41 +8,49 @@ use uefi::{
             fs::SimpleFileSystem,
         },
     },
-    table::boot::MemoryType,
-    CStr16, Handle, Status,
+    CStr16, Error, Handle, Status,
 };
 
-pub unsafe fn get_root_fs(boot_services: &BootServices, image_handle: Handle) -> Directory {
-    let loaded_image = boot_services
-        .handle_protocol::<LoadedImage>(image_handle)
-        .expect("Failed to get Loaded Image from the Handle");
-    let loaded_image = unsafe { &*loaded_image.get() };
+use crate::{get_buffer, OwnedBuffer};
 
-    let device_path = boot_services
-        .handle_protocol::<DevicePath>(loaded_image.device())
-        .expect("Failed to get Device Path from image Handle");
-    let device_path = unsafe { &mut &*device_path.get() };
-
-    let device_handle = boot_services
-        .locate_device_path::<SimpleFileSystem>(device_path)
-        .unwrap();
-
-    let fs = boot_services
-        .handle_protocol::<SimpleFileSystem>(device_handle)
-        .unwrap();
-
-    // Get access to the pointer
-    let fs = unsafe { &mut *fs.get() };
-
-    // Open the root directory aka "/"
-    fs.open_volume().unwrap()
+pub unsafe fn get_root_fs(
+    boot_services: &BootServices,
+    image_handle: Handle,
+) -> Result<Directory, Error> {
+    boot_services
+        // Get a pointer to the load image UEFI table
+        .open_protocol_exclusive::<LoadedImage>(image_handle)
+        // Get a pointer to the boot device (aka what disk we are currently on)
+        .and_then(|loaded_image| {
+            boot_services.open_protocol_exclusive::<DevicePath>(loaded_image.device())
+        })
+        // Find a pointer to the simple file system
+        .and_then(|device_path| {
+            boot_services.locate_device_path::<SimpleFileSystem>(&mut &*device_path)
+        })
+        // Open the simple file system, with us as the only consumer
+        .and_then(|sfs_handle| {
+            boot_services.open_protocol_exclusive::<SimpleFileSystem>(sfs_handle)
+        })
+        // Open the root directory aka "/"
+        .and_then(|mut fs| fs.open_volume())
 }
 
-pub fn read_file(
-    boot_services: &BootServices,
+pub fn read_file<'b, 's>(
+    boot_services: &'b BootServices,
     root: &mut Directory,
     path: &CStr16,
-) -> Result<&'static [u8], &'static str> {
+) -> Result<OwnedBuffer<'b, 's>, &'static str> {
+    let buf = unsafe { read_file_no_drop(boot_services, root, path)? };
+    Ok(OwnedBuffer::from_buf(boot_services, buf))
+}
+
+/// Unsafe because it doesn't drop the buffer
+pub unsafe fn read_file_no_drop<'b, 's>(
+    boot_services: &'b BootServices,
+    root: &mut Directory,
+    path: &CStr16,
+) -> Result<&'s mut [u8], &'static str> {
     // Find the file and open it
     let file = match File::open(root, path, FileMode::Read, FileAttribute::READ_ONLY) {
         Ok(file) => file,
@@ -60,26 +66,12 @@ pub fn read_file(
     };
 
     // 0x1000 Bytes for the header should be suffient
-    let mut info_buffer = {
-        let size = 0x1000;
-        let ptr = boot_services
-            .allocate_pool(MemoryType::LOADER_DATA, size)
-            .unwrap();
-        unsafe { slice::from_raw_parts_mut(ptr, size) }
-    };
+    let mut info_buffer = OwnedBuffer::new(boot_services, 0x1000);
 
-    let info = match File::get_info::<FileInfo>(&mut file, &mut info_buffer) {
+    let info = match File::get_info::<FileInfo>(&mut file, &mut info_buffer.buf) {
         Ok(file) => file,
         Err(e) if e.status() == Status::BUFFER_TOO_SMALL => {
-            panic!("Buffer too small");
-            // // Header needs a bigger buffer :(
-            // let size = e.data().unwrap();
-            // // Increase buffer to size requested
-            // info_buffer.resize(size, 0);
-            // // This time size should be right panic otherwise.
-            // File::get_info::<FileInfo>(&mut file, &mut info_buffer)
-            //     .expect("Incorrect size given")
-            //     .unwrap()
+            panic!("File header buffer too small");
         }
         Err(e) => {
             error!("{:?} : {:?}", e.status(), e.data());
@@ -88,15 +80,9 @@ pub fn read_file(
     };
 
     // Read the file
-    let mut data_buffer = {
-        let size = info.file_size() as usize;
-        let ptr = boot_services
-            .allocate_pool(MemoryType::LOADER_DATA, size)
-            .unwrap();
-        unsafe { slice::from_raw_parts_mut(ptr, size) }
-    };
+    let data_buffer = unsafe { get_buffer(boot_services, info.file_size() as usize) };
 
-    let bytes_read = file.read(&mut data_buffer).unwrap();
+    let bytes_read = file.read(data_buffer).unwrap();
 
     // Check that we read all of the kernel
     if bytes_read as u64 != info.file_size() {

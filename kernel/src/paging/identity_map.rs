@@ -1,10 +1,11 @@
-use uefi::table::boot::MemoryDescriptor;
-
-use crate::{memory::get_memory_size_pages, screen::gop::WRITER};
+use crate::{
+    memory::{get_memory_size_pages, MemoryMapIter},
+    screen::gop::WRITER,
+};
 
 use super::page_table_manager::PageTableManager;
 
-pub fn identity_map(mapper: &mut PageTableManager, mmap: &[MemoryDescriptor]) {
+pub fn identity_map(mapper: &mut PageTableManager, mmap: MemoryMapIter) {
     for i in 0..get_memory_size_pages(mmap) + 1 {
         if i % 10000 == 0 {
             print!(".");

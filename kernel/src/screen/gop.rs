@@ -1,6 +1,5 @@
 use alloc::collections::BTreeMap;
 use bootloader::gop::GopInfo;
-use bootloader::psf1::{PSF1Font, PSF1_FONT_NULL};
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
 use lazy_static::lazy_static;
@@ -277,6 +276,10 @@ macro_rules! colour {
 }
 
 use core::fmt::Arguments;
+
+use crate::screen::psf1::PSF1_FONT_NULL;
+
+use super::psf1::PSF1Font;
 
 #[doc(hidden)]
 pub fn _print(args: Arguments) {
