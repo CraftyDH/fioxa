@@ -2,14 +2,13 @@
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)] // We need to be able to create the error handler
 #![feature(const_mut_refs)]
-//* IDK, BUT the wrapper function needs it */
-#![feature(asm_sym)]
 #![feature(naked_functions)]
 #![feature(fn_traits)]
 //* Testing
 // #![feature(custom_test_frameworks)]
 // #![test_runner(test_runner)]
 #![feature(panic_info_message)]
+#![feature(const_for)]
 
 //* */
 #[macro_use]
@@ -20,17 +19,21 @@ pub mod screen;
 pub mod acpi;
 pub mod allocator;
 pub mod assembly;
+pub mod driver;
+pub mod fs;
 pub mod gdt;
 pub mod interrupts;
 pub mod locked_mutex;
 pub mod memory;
 pub mod multitasking;
+pub mod net;
 pub mod paging;
 pub mod pci;
 pub mod pit;
 pub mod ps2;
 pub mod syscall;
 pub mod uefi;
+// pub mod ahci;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {

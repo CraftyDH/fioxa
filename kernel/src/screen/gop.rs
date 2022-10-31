@@ -22,7 +22,6 @@ pub struct Writer {
 
 impl Writer {
     pub fn set_gop(&mut self, gop: GopInfo, font: PSF1Font) {
-        // self.pos = Pos { x: 0, y: 0 };
         self.gop = gop;
 
         self.font = font;
@@ -70,7 +69,7 @@ impl Writer {
                 // Fancy math to check if bit is on.
                 if (glyph & (0b10_000_000 >> (x - xoff))) > 0 {
                     let loc = (x + (y * self.gop.stride)) * 4;
-                    unsafe { core::ptr::write(ptr.add(loc) as *mut u32, colour) }
+                    unsafe { core::ptr::write_volatile(ptr.add(loc) as *mut u32, colour) }
                 }
             }
             addr += 1;
@@ -79,13 +78,11 @@ impl Writer {
 
     pub fn fill_screen(&mut self, colour: u32) {
         unsafe {
-            let buf = self.gop.buffer.get_mut();
+            let buf = (*self.gop.buffer.get_mut()) as *mut u32;
+
             for y in 0..self.gop.vertical {
                 for x in 0..self.gop.horizonal {
-                    core::ptr::write_volatile(
-                        buf.add((y * self.gop.stride + x) * 4) as *mut u32,
-                        colour,
-                    )
+                    core::ptr::write_volatile(buf.add(y * self.gop.stride + x), colour);
                 }
             }
         }
@@ -192,36 +189,25 @@ impl Writer {
         let max = self.gop.vertical - (self.gop.vertical % 16);
         // Check if next line will excede height
         if self.pos.y + 16 > max {
-            // Start copying line line in
-            let size_of_line = 16 * 4 * self.gop.stride;
-            // self.gop.vertical;
-            // As such copy the hole buffer less that line
-            let size_of_buffer = (self.gop.horizonal * 4 * self.gop.vertical) - size_of_line;
-
             let buf = self.gop.buffer.get_mut();
             unsafe {
                 // Copy memory from bottom to top (aka scroll)
-                core::ptr::copy(buf.offset(size_of_line as isize), *buf, size_of_buffer);
-                core::ptr::write_bytes(buf.offset(size_of_buffer as isize), 0, size_of_line);
-
-                // Naive implementation
-                // for l in 16..max {
-                //     core::ptr::copy_nonoverlapping(
-                //         buf.offset((l * self.gop.stride * 4) as isize),
-                //         buf.offset(((l - 16) * self.gop.stride * 4) as isize),
-                //         self.gop.horizonal * 4,
-                //     );
-                // }
-
-                // for l in (max - 16)..max {
-                //     core::ptr::write_bytes(
-                //         buf.offset((l * self.gop.stride * 4) as isize),
-                //         0,
-                //         self.gop.horizonal * 4,
-                //     )
-                // }
+                for l in 16..max {
+                    core::ptr::copy_nonoverlapping(
+                        buf.offset((l * self.gop.stride * 4) as isize),
+                        buf.offset(((l - 16) * self.gop.stride * 4) as isize),
+                        self.gop.horizonal * 4,
+                    )
+                }
 
                 // Clear the bottom line by writing zeros
+                for l in (max - 16)..self.gop.vertical {
+                    core::ptr::write_bytes(
+                        buf.offset((l * self.gop.stride * 4) as isize),
+                        0,
+                        self.gop.horizonal * 4,
+                    )
+                }
             }
 
             self.pos.y -= 16;

@@ -1,5 +1,5 @@
 use super::{
-    page_allocator::request_page,
+    page_allocator::{free_page, request_page},
     page_directory::{PageDirectoryEntry, PageTable},
     page_map_index::PageMapIndexer,
 };
@@ -38,19 +38,59 @@ impl PageTableManager {
         let indexer = PageMapIndexer::new(virtual_memory);
         let pml4 = unsafe { &mut *(self.page_lvl4_addr as *mut PageTable) };
 
-        let pdp = Self::get_table(&mut pml4.entries[indexer.pdp_i as usize]);
+        let pdp = Self::get_table(&mut pml4.entries[indexer.pdp_i as usize])
+            .ok_or("Couldn't read pdp")?;
 
-        let pd = pdp.and_then(|pdp| Self::get_table(&mut pdp.entries[indexer.pd_i as usize]));
+        let pd =
+            Self::get_table(&mut pdp.entries[indexer.pd_i as usize]).ok_or("Couldn't read pd")?;
 
-        let pt = pd.and_then(|pd| Self::get_table(&mut pd.entries[indexer.pt_i as usize]));
+        let pt =
+            Self::get_table(&mut pd.entries[indexer.pt_i as usize]).ok_or("Couldn't read pt")?;
 
-        pt.ok_or("Could not traverse pml4 tree").and_then(|pt| {
-            let pde = &mut pt.entries[indexer.p_i as usize];
-            pde.set_present(false);
-            pde.set_address(0);
-            Ok(Flusher(virtual_memory))
-        })
-        // TODO: Free pages
+        let pde = &mut pt.entries[indexer.p_i as usize];
+        pde.set_present(false);
+        pde.set_address(0);
+
+        // Free mapping pages if possible
+        if pt.has_entries() {
+            let entry = &mut pd.entries[indexer.pt_i as usize];
+            free_page(entry.get_address());
+            entry.set_present(false);
+            entry.set_address(0);
+        }
+
+        if pd.has_entries() {
+            let entry = &mut pdp.entries[indexer.pd_i as usize];
+            free_page(entry.get_address());
+            entry.set_present(false);
+            entry.set_address(0);
+        }
+
+        if pdp.has_entries() {
+            let entry = &mut pml4.entries[indexer.pdp_i as usize];
+            free_page(entry.get_address());
+            entry.set_present(false);
+            entry.set_address(0);
+        }
+
+        Ok(Flusher(virtual_memory))
+    }
+
+    pub fn get_phys_addr(&self, virtual_memory: u64) -> Result<u64, &str> {
+        let indexer = PageMapIndexer::new(virtual_memory);
+        let pml4 = unsafe { &mut *(self.page_lvl4_addr as *mut PageTable) };
+
+        let pdp = Self::get_table(&mut pml4.entries[indexer.pdp_i as usize])
+            .ok_or("Couldn't read pdp")?;
+
+        let pd =
+            Self::get_table(&mut pdp.entries[indexer.pd_i as usize]).ok_or("Couldn't read pd")?;
+
+        let pt =
+            Self::get_table(&mut pd.entries[indexer.pt_i as usize]).ok_or("Couldn't read pt")?;
+
+        let pde = &mut pt.entries[indexer.p_i as usize];
+        Ok(pde.get_address())
     }
 }
 
@@ -80,10 +120,6 @@ impl PageTableManager {
         pde.set_present(true);
         pde.set_read_write(true);
         Some(pdp)
-    }
-
-    fn check_del_table(pde: &mut PageTable) -> bool {
-        pde.entries.iter().all(|pde| !pde.present())
     }
 
     pub fn load_into_cr3(&self) {

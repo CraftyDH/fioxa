@@ -1,7 +1,5 @@
 use core::sync::atomic::AtomicPtr;
 
-use uefi::proto::console::gop::BltOp;
-use uefi::proto::console::gop::BltPixel;
 use uefi::proto::console::gop::GraphicsOutput;
 
 use uefi::proto::console::gop::PixelFormat;

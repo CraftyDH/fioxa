@@ -1,10 +1,10 @@
-if exist \EFI\BOOT\BootX64.efi then
- \EFI\BOOT\BootX64.efi
+if exist \EFI\BOOT\BOOTx64.efi then
+ \EFI\BOOT\BOOTx64.efi
  goto END
 endif
 
-if exist fs0:\EFI\BOOT\BootX64.efi then
- fs0:\EFI\BOOT\BootX64.efi
+if exist fs0:\EFI\BOOT\BOOTx64.efi then
+ fs0:\EFI\BOOT\BOOTx64.efi
  goto END
 endif
 

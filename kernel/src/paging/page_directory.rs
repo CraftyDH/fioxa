@@ -37,3 +37,9 @@ impl PageDirectoryEntry {
 pub struct PageTable {
     pub entries: [PageDirectoryEntry; 512],
 }
+
+impl PageTable {
+    pub fn has_entries(&mut self) -> bool {
+        self.entries.iter().all(|pde| !pde.present())
+    }
+}

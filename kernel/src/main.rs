@@ -15,8 +15,9 @@ use bootloader::{entry_point, BootInfo};
 use kernel::interrupts::{self};
 
 use kernel::memory::MemoryMapIter;
+use kernel::net::ethernet::{ethernet_task, lookup_ip};
 use kernel::paging::identity_map::identity_map;
-use kernel::paging::page_allocator::{request_page, GLOBAL_FRAME_ALLOCATOR};
+use kernel::paging::page_allocator::request_page;
 use kernel::paging::page_table_manager::PageTableManager;
 use kernel::pci::enumerate_pci;
 use kernel::pit::{set_divisor, start_switching_tasks};
@@ -26,7 +27,6 @@ use kernel::screen::psf1;
 use kernel::syscall::{exit, sleep, spawn_thread, yield_now};
 use kernel::uefi::get_config_table;
 use kernel::{allocator, gdt, paging};
-use spin::mutex::Mutex;
 use uefi::table::cfg::ACPI2_GUID;
 use uefi::table::runtime::ResetType;
 use uefi::table::{Runtime, SystemTable};
@@ -44,6 +44,7 @@ pub fn main(info: *const BootInfo) -> ! {
     // gop::WRITER.lock().fill_screen(0xFF_00_00);
     // gop::WRITER.lock().fill_screen(0x00_FF_00);
     // gop::WRITER.lock().fill_screen(0x00_00_FF);
+    log!("Fill screen");
     gop::WRITER.lock().fill_screen(0);
     log!("Welcome to Fioxa...");
 
@@ -73,10 +74,7 @@ pub fn main(info: *const BootInfo) -> ! {
     };
     let mmap = MemoryMapIter::new(mmap_buf, boot_info.mmap_entry_size, boot_info.mmap_len);
 
-    GLOBAL_FRAME_ALLOCATOR.init_once(|| {
-        let allocator = unsafe { paging::page_allocator::PageFrameAllocator::new(mmap.clone()) };
-        Mutex::new(allocator)
-    });
+    unsafe { paging::page_allocator::init(mmap.clone()) };
 
     let pml4_addr = request_page().unwrap();
 
@@ -114,7 +112,7 @@ pub fn main(info: *const BootInfo) -> ! {
     x86_64::instructions::interrupts::enable();
 
     // Set PIC timer frequency
-    // set_frequency(100);
+    // set_frequency(60);
     set_divisor(65535);
 
     spawn_thread(|| {
@@ -142,7 +140,18 @@ pub fn main(info: *const BootInfo) -> ! {
         log!("Enumnerating PCI...");
 
         enumerate_pci(acpi_tables);
+
+        for i in 0..255 {
+            let ip = kernel::net::ethernet::IPAddr::V4(192, 168, 1, i);
+            println!(
+                "IP: {:?} has MAC: {:#X}",
+                &ip,
+                lookup_ip(ip.clone()).unwrap_or(u64::MAX >> 4)
+            );
+        }
     });
+
+    spawn_thread(ethernet_task);
 
     spawn_thread(|| {
         for i in (0..100).rev() {

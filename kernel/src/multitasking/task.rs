@@ -8,7 +8,11 @@ use x86_64::{
 use crate::{
     assembly::registers::Registers,
     gdt::GDT,
-    paging::{page_allocator::request_page, page_table_manager::PageTableManager},
+    paging::{
+        get_uefi_active_mapper,
+        page_allocator::{free_page, request_page},
+        page_table_manager::PageTableManager,
+    },
 };
 
 use super::{taskmanager::THREAD_BOOTSTRAPER, Task, TaskID, STACK_ADDR, STACK_SIZE};
@@ -38,11 +42,21 @@ impl Task {
             id: TaskID::new(),
             state_isf,
             state_reg: Registers::default(),
+            stack_base,
         }
     }
 
     pub fn save(&mut self, stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
         self.state_isf = stack_frame.clone();
         self.state_reg = regs.clone();
+    }
+}
+
+impl Drop for Task {
+    fn drop(&mut self) {
+        let mapper = unsafe { get_uefi_active_mapper() };
+        for addr in (self.stack_base..(self.stack_base + STACK_SIZE as u64)).step_by(0x1000) {
+            free_page(mapper.get_phys_addr(addr).unwrap()).unwrap();
+        }
     }
 }

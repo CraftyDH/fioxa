@@ -9,7 +9,7 @@ use crate::assembly::registers::Registers;
 
 // Start stack at this address
 static STACK_ADDR: AtomicU64 = AtomicU64::new(0x100_000_000_000);
-const STACK_SIZE: usize = 0x10000; // 64 Kb;
+const STACK_SIZE: usize = 1024 * 1024; // 1 Mb;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TaskID(usize);
@@ -31,6 +31,7 @@ pub struct Task {
     pub id: TaskID,
     pub state_isf: InterruptStackFrameValue,
     state_reg: Registers,
+    pub stack_base: u64,
 }
 
 use lazy_static::lazy_static;

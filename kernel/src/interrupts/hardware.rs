@@ -109,56 +109,51 @@ pub static PICS: Mutex<ChainedPics> =
 pub fn set_hardware_idt(idt: &mut InterruptDescriptorTable) {
     // Set handlers
     idt[PIC1_OFFSET as usize + 0].set_handler_fn(crate::pit::tick_handler);
-    idt[PIC1_OFFSET as usize + 1].set_handler_fn(irq1_handler);
-    idt[PIC1_OFFSET as usize + 2].set_handler_fn(irq2_handler);
-    idt[PIC1_OFFSET as usize + 3].set_handler_fn(irq3_handler);
-    idt[PIC1_OFFSET as usize + 4].set_handler_fn(irq4_handler);
-    idt[PIC1_OFFSET as usize + 5].set_handler_fn(irq5_handler);
-    idt[PIC1_OFFSET as usize + 6].set_handler_fn(irq6_handler);
-    idt[PIC1_OFFSET as usize + 7].set_handler_fn(irq7_handler);
-    idt[PIC1_OFFSET as usize + 8].set_handler_fn(irq8_handler);
-    idt[PIC1_OFFSET as usize + 9].set_handler_fn(irq9_handler);
-    idt[PIC1_OFFSET as usize + 10].set_handler_fn(irq10_handler);
-    idt[PIC1_OFFSET as usize + 11].set_handler_fn(irq11_handler);
-    idt[PIC1_OFFSET as usize + 12].set_handler_fn(irq12_handler);
-    idt[PIC1_OFFSET as usize + 13].set_handler_fn(irq13_handler);
-    idt[PIC1_OFFSET as usize + 14].set_handler_fn(irq14_handler);
-    idt[PIC1_OFFSET as usize + 15].set_handler_fn(irq15_handler);
+    use crate::interrupt_handler;
+
+    interrupt_handler!(irq1_handler, idt, 1);
+    interrupt_handler!(irq2_handler, idt, 2);
+    interrupt_handler!(irq3_handler, idt, 3);
+    interrupt_handler!(irq4_handler, idt, 4);
+    interrupt_handler!(irq5_handler, idt, 5);
+    interrupt_handler!(irq6_handler, idt, 6);
+    interrupt_handler!(irq7_handler, idt, 7);
+    interrupt_handler!(irq8_handler, idt, 8);
+    interrupt_handler!(irq9_handler, idt, 9);
+    interrupt_handler!(irq10_handler, idt, 10);
+    interrupt_handler!(irq11_handler, idt, 11);
+    interrupt_handler!(irq12_handler, idt, 12);
+    interrupt_handler!(irq13_handler, idt, 13);
+    interrupt_handler!(irq14_handler, idt, 14);
+    interrupt_handler!(irq15_handler, idt, 15);
+}
+
+pub fn interrupt_handler(stack_frame: InterruptStackFrame, int_number: usize) {
+    // Find the relevent handler and call it
+    match &HANDLERS.lock()[int_number] {
+        Some(func) => func(stack_frame),
+        None => println!(
+            "WARNING: Interrupt number {} received from the PIC without a handler installed...",
+            int_number
+        ),
+    };
+
+    // Notify end of interrupt
+    unsafe {
+        PICS.lock()
+            .notify_end_of_interrupt(PIC1_OFFSET + int_number as u8)
+    }
 }
 
 /// Generates a handler for each PIC lane.
 /// Calls the appropiate handler in the HANDLERS list
+
 #[macro_export]
 macro_rules! interrupt_handler {
-    ($handler: ident, $irq:expr) => {
+    ($handler: ident, $idt:expr, $irq:expr) => {
         pub extern "x86-interrupt" fn $handler(stack_frame: InterruptStackFrame) {
-            // Find the relevent handler and call it
-            match &HANDLERS.lock()[$irq as usize] {
-                Some(func) => func(stack_frame),
-                None => println!(
-                    "WARNING: Interrupt number {} received from the PIC...",
-                    $irq
-                ),
-            };
-
-            // Notify end of interrupt
-            unsafe { PICS.lock().notify_end_of_interrupt(PIC1_OFFSET + $irq) }
+            interrupt_handler(stack_frame, $irq)
         }
+        $idt[PIC1_OFFSET as usize + $irq].set_handler_fn($handler);
     };
 }
-
-interrupt_handler!(irq1_handler, 1);
-interrupt_handler!(irq2_handler, 2);
-interrupt_handler!(irq3_handler, 3);
-interrupt_handler!(irq4_handler, 4);
-interrupt_handler!(irq5_handler, 5);
-interrupt_handler!(irq6_handler, 6);
-interrupt_handler!(irq7_handler, 7);
-interrupt_handler!(irq8_handler, 8);
-interrupt_handler!(irq9_handler, 9);
-interrupt_handler!(irq10_handler, 10);
-interrupt_handler!(irq11_handler, 11);
-interrupt_handler!(irq12_handler, 12);
-interrupt_handler!(irq13_handler, 13);
-interrupt_handler!(irq14_handler, 14);
-interrupt_handler!(irq15_handler, 15);
