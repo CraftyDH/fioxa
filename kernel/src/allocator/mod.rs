@@ -7,19 +7,19 @@ use crate::{
 
 use self::fixed_size_block::FixedSizeBlockAllocator;
 
-pub const HEAP_START: usize = 0x4_4444_0000;
-pub const HEAP_SIZE: usize = 1024 * 1024; // 1 MiB
+pub const HEAP_START: usize = 0x40_000_000;
+pub const HEAP_SIZE: usize = 1024 * 1024 * 5; // 5 MiB
 
 pub mod bump;
 pub mod fixed_size_block;
 pub mod linked_list;
 
 pub fn init_heap(mapper: &mut PageTableManager) -> Result<(), MapToError<Size4KiB>> {
-    for page in (HEAP_START..(HEAP_START + HEAP_SIZE - 1)).step_by(4096) {
+    for page in (HEAP_START..(HEAP_START + HEAP_SIZE - 1)).step_by(0x1000) {
         let frame = request_page().ok_or(MapToError::FrameAllocationFailed)?;
         // let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
         mapper
-            .map_memory(page as u64, frame as u64)
+            .map_memory(page as u64, frame as u64, true)
             .unwrap()
             .flush();
     }

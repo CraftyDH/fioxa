@@ -8,7 +8,7 @@ use x86_64::{
 };
 
 use crate::{
-    interrupts::hardware::{set_handler_and_enable_irq, HardwareInterruptOffset},
+    interrupt_handler,
     screen::gop::{Pos, WRITER},
 };
 
@@ -57,61 +57,67 @@ enum MousePacketState {
     FourPackets(u8, u8, u8, u8),
 }
 
+interrupt_handler!(interrupt_handler => mouse_int_handler);
+
 pub fn interrupt_handler(_: InterruptStackFrame) {
-    let mut port = Port::new(0x60);
+    if let Ok(queue) = MOUSEPACKET_QUEUE.try_get() {
+        let mut port = Port::new(0x60);
 
-    let data: u8 = unsafe { port.read() };
+        let data: u8 = unsafe { port.read() };
 
-    let packets_required = PACKETS_REQUIRED.load(Ordering::SeqCst);
-    let pos = POS.load(Ordering::SeqCst);
+        let packets_required = PACKETS_REQUIRED.load(Ordering::SeqCst);
+        let pos = POS.load(Ordering::SeqCst);
 
-    // Packets not accepted
-    if packets_required == -1 {
-        return;
-    }
+        // Packets not accepted
+        if packets_required == -1 {
+            return;
+        }
 
-    let reset = || {
-        POS.store(0, Ordering::SeqCst);
-    };
+        let reset = || {
+            POS.store(0, Ordering::SeqCst);
+        };
 
-    match pos {
-        0 => {
-            if data & 0b00001000 == 0 {
-                return;
+        match pos {
+            0 => {
+                if data & 0b00001000 == 0 {
+                    return;
+                }
+                PACKET_0.store(data, Ordering::SeqCst);
+                POS.store(1, Ordering::SeqCst);
             }
-            PACKET_0.store(data, Ordering::SeqCst);
-            POS.store(1, Ordering::SeqCst);
-        }
-        1 => {
-            PACKET_1.store(data, Ordering::SeqCst);
-            POS.store(2, Ordering::SeqCst);
-        }
-        2 => {
-            if packets_required == 3 {
+            1 => {
+                PACKET_1.store(data, Ordering::SeqCst);
+                POS.store(2, Ordering::SeqCst);
+            }
+            2 => {
+                if packets_required == 3 {
+                    let val0 = PACKET_0.load(Ordering::SeqCst);
+                    let val1 = PACKET_1.load(Ordering::SeqCst);
+                    if let Some(_) =
+                        queue.force_push(MousePacketState::ThreePackets(val0, val1, data))
+                    {
+                        println!("WARN: Mouse buffer full dropping packets")
+                    }
+                    reset()
+                } else {
+                    PACKET_2.store(data, Ordering::SeqCst);
+                    POS.store(3, Ordering::SeqCst);
+                }
+            }
+            3 => {
                 let val0 = PACKET_0.load(Ordering::SeqCst);
                 let val1 = PACKET_1.load(Ordering::SeqCst);
-                if let Ok(t) = MOUSEPACKET_QUEUE.try_get() {
-                    t.push(MousePacketState::ThreePackets(val0, val1, data))
-                        .unwrap();
+                let val2 = PACKET_2.load(Ordering::SeqCst);
+                if let Some(_) =
+                    queue.force_push(MousePacketState::FourPackets(val0, val1, val2, data))
+                {
+                    println!("WARN: Mouse buffer full dropping packets")
                 }
                 reset()
-            } else {
-                PACKET_2.store(data, Ordering::SeqCst);
-                POS.store(3, Ordering::SeqCst);
             }
+            // Shouln't be possible
+            _ => unreachable!(),
         }
-        3 => {
-            let val0 = PACKET_0.load(Ordering::SeqCst);
-            let val1 = PACKET_1.load(Ordering::SeqCst);
-            let val2 = PACKET_2.load(Ordering::SeqCst);
-            if let Ok(t) = MOUSEPACKET_QUEUE.try_get() {
-                t.push(MousePacketState::FourPackets(val0, val1, val2, data))
-                    .unwrap();
-            }
-            reset()
-        }
-        // Shouln't be possible
-        _ => (),
     }
 }
 
@@ -178,16 +184,21 @@ impl Mouse {
             return;
         }
 
-        if p1 & 0b0000_0001 == 1 {
-            _left = true
+        let mut colour: u32 = 0x50_50_50;
+
+        if p1 & 0b0000_0001 > 0 {
+            _left = true;
+            colour |= 0xFF_00_00;
         }
 
-        if p1 & 0b0000_0010 == 1 {
-            _right = true
+        if p1 & 0b0000_0010 > 0 {
+            _right = true;
+            colour |= 0x00_00_FF;
         }
 
-        if p1 & 0b0000_0100 == 1 {
-            _middle = true
+        if p1 & 0b0000_0100 > 0 {
+            _middle = true;
+            colour |= 0x00_FF_00;
         }
 
         // X is negative
@@ -222,8 +233,12 @@ impl Mouse {
             if self.pos.y > gop_info.vertical - 16 {
                 self.pos.y = gop_info.vertical - 16
             }
-            // gop_mutex.fill_screen(0xFF_00_00);
-            gop_mutex.draw_cursor(self.pos, 0xFF_00_00, MOUSE_POINTER);
+            // let mapper = unsafe { get_uefi_active_mapper() };
+            // if (unsafe { pml4_ptr } != 0) {
+            //     unsafe { load_into_cr3(pml4_ptr) };
+            // }
+            gop_mutex.draw_cursor(self.pos, colour, MOUSE_POINTER);
+            // mapper.load_into_cr3();
         });
     }
 
@@ -255,9 +270,6 @@ impl Mouse {
         self.command.write_command(0xA8)?;
 
         // Reset
-        // self.command.write_command(0xD4)?;
-        // self.command.write_data(0xFF)?;
-
         self.send_command(0xFF)?;
 
         // Mouse will respond 0xAA then 0 on reset
@@ -270,6 +282,12 @@ impl Mouse {
         if self.command.read()? != 0 {
             return Err("Mouse failed self test");
         }
+
+        // Enable device interrupts
+        self.command.write_command(0x20)?;
+        let configuration = self.command.read()?;
+        self.command.write_command(0x60)?;
+        self.command.write_data(configuration | 0b10)?;
 
         // Default setting
         self.send_command(0xF6)?;
@@ -337,13 +355,11 @@ impl Mouse {
         // Enable packet streaming (aka interrupts)
         self.send_command(0xF4)?;
 
-        MOUSEPACKET_QUEUE
-            .try_init_once(|| ArrayQueue::new(100))
-            .unwrap();
-
-        // Setup handler and enable the interrupts
-        set_handler_and_enable_irq(HardwareInterruptOffset::Mouse.into(), interrupt_handler);
-
         Ok(())
+    }
+    pub fn receive_interrupts(&self) {
+        MOUSEPACKET_QUEUE
+            .try_init_once(|| ArrayQueue::new(5000))
+            .unwrap();
     }
 }

@@ -16,28 +16,32 @@ pub struct Selectors {
 }
 
 lazy_static! {
-    pub static ref GDT: (GlobalDescriptorTable, Selectors) = {
-        let mut gdt = GlobalDescriptorTable::new();
-        let code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
-        let data_selector = gdt.add_entry(Descriptor::kernel_data_segment());
-        let tss_selector = gdt.add_entry(Descriptor::tss_segment(&tss::TSS));
-        (
-            gdt,
-            Selectors {
-                code_selector,
-                data_selector,
-                tss_selector,
-            },
-        )
+    pub static ref GDT: [(GlobalDescriptorTable, Selectors); 8] = {
+        core::array::from_fn(|i| {
+            let mut gdt = GlobalDescriptorTable::new();
+            let code_selector = gdt.add_entry(Descriptor::kernel_code_segment());
+            let data_selector = gdt.add_entry(Descriptor::kernel_data_segment());
+
+            let tss_selector = gdt.add_entry(Descriptor::tss_segment(tss::TSS.get(i).unwrap()));
+            (
+                gdt,
+                Selectors {
+                    code_selector,
+                    data_selector,
+                    tss_selector,
+                },
+            )
+        })
     };
 }
 
-pub fn init() {
-    GDT.0.load();
+pub fn init(core_id: usize) {
+    let gdt = GDT.get(core_id).unwrap();
+    gdt.0.load();
 
     unsafe {
-        CS::set_reg(GDT.1.code_selector);
-        SS::set_reg(GDT.1.data_selector);
-        load_tss(GDT.1.tss_selector);
+        CS::set_reg(gdt.1.code_selector);
+        SS::set_reg(gdt.1.data_selector);
+        load_tss(gdt.1.tss_selector);
     }
 }

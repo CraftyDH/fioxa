@@ -1,4 +1,5 @@
 use super::{
+    get_uefi_active_mapper,
     page_allocator::{free_page, request_page},
     page_directory::{PageDirectoryEntry, PageTable},
     page_map_index::PageMapIndexer,
@@ -8,11 +9,17 @@ pub struct PageTableManager {
     page_lvl4_addr: u64,
 }
 
+pub fn ident_map_curr_process(memory: u64, write: bool) {
+    let mut mapper = unsafe { get_uefi_active_mapper() };
+    mapper.map_memory(memory, memory, write).unwrap().flush();
+}
+
 impl PageTableManager {
     pub fn map_memory(
         &mut self,
         virtual_memory: u64,
         physical_memory: u64,
+        write: bool,
     ) -> Result<Flusher, &str> {
         let indexer = PageMapIndexer::new(virtual_memory);
         let pml4 = unsafe { &mut *(self.page_lvl4_addr as *mut PageTable) };
@@ -29,7 +36,7 @@ impl PageTableManager {
             let pde = &mut pt.entries[indexer.p_i as usize];
             pde.set_present(true);
             pde.set_address(physical_memory);
-            pde.set_read_write(true);
+            pde.set_read_write(write);
             Ok(Flusher(virtual_memory))
         })
     }
@@ -72,7 +79,6 @@ impl PageTableManager {
             entry.set_present(false);
             entry.set_address(0);
         }
-
         Ok(Flusher(virtual_memory))
     }
 
@@ -95,7 +101,7 @@ impl PageTableManager {
 }
 
 impl PageTableManager {
-    pub fn new(page_lvl4_addr: u64) -> Self {
+    pub const fn new(page_lvl4_addr: u64) -> Self {
         Self { page_lvl4_addr }
     }
 

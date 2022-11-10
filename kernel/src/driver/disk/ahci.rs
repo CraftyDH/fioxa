@@ -13,6 +13,7 @@ use crate::{
     driver::{disk::DiskBusDriver, driver::Driver},
     paging::get_uefi_active_mapper,
     pci::{PCIHeader0, PCIHeaderCommon},
+    syscall::yield_now,
 };
 
 use self::port::{Port, PortType};
@@ -155,7 +156,10 @@ impl Driver for AHCIDriver<'_> {
         println!("BAR5: {}", header0.get_bar(5));
         let abar = header0.get_bar(5);
 
-        mapper.map_memory(abar as u64, abar as u64).unwrap().flush();
+        mapper
+            .map_memory(abar as u64, abar as u64, true)
+            .unwrap()
+            .flush();
 
         let abar = unsafe { &mut *(header0.get_bar(5) as *mut HBAMemory) };
 
@@ -166,7 +170,7 @@ impl Driver for AHCIDriver<'_> {
 
         let ports_implemented = abar.ports_implemented.read();
 
-        let buffer = &mut [0u8; 512 * 52];
+        let buffer = &mut [0u8; 512];
 
         for (i, port) in (abar.ports).iter_mut().enumerate() {
             if ports_implemented.get_bit(i) {
@@ -182,9 +186,12 @@ impl Driver for AHCIDriver<'_> {
                     // Just read the first valid disk forever
                     if let Some(_) = port.read(0, 1, buffer) {
                         for x in (1000..1000 + 52 * 2).step_by(52) {
-                            port.read(x, 52, buffer).unwrap();
-                            println!("{}", String::from_utf8_lossy(buffer));
+                            port.read(x, 1, buffer).unwrap();
+                            for l in String::from_utf8_lossy(buffer).lines() {
+                                println!("{}", l);
+                            }
                         }
+                        yield_now()
                     }
 
                     ahci.ports[i] = Some(port);

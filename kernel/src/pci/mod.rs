@@ -2,7 +2,6 @@ use crate::{
     acpi::FioxaAcpiHandler,
     driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::PCNET},
     fs::ROOTFS,
-    interrupts::hardware::set_handler_and_enable_irq,
     net::ethernet::ETHERNET,
     pci::mcfg::get_mcfg,
 };
@@ -142,8 +141,8 @@ impl PCIHeader0 {
 
 pub fn enumerate_pci(acpi_tables: acpi::AcpiTables<FioxaAcpiHandler>) {
     // Enable interrupts
-    set_handler_and_enable_irq(10, interrupt_handler);
-    set_handler_and_enable_irq(11, interrupt_handler);
+    // set_handler_and_enable_irq(10, interrupt_handler);
+    // set_handler_and_enable_irq(11, interrupt_handler);
 
     // Get MCFG
     let mcfg = get_mcfg(&acpi_tables);

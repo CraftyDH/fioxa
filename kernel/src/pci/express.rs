@@ -65,7 +65,7 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
 
         let mut mapper = unsafe { get_uefi_active_mapper() };
 
-        mapper.map_memory(address, address).unwrap().flush();
+        mapper.map_memory(address, address, true).unwrap().flush();
 
         PCIHeaderCommon {
             device: Arc::new(PCIExpressDevice { address }),

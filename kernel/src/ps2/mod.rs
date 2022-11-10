@@ -89,22 +89,21 @@ impl PS2Controller {
         self.command.write_command(0xA7)?;
 
         // Flush output buffer
-        for _ in 0..100 {
-            // let value = self.data_port.read();
-            let value = unsafe { self.command.data_port.read() };
-            // Ensure there is no data waiting
-            if value & 0b1 == 0 {
-                break;
+        let timeout = 100_000;
+        for _ in 0..timeout {
+            let test = unsafe { self.command.status_port.read() };
+            if test & 0b1 == 0b1 {
+                unsafe { self.command.data_port.read() };
             }
         }
         // Set controller bytes
         self.command.write_command(0x20)?;
-        let configuration = self.command.read()?;
+        let mut configuration = self.command.read()?;
         println!("PS2 controller config, {:b}", configuration);
         // Clear bits 0, 1, 6
-        let configuration = 0b00000011;
-        // Write config back
+        configuration &= !(1 | 0b10 | 1 << 6);
 
+        // Write config back
         self.command.write_command(0x60)?;
         self.command.write_data(configuration)?;
         // TODO: Check if only one lane is available
@@ -135,16 +134,14 @@ impl PS2Controller {
         });
 
         // Initialize keyboard if test passed
-        let keyboard = keyboard.and_then(|_| {
-            self.keyboard.initialize()?;
-            Ok(())
-        });
+        let keyboard = keyboard.and_then(|_| self.keyboard.initialize());
 
         // Initialize mouse if test passed
-        let mouse = mouse.and_then(|_| {
-            self.mouse.initialize()?;
-            Ok(())
-        });
+        let mouse = mouse.and_then(|_| self.mouse.initialize());
+
+        // Now enable interrupts
+        let keyboard = keyboard.and_then(|_| Ok(self.keyboard.receive_interrupts()));
+        let mouse = mouse.and_then(|_| Ok(self.mouse.receive_interrupts()));
 
         // If keyboard failed to initalize print the error reason
         if let Err(e) = keyboard {

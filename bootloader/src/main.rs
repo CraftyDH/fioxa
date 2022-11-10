@@ -137,7 +137,7 @@ fn load_system(
     )
     .unwrap();
 
-    let entry_point = load_kernel(boot_services, kernel_data);
+    let entry_point = load_kernel(boot_services, kernel_data, boot_info);
 
     info!("Loading PSF1 Font...");
     const FONT_PATH: &str = "font.psf";

@@ -2,10 +2,12 @@ use core::ptr::NonNull;
 
 use acpi::{AcpiError, AcpiHandler, AcpiTables, PhysicalMapping};
 
-use crate::paging::get_uefi_active_mapper;
+use crate::paging::{get_uefi_active_mapper, page_table_manager::ident_map_curr_process};
 
 pub fn prepare_acpi(rsdp: usize) -> Result<AcpiTables<FioxaAcpiHandler>, AcpiError> {
     // let handler = FioxaAcpiHandler::new(frame_allocator);
+    ident_map_curr_process(rsdp as u64, false);
+
     let root_acpi_handler = unsafe { acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, rsdp) }?;
 
     println!("ACPI");
@@ -26,10 +28,12 @@ impl AcpiHandler for FioxaAcpiHandler {
     ) -> acpi::PhysicalMapping<Self, T> {
         let mut mapper = get_uefi_active_mapper();
 
-        mapper
-            .map_memory(physical_address as u64, physical_address as u64)
-            .unwrap()
-            .flush();
+        for page in (physical_address..(physical_address + size)).step_by(0x1000) {
+            mapper
+                .map_memory(page as u64, page as u64, true)
+                .unwrap()
+                .flush();
+        }
 
         PhysicalMapping::new(
             physical_address,

@@ -5,7 +5,7 @@ use uefi::{
     table::boot::{AllocateType, MemoryType},
 };
 
-use crate::OwnedBuffer;
+use crate::{BootInfo, OwnedBuffer};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -49,7 +49,11 @@ const EM_X86_64: u16 = 62; // AMD x86-64 architecture
 // For the ELF Program Header https://refspecs.linuxbase.org/elf/gabi4+/ch5.pheader.html
 const PT_LOAD: u32 = 1; // A loadable segment
 
-pub fn load_kernel(boot_services: &BootServices, kernel_data: OwnedBuffer) -> u64 {
+pub fn load_kernel(
+    boot_services: &BootServices,
+    kernel_data: OwnedBuffer,
+    boot_info: &mut BootInfo,
+) -> u64 {
     // Transpose the header as an elf header
     let elf_header = unsafe { *(kernel_data.buf.as_ptr() as *const Elf64Ehdr) };
     // Ensure that all the header flags are suitable
@@ -84,6 +88,9 @@ pub fn load_kernel(boot_services: &BootServices, kernel_data: OwnedBuffer) -> u6
         base = min(base, program_header.p_vaddr);
         size = max(size, program_header.p_vaddr + program_header.p_memsz);
     }
+
+    boot_info.kernel_start = base;
+    boot_info.kernel_end = size;
 
     let mem_start = (base / 0x1000) * 0x1000;
     // The size from start to finish

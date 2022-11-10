@@ -11,7 +11,7 @@ use x86_64::instructions::port::Port;
 use crate::{
     driver::driver::Driver,
     net::ethernet::{EthernetFrame, EthernetFrameHeader, RECEIVED_FRAMES_QUEUE},
-    paging::page_allocator::frame_alloc_exec,
+    paging::{page_allocator::frame_alloc_exec, page_table_manager::ident_map_curr_process},
     pci::PCIHeaderCommon,
     syscall::yield_now,
 };
@@ -132,7 +132,7 @@ pub struct PCNET<'b> {
 
 impl Driver for PCNET<'_> {
     fn new(pci_device: PCIHeaderCommon) -> Option<Self> {
-        let mut pci_device = pci_device;
+        let pci_device = pci_device;
         // Ensure device is actually supported
         if !(pci_device.get_vendor_id() == 0x1022 && pci_device.get_device_id() == 0x2000) {
             return None;
@@ -156,6 +156,7 @@ impl Driver for PCNET<'_> {
             // Allocate page below 4gb location.
             let mut buffer_start =
                 frame_alloc_exec(|m| m.lock().request_32bit_reserved_page()).unwrap() as *const u8;
+            ident_map_curr_process(buffer_start as u64, true);
 
             // Init block
             let init_block = &mut *(buffer_start as *mut InitBlock);
@@ -188,6 +189,7 @@ impl Driver for PCNET<'_> {
             // Allocate page below 4gb location.
             let buffer_start =
                 frame_alloc_exec(|m| m.lock().request_32bit_reserved_page()).unwrap();
+            ident_map_curr_process(buffer_start as u64, true);
             send_buffer_desc[i].address = buffer_start;
             send_buffer_desc[i].flags = BUFFER_SIZE_MASK;
             send_buffer_desc[i + 1].address = buffer_start + 2048;
@@ -198,6 +200,7 @@ impl Driver for PCNET<'_> {
             // Allocate page below 4gb location.
             let buffer_start =
                 frame_alloc_exec(|m| m.lock().request_32bit_reserved_page()).unwrap();
+            ident_map_curr_process(buffer_start as u64, true);
             recv_buffer_desc[i].address = buffer_start;
             recv_buffer_desc[i].flags = BUFFER_SIZE_MASK | 0x80000000;
             recv_buffer_desc[i + 1].address = buffer_start + 2048;

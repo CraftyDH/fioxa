@@ -16,7 +16,7 @@ fn main() {
     dirs.recursive(true).create("fioxa/EFI/BOOT").unwrap();
     copy("assets/startup.nsh", "fioxa/startup.nsh").unwrap();
     copy("assets/zap-light16.psf", "fioxa/font.psf").unwrap();
-    copy(bootloader, "fioxa/EFI/BOOT/BootX64.efi").unwrap();
+    copy(bootloader, "fioxa/EFI/BOOT/BOOTx64.efi").unwrap();
     copy(kernel, "fioxa/fioxa.elf").unwrap();
 
     let mut args = args();
@@ -32,6 +32,8 @@ fn main() {
                 "q35",
                 "-cpu",
                 "qemu64",
+                "-smp",
+                "cores=4",
                 "-m",
                 "256M",
                 "-serial",

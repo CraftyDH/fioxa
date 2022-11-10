@@ -11,7 +11,7 @@ use crate::memory::MemoryMapIter;
 
 static GLOBAL_FRAME_ALLOCATOR: OnceCell<Mutex<PageFrameAllocator>> = OnceCell::uninit();
 
-const RESERVED_32BIT_MEM_PAGES: u64 = 32; // 16Mb
+const RESERVED_32BIT_MEM_PAGES: u64 = 32; // 16Kb
 
 pub fn frame_alloc_exec<T, F>(closure: F) -> Option<T>
 where
@@ -303,6 +303,69 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
             if let Some(page) = Self::find_page_in_region(mem_region) {
                 self.free_pages -= 1;
                 self.used_pages += 1;
+
+                // Avoid recursing the entire memory map by pointing to this mem region
+                self.last_free_mem_region = mem_index;
+
+                return Some(page);
+            }
+        }
+        None
+    }
+
+    fn find_cont_page_in_region(mem_region: &mut MemoryRegion, cnt: usize) -> Option<u64> {
+        let mut n = 0;
+        let mut start = 0;
+        let mut last = 0;
+        for (bits, base_page) in mem_region.allocated.iter_mut().zip((0..).step_by(8)) {
+            // Check if all bits in section are allocated
+            if *bits == 0xFF {
+                continue;
+            }
+            for i in 0..8 {
+                if !bits.get_bit(i) {
+                    // Ensure we arn't passed page count size bitmap has a bit of padding
+                    if base_page + i + 1 > mem_region.page_count as usize {
+                        return None;
+                    }
+                    if last + 1 == base_page + i {
+                        n += 1;
+                        if n == cnt {
+                            for (bits, base_page) in
+                                mem_region.allocated.iter_mut().zip((0..).step_by(8))
+                            {
+                                for i in 0..8 {
+                                    if base_page + i >= start && base_page + i <= last {
+                                        bits.set_bit(i, true);
+                                    }
+                                }
+                            }
+                            let start = mem_region.phys_start as usize + start * 0x1000;
+                            let last = mem_region.phys_start as usize + last * 0x1000;
+                            unsafe { core::ptr::write_bytes(start as *mut u8, 0, last - start) };
+                            return Some(start as u64);
+                        }
+                    } else {
+                        n = 0;
+                        start = base_page + i;
+                    }
+                    last = base_page + i;
+                }
+            }
+        }
+        None
+    }
+
+    pub fn request_cont_pages(&mut self, cnt: usize) -> Option<u64> {
+        for (mem_index, mem_region) in self
+            .page_bitmap
+            .iter_mut()
+            .enumerate()
+            .skip(self.last_free_mem_region)
+        {
+            if let Some(page) = Self::find_cont_page_in_region(mem_region, cnt) {
+                self.free_pages -= cnt;
+                self.used_pages += cnt;
 
                 // Avoid recursing the entire memory map by pointing to this mem region
                 self.last_free_mem_region = mem_index;

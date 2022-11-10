@@ -168,7 +168,7 @@ pub fn translate_raw_keycode(code: RawKeyCode, shift: bool, caps: bool, num_lock
         RawKeyCode::BackTick => KeyCode::Unicode(if normal_shift { '~' } else { '`' }),
         RawKeyCode::Hyphen => KeyCode::Unicode(if normal_shift { '_' } else { '-' }),
         RawKeyCode::Equals => KeyCode::Unicode(if normal_shift { '+' } else { '=' }),
-        RawKeyCode::LeftBracket => KeyCode::Unicode(if normal_shift { '{' } else { ']' }),
+        RawKeyCode::LeftBracket => KeyCode::Unicode(if normal_shift { '{' } else { '[' }),
         RawKeyCode::RightBracket => KeyCode::Unicode(if normal_shift { '{' } else { ']' }),
         RawKeyCode::BackSlash => KeyCode::Unicode(if normal_shift { '|' } else { '\\' }),
         RawKeyCode::SemiColon => KeyCode::Unicode(if normal_shift { ':' } else { ';' }),

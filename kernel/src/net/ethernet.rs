@@ -24,16 +24,16 @@ lazy_static! {
 #[bitfield]
 #[derive(Clone, Copy)]
 pub struct EthernetFrameHeader {
-    pub dst_MAC_be: B48,
-    pub src_MAC_be: B48,
+    pub dst_mac_be: B48,
+    pub src_mac_be: B48,
     pub ether_type_be: u16,
 }
 
 impl Debug for EthernetFrameHeader {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("EthernetFrameHeader")
-            .field("dst_MAC", &format_args!("{:X}", self.dst_MAC_be()))
-            .field("src_MAC", &format_args!("{:X}", self.src_MAC_be()))
+            .field("dst_MAC", &format_args!("{:X}", self.dst_mac_be()))
+            .field("src_MAC", &format_args!("{:X}", self.src_mac_be()))
             .field("ether_type", &self.ether_type_be())
             .finish()
     }
@@ -149,8 +149,8 @@ impl Ethernet {
             arp.set_dst_ip(ip.as_net_be());
 
             let mut header = EthernetFrameHeader::new();
-            header.set_dst_MAC_be(0xFF_FF_FF_FF_FF_FF);
-            header.set_src_MAC_be(device.mac_addr);
+            header.set_dst_mac_be(0xFF_FF_FF_FF_FF_FF);
+            header.set_src_mac_be(device.mac_addr);
             header.set_ether_type_be(0x0806u16.to_be());
             let arp_req = ARPEth { header, arp };
             let buf: &[u8; size_of::<ARPEth>()] = &unsafe { transmute(arp_req) };

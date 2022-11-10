@@ -9,8 +9,11 @@
 // #![test_runner(test_runner)]
 #![feature(panic_info_message)]
 #![feature(const_for)]
+// Allow macro gen for interrupt handlers
+#![feature(concat_idents)]
 
 //* */
+use bootloader::BootInfo;
 #[macro_use]
 extern crate alloc;
 
@@ -18,25 +21,33 @@ extern crate alloc;
 pub mod screen;
 pub mod acpi;
 pub mod allocator;
+pub mod ioapic;
 pub mod assembly;
+pub mod boot_aps;
+pub mod cpu_localstorage;
 pub mod driver;
 pub mod fs;
 pub mod gdt;
+pub mod hpet;
 pub mod interrupts;
+pub mod lapic;
 pub mod locked_mutex;
 pub mod memory;
-pub mod multitasking;
 pub mod net;
 pub mod paging;
 pub mod pci;
 pub mod pit;
 pub mod ps2;
+pub mod scheduling;
 pub mod syscall;
 pub mod uefi;
-// pub mod ahci;
+
+pub static mut BOOT_INFO: *const BootInfo = 0 as *const BootInfo;
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
+    // unsafe { WRITER.force_unlock() };
+    unsafe { core::arch::asm!("cli") }
     log!("Panic: {}", info);
     loop {}
 }

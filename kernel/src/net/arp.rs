@@ -1,6 +1,7 @@
 use alloc::collections::BTreeMap;
 use modular_bitfield::{bitfield, specifiers::B48};
-use spin::Mutex;
+
+use spin::mutex::Mutex;
 
 use super::ethernet::{EthernetFrameHeader, IPAddr};
 

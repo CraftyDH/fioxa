@@ -1,12 +1,9 @@
 use conquer_once::spin::OnceCell;
 use crossbeam_queue::ArrayQueue;
 use spin::Mutex;
-use x86_64::{
-    instructions::{interrupts::without_interrupts, port::Port},
-    structures::idt::InterruptStackFrame,
-};
+use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
 
-use crate::interrupts::hardware::{set_handler_and_enable_irq, HardwareInterruptOffset};
+use crate::interrupt_handler;
 
 use super::{
     scancode::{
@@ -29,15 +26,19 @@ pub struct Keyboard {
     rshift: bool,
 }
 
+interrupt_handler!(interrupt_handler => keyboard_int_handler);
+
 pub fn interrupt_handler(_: InterruptStackFrame) {
-    let mut port = Port::new(0x60);
+    if let Ok(queue) = SCANCODE_QUEUE.try_get() {
+        let mut port = Port::new(0x60);
 
-    let scancode: u8 = unsafe { port.read() };
+        let scancode: u8 = unsafe { port.read() };
 
-    let res = DECODER.lock().add_byte(scancode);
-    if let Some(key) = res {
-        if let Ok(queue) = SCANCODE_QUEUE.try_get() {
-            queue.push(key).unwrap();
+        let res = DECODER.lock().add_byte(scancode);
+        if let Some(key) = res {
+            if let Some(_) = queue.force_push(key) {
+                println!("WARN: Keyboard buffer full dropping packets")
+            }
         }
     }
 }
@@ -81,7 +82,7 @@ impl Keyboard {
     }
 
     pub fn initialize(&mut self) -> Result<(), &'static str> {
-        // Enable
+        // Enable kb interrupts
         self.command.write_command(0xAE)?;
 
         // Reset
@@ -91,19 +92,23 @@ impl Keyboard {
             return Err("Keyboard failed self test");
         }
 
-        // Set keyboard layout to scancode set 2
+        // Enable device interrupts
+        self.command.write_command(0x20)?;
+        let configuration = self.command.read()?;
+        self.command.write_command(0x60)?;
+        self.command.write_data(configuration | 0b1)?;
 
-        self.send_command(0xf0)?;
+        // Set keyboard layout to scancode set 2
+        self.send_command(0xF0)?;
         self.send_command(2)?;
 
-        // Setup handler and enable the interrupts
-        set_handler_and_enable_irq(HardwareInterruptOffset::Keyboard.into(), interrupt_handler);
-
-        SCANCODE_QUEUE
-            .try_init_once(|| ArrayQueue::new(100))
-            .unwrap();
-
         Ok(())
+    }
+
+    pub fn receive_interrupts(&self) {
+        SCANCODE_QUEUE
+            .try_init_once(|| ArrayQueue::new(1000))
+            .unwrap();
     }
 
     fn update_leds(&mut self) {
@@ -112,10 +117,12 @@ impl Keyboard {
         let state =
             (self.caps_lock as u8) << 2 | (self.num_lock as u8) << 1 | self.scroll_lock as u8;
         // 0xED is set LEDS
-        without_interrupts(|| {
-            self.send_command(0xED).unwrap();
-            self.send_command(state).unwrap();
-        });
+        if let Err(e) = self
+            .send_command(0xED)
+            .and_then(|_| self.send_command(state))
+        {
+            println!("WARN: Kb failed to update leds: {}", e)
+        }
     }
 
     fn handle_code(&mut self, scan_code: RawKeyCodeState) {

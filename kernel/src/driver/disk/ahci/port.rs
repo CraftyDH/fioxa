@@ -11,6 +11,7 @@ use crate::{
     paging::{
         get_uefi_active_mapper,
         page_allocator::{free_page, request_page},
+        page_table_manager::ident_map_curr_process,
     },
     syscall::yield_now,
 };
@@ -49,7 +50,9 @@ impl<'p> Port<'p> {
         Self::stop_cmd(port);
 
         let rfis_addr = request_page().unwrap();
+        ident_map_curr_process(rfis_addr, true);
         let cmd_list_addr = request_page().unwrap();
+        ident_map_curr_process(cmd_list_addr, true);
 
         let cmd_list =
             unsafe { slice::from_raw_parts_mut(cmd_list_addr as *mut HBACommandHeader, 32) };
@@ -67,6 +70,7 @@ impl<'p> Port<'p> {
 
         for c in 0..=1 {
             let command_table_addr = request_page().unwrap();
+            ident_map_curr_process(command_table_addr, true);
             cmd_table_buffers.push(command_table_addr);
 
             for i in 0..16 {
@@ -104,6 +108,7 @@ impl<'p> Port<'p> {
 
     pub fn identify(&mut self) -> Vec<u8> {
         let slot = self.find_slot() as usize;
+
         let cmd_header = unsafe {
             &mut *(self.hba_port.command_list_base.read() as *mut [HBACommandHeader; 32])
         };

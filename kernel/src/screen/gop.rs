@@ -169,7 +169,7 @@ impl Writer {
                 if (line & (0b10_000_000_000_000 >> x)) > 0 {
                     let loc = ((x + pos.x) + ((y + pos.y) * self.gop.stride)) * 4;
                     unsafe {
-                        core::ptr::write_unaligned(
+                        core::ptr::write_volatile(
                             self.gop.buffer.get_mut().add(loc) as *mut u32,
                             colour,
                         )
@@ -192,16 +192,16 @@ impl Writer {
             let buf = self.gop.buffer.get_mut();
             unsafe {
                 // Copy memory from bottom to top (aka scroll)
-                for l in 16..max {
-                    core::ptr::copy_nonoverlapping(
+                for l in (16 * 5)..max {
+                    core::ptr::copy(
                         buf.offset((l * self.gop.stride * 4) as isize),
-                        buf.offset(((l - 16) * self.gop.stride * 4) as isize),
+                        buf.offset(((l - 16 * 5) * self.gop.stride * 4) as isize),
                         self.gop.horizonal * 4,
                     )
                 }
 
                 // Clear the bottom line by writing zeros
-                for l in (max - 16)..self.gop.vertical {
+                for l in (max - 16 * 5)..self.gop.vertical {
                     core::ptr::write_bytes(
                         buf.offset((l * self.gop.stride * 4) as isize),
                         0,
@@ -210,7 +210,7 @@ impl Writer {
                 }
             }
 
-            self.pos.y -= 16;
+            self.pos.y -= 16 * 5;
             self.pos.x = 0
         }
     }
@@ -222,9 +222,6 @@ impl core::fmt::Write for Writer {
         Ok(())
     }
 }
-
-use spin::Mutex;
-
 lazy_static! {
     pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
         pos: Pos { x: 0, y: 0 },
@@ -261,18 +258,24 @@ macro_rules! colour {
     };
 }
 
-use core::fmt::Arguments;
-
 use crate::screen::psf1::PSF1_FONT_NULL;
+use core::fmt::Arguments;
+use spin::mutex::Mutex;
 
 use super::psf1::PSF1Font;
 
 #[doc(hidden)]
 pub fn _print(args: Arguments) {
-    without_interrupts(|| {
-        WRITER
-            .try_lock()
-            .and_then(|mut w| w.write_fmt(args).ok())
-            .unwrap();
-    });
+    loop {
+        // Prevent task from being scheduled away with mutex
+        if let Some(_) = without_interrupts(|| {
+            if let Some(mut w) = WRITER.try_lock() {
+                w.write_fmt(args).unwrap();
+                return Some(());
+            }
+            None
+        }) {
+            return;
+        }
+    }
 }

@@ -6,10 +6,7 @@ use x86_64::{
 };
 
 use crate::{
-    assembly::registers::Registers,
-    interrupts::hardware::{PIC1_OFFSET, PICS},
-    multitasking::TASKMANAGER,
-    syscall::yield_now,
+    assembly::registers::Registers, scheduling::taskmanager::TASKMANAGER, syscall::yield_now,
     wrap_function_registers,
 };
 
@@ -79,22 +76,24 @@ pub fn stop_switching_tasks() {
     SWITCH_TASK.store(false, Ordering::Release)
 }
 
+pub fn get_switching_status() -> bool {
+    SWITCH_TASK.load(Ordering::Relaxed)
+}
+
 wrap_function_registers!(tick => tick_handler);
 
 extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
     // Get the amount of milliseconds per interrupt
-    let freq = 1000 / get_frequency();
+    // let freq = 1000 / get_frequency();
     // Increment the uptime counter
-    TIME_SINCE_BOOT.fetch_add(freq, Ordering::Release);
-
-    // print!(".");
+    // TIME_SINCE_BOOT.fetch_add(freq, Ordering::Release);
 
     // If timer is used for switching tasks switch task
     if SWITCH_TASK.load(Ordering::Acquire) {
         TASKMANAGER
             .try_lock()
-            .unwrap()
-            .switch_task(stack_frame, regs);
+            .and_then(|mut t| Some(t.switch_task(stack_frame, regs)));
     }
-    unsafe { PICS.lock().notify_end_of_interrupt(PIC1_OFFSET) }
+    // Ack interrupt
+    unsafe { *(0xfee000b0 as *mut u32) = 0 }
 }

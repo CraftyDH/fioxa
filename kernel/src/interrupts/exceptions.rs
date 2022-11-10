@@ -1,6 +1,7 @@
 use x86_64::{
     registers::control::Cr2,
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
+    VirtAddr,
 };
 
 use crate::{gdt::tss, screen::gop::WRITER};
@@ -10,9 +11,8 @@ use crate::{gdt::tss, screen::gop::WRITER};
 #[macro_export]
 macro_rules! exception_handler {
     ($handler: ident, $error:expr) => {
-        extern "x86-interrupt" fn $handler(stack_frame: InterruptStackFrame) {
+        pub extern "x86-interrupt" fn $handler(stack_frame: InterruptStackFrame) {
             // Find the relevent handler and call it
-
             panic!("EXCEPTION: caught {}, frame: {:?}", $error, stack_frame)
         }
     };
@@ -54,12 +54,16 @@ pub fn set_exceptions_idt(idt: &mut InterruptDescriptorTable) {
 
     // idt.segment_not_present.set_handler_fn(segment_not_present);
     // idt.stack_segment_fault.set_handler_fn(handler)
+    unsafe {
+        idt.general_protection_fault
+            .set_handler_fn(general_protection_handler);
+        // .set_stack_index(tss::DOUBLE_FAULT_IST_INDEX);
 
-    idt.general_protection_fault
-        .set_handler_fn(general_protection_handler);
-
-    idt.page_fault.set_handler_fn(page_fault_handler);
-
+        idt.page_fault
+            .set_handler_addr(VirtAddr::new(page_fault_handler as u64))
+            .set_stack_index(tss::PAGE_FAULT_IST_INDEX);
+        // .disable_interrupts(false);
+    }
     // idt.alignment_check
     // idt.simd_floating_point
     // idt.virtualization
@@ -94,24 +98,21 @@ extern "x86-interrupt" fn invalid_tss(stack_frame: InterruptStackFrame, _error_c
     panic!("EXCEPTION: INVALID TSS FAULT\n{:#?}", stack_frame);
 }
 
+// wrap_function_registers!(page_fault_handlers => page_fault_handler);
+
 extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
     // unsafe { WRITER.force_unlock() };
-    WRITER.lock().fill_screen(0xFF_00_00);
-    WRITER.lock().pos.y = 0;
-    println!("EXCEPTION: PAGE FAULT");
-    println!("Accessed Address: {:?}", Cr2::read());
-    println!("{:#?}", stack_frame);
-    println!("Error Code: {:?}", error_code);
+    // WRITER.lock().fill_screen(0xFF_00_00);
+    // WRITER.lock().pos.y = 0;
+    let addr = Cr2::read();
 
+    println!("EXCEPTION: PAGE FAULT: {:?}", error_code);
+    println!(
+        "Accessed Address: {:?} by {:?}",
+        addr, stack_frame.instruction_pointer
+    );
     loop {}
 }
-
-// #[test_case]
-// fn test_breakpoint_exception() {
-//     // test a break point
-//     // Execution should continue therefore we can test this here.
-//     x86_64::instructions::interrupts::int3();
-// }
