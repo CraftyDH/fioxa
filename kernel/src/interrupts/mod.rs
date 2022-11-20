@@ -10,7 +10,7 @@ pub mod pic;
 
 use lazy_static::lazy_static;
 
-use crate::{gdt::tss::TASK_SWITCH_INDEX, pit::tick_handler, syscall};
+use crate::{gdt::tss::TASK_SWITCH_INDEX, syscall, time::pit::tick_handler};
 
 use self::pic::disable_pic;
 

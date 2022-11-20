@@ -8,12 +8,11 @@ use core::{
 };
 
 use crate::{
-    ioapic::Madt,
     assembly::{ap_trampoline, ap_trampoline_end},
     cpu_localstorage::{init_bsp_task, new_cpu},
     gdt,
-    hpet::spin_sleep_ms,
     interrupts::IDT,
+    ioapic::Madt,
     lapic::{enable_localapic, LAPIC_ADDR},
     paging::{
         get_uefi_active_mapper,
@@ -21,8 +20,8 @@ use crate::{
         page_allocator::frame_alloc_exec,
         page_table_manager::{ident_map_curr_process, PageTableManager},
     },
-    pit::start_switching_tasks,
     scheduling::taskmanager::{core_start_multitasking, TASKMANAGER},
+    time::spin_sleep_ms,
 };
 
 #[no_mangle]
@@ -125,7 +124,6 @@ pub fn boot_aps(madt: &Madt) {
         let mapper = PageTableManager::new(FULL_IDENTITY_MAP.lock().get_lvl4_addr());
         TASKMANAGER.lock().init(mapper, n_cores.try_into().unwrap());
     }
-    start_switching_tasks();
 
     unsafe {
         core::ptr::copy(nop_task as u64 as *mut u8, 0x1000 as *mut u8, 10);

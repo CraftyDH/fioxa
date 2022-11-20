@@ -3,11 +3,11 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
     assembly::registers::Registers,
-    hpet::sleep_ms,
     scheduling::{
         process::{PID, TID},
         taskmanager::TASKMANAGER,
     },
+    time::spin_sleep_ms,
     wrap_function_registers,
 };
 
@@ -90,7 +90,7 @@ where
 
 pub fn sleep(ms: usize) {
     // unsafe { syscall1(SLEEP, ms) };
-    sleep_ms(ms as u64)
+    spin_sleep_ms(ms as u64)
     // let end = get_uptime() + ms;
     // while end > get_uptime() {
     //     unsafe { _mm_pause() };

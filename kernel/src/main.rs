@@ -15,8 +15,7 @@ use ::acpi::{AcpiError, RsdpError};
 use acpi::sdt::Signature;
 use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
-use kernel::cpu_localstorage::get_current_cpu_id;
-use kernel::hpet::init_hpet;
+use kernel::fs::ROOTFS;
 use kernel::interrupts::{self};
 
 use kernel::ioapic::{enable_apic, Madt};
@@ -26,12 +25,13 @@ use kernel::net::ethernet::{ethernet_task, lookup_ip};
 use kernel::paging::identity_map::{create_full_identity_map, FULL_IDENTITY_MAP};
 use kernel::paging::page_allocator::{free_page, request_page};
 use kernel::pci::enumerate_pci;
-use kernel::pit::set_divisor;
 use kernel::ps2::PS2Controller;
 use kernel::scheduling::taskmanager::core_start_multitasking;
 use kernel::screen::gop::{self, WRITER};
 use kernel::screen::psf1;
 use kernel::syscall::{sleep, spawn_process, spawn_thread, yield_now};
+use kernel::time::init_time;
+use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
 use kernel::{allocator, gdt, paging, BOOT_INFO};
 
@@ -124,10 +124,7 @@ pub fn main(info: *const BootInfo) -> ! {
         .and_then(|acpi2_table| kernel::acpi::prepare_acpi(acpi2_table.address as usize))
         .unwrap();
 
-    // Set PIT timer frequency
-    set_divisor(65535);
-
-    init_hpet(&acpi_tables);
+    init_time(&acpi_tables);
 
     let madt = unsafe { acpi_tables.get_sdt::<Madt>(Signature::MADT) }
         .unwrap()
@@ -135,10 +132,16 @@ pub fn main(info: *const BootInfo) -> ! {
 
     enable_localapic(&mut FULL_IDENTITY_MAP.lock());
 
+    unsafe { core::arch::asm!("sti") };
+
     enable_apic(&madt, &mut FULL_IDENTITY_MAP.lock());
 
     boot_aps(&madt);
     spawn_process(after_boot);
+
+    // Disable interrupts so when we enable switching this core can finish init.
+    unsafe { core::arch::asm!("cli") };
+    start_switching_tasks();
 
     unsafe { core_start_multitasking() };
 }
@@ -177,23 +180,16 @@ fn after_boot() {
 
         enumerate_pci(acpi_tables);
 
-        for i in 0..255 {
-            let ip = kernel::net::ethernet::IPAddr::V4(192, 168, 1, i);
-            println!(
-                "IP: {:?} has MAC: {:#X}",
-                &ip,
-                lookup_ip(ip.clone()).unwrap_or(u64::MAX >> 4)
-            );
-        }
+        ROOTFS.lock().identify();
     });
 
     spawn_thread(|| {
         for i in 0.. {
-            println!("Core: {}", get_current_cpu_id());
             println!("Uptime: {i}s");
             sleep(1000);
         }
     });
+
     spawn_thread(ethernet_task);
 }
 

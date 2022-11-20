@@ -2,6 +2,7 @@ use crate::{
     acpi::FioxaAcpiHandler,
     driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::PCNET},
     fs::ROOTFS,
+    interrupt_handler,
     net::ethernet::ETHERNET,
     pci::mcfg::get_mcfg,
 };
@@ -21,17 +22,17 @@ lazy_static::lazy_static! {
     pub static ref PCI_INTERRUPT_DEVICES: Mutex<Vec<PCIDriver>> = Mutex::new(Vec::new());
 }
 
+interrupt_handler!(interrupt => interrupt_handler);
+
 // TODO: Change functionality depeding on interrupt number
-pub fn interrupt_handler(_: InterruptStackFrame) {
+pub fn interrupt(_: InterruptStackFrame) {
+    // println!("PCI int");
     // For each device check if it had the interrupt
-    PCI_INTERRUPT_DEVICES.try_lock().and_then(|mut d| {
-        for device in d.iter_mut() {
-            device
-                .try_lock()
-                .and_then(|mut d| Some(d.interrupt_handler()));
-        }
-        Some(())
-    });
+    let mut d = PCI_INTERRUPT_DEVICES.lock();
+    for device in d.iter_mut() {
+        let mut d = device.lock();
+        d.interrupt_handler();
+    }
 }
 
 pub trait PCIDevice {
@@ -226,7 +227,6 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                 println!("AMD PCnet");
                 let driv = Arc::new(Mutex::new(PCNET::new(pci_header).unwrap()));
                 PCI_INTERRUPT_DEVICES.lock().push(driv.clone());
-
                 ETHERNET.lock().new_device(driv);
                 return;
             }

@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use crate::{
     interrupts::set_irq_handler,
     paging::page_table_manager::PageTableManager,
+    pci,
     ps2::{keyboard, mouse},
 };
 
@@ -44,6 +45,10 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTableManager) {
 
     set_irq_handler(51, mouse::mouse_int_handler);
     set_redirect_entry(apic.apic_addr, 0, 12, 51);
+
+    set_irq_handler(52, pci::interrupt_handler);
+    set_redirect_entry(apic.apic_addr, 0, 10, 52);
+    set_redirect_entry(apic.apic_addr, 0, 11, 52);
 }
 
 pub fn send_ipi_to(apic_id: u8, vector: u8) {

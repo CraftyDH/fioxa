@@ -1,22 +1,23 @@
 pub mod fis;
 pub mod port;
 
-use alloc::string::String;
+use alloc::{sync::Arc, vec::Vec};
 use bit_field::BitField;
 use modular_bitfield::{
     bitfield,
     specifiers::{B128, B22, B4, B5, B9},
 };
+use spin::Mutex;
 use volatile::Volatile;
 
 use crate::{
-    driver::{disk::DiskBusDriver, driver::Driver},
+    driver::{disk::DiskDevice, driver::Driver},
     paging::get_uefi_active_mapper,
-    pci::{PCIHeader0, PCIHeaderCommon},
-    syscall::yield_now,
-};
+    pci::{PCIHeader0, PCIHeaderCommon},};
 
 use self::port::{Port, PortType};
+
+use super::DiskBusDriver;
 
 const HBA_PORT_DEV_PRESENT: u8 = 0x3;
 const HBA_PORT_IPM_ACTIVE: u8 = 0x1;
@@ -47,10 +48,10 @@ pub struct HBACommandHeader {
     _rev1: B128,
 }
 
-pub struct AHCIDriver<'p> {
+pub struct AHCIDriver {
     pci_device: PCIHeader0,
     // abar: HBAMemory,
-    ports: [Option<Port<'p>>; 32],
+    ports: [Option<Arc<Mutex<Port>>>; 32],
 }
 
 #[bitfield]
@@ -117,7 +118,7 @@ pub struct HBAMemory {
     ports: [HBAPort; 32],
 }
 
-impl AHCIDriver<'_> {
+impl AHCIDriver {
     pub fn check_port_type(port: &HBAPort) -> PortType {
         let sata_status = port.sata_status.read();
 
@@ -141,9 +142,9 @@ impl AHCIDriver<'_> {
     }
 }
 
-unsafe impl Send for AHCIDriver<'_> {}
+unsafe impl Send for AHCIDriver {}
 
-impl Driver for AHCIDriver<'_> {
+impl Driver for AHCIDriver {
     fn new(device: PCIHeaderCommon) -> Option<Self>
     where
         Self: Sized,
@@ -178,23 +179,13 @@ impl Driver for AHCIDriver<'_> {
 
                 println!("SATA: {:?}", port_type);
 
-                if port_type == PortType::SATA || port_type == PortType::SATAPI {
+                if port_type == PortType::SATA {
                     let mut port = Port::new(port);
 
-                    port.identify();
-
-                    // Just read the first valid disk forever
+                    // Test read
                     if let Some(_) = port.read(0, 1, buffer) {
-                        for x in (1000..1000 + 52 * 2).step_by(52) {
-                            port.read(x, 1, buffer).unwrap();
-                            for l in String::from_utf8_lossy(buffer).lines() {
-                                println!("{}", l);
-                            }
-                        }
-                        yield_now()
+                        ahci.ports[i] = Some(Arc::new(Mutex::new(port)));
                     }
-
-                    ahci.ports[i] = Some(port);
                 }
             }
         }
@@ -211,25 +202,20 @@ impl Driver for AHCIDriver<'_> {
     }
 }
 
-impl DiskBusDriver for AHCIDriver<'_> {
-    fn read(&mut self, dev: u8, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()> {
-        if dev > 32 {
-            return None;
-        }
-        if let Some(d) = &mut self.ports[dev as usize] {
-            d.read(sector, sector_count, buffer)
-        } else {
-            return None;
-        }
+impl DiskBusDriver for AHCIDriver {
+    fn get_disks(&mut self) -> Vec<Arc<Mutex<dyn DiskDevice>>> {
+        self.ports
+            .clone()
+            .into_iter()
+            .filter_map(|a| a)
+            .map(|a| a.clone() as Arc<Mutex<dyn DiskDevice>>)
+            .collect()
     }
 
-    fn write(
-        &mut self,
-        dev: usize,
-        sector: usize,
-        sector_count: u32,
-        buffer: &mut [u8],
-    ) -> Option<()> {
-        todo!()
+    fn get_disk_by_id(&mut self, id: usize) -> Option<Arc<Mutex<dyn DiskDevice>>> {
+        if let Some(Some(port)) = self.ports.get(id) {
+            return Some(port.clone());
+        }
+        None
     }
 }

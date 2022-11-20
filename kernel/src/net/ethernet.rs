@@ -8,6 +8,7 @@ use crossbeam_queue::SegQueue;
 use lazy_static::lazy_static;
 use modular_bitfield::{bitfield, specifiers::B48};
 use spin::Mutex;
+use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::{
     driver::net::{EthernetDriver, SendError},
@@ -55,19 +56,22 @@ pub fn ethernet_task() {
 }
 
 pub fn handle_ethernet_frame(frame: EthernetFrame) {
+    println!("{:?}", frame.header);
     if frame.header.ether_type_be() == 1544 {
-        assert!(frame.data.len() >= size_of::<ARP>());
-        let arp = unsafe { &*(frame.data.as_ptr() as *const ARP) };
-        if arp.src_mac() != 0xFF_FF_FF && arp.src_mac() != 0 {
-            ARP_TABLE
-                .lock()
-                .insert(IPAddr::ipv4_addr_from_net(arp.src_ip()), arp.src_mac());
-        }
-        if arp.dst_mac() != 0xFF_FF_FF && arp.dst_mac() != 0 {
-            ARP_TABLE
-                .lock()
-                .insert(IPAddr::ipv4_addr_from_net(arp.dst_ip()), arp.dst_mac());
-        }
+        without_interrupts(|| {
+            assert!(frame.data.len() >= size_of::<ARP>());
+            let arp = unsafe { &*(frame.data.as_ptr() as *const ARP) };
+            if arp.src_mac() != 0xFF_FF_FF && arp.src_mac() != 0 {
+                ARP_TABLE
+                    .lock()
+                    .insert(IPAddr::ipv4_addr_from_net(arp.src_ip()), arp.src_mac());
+            }
+            if arp.dst_mac() != 0xFF_FF_FF && arp.dst_mac() != 0 {
+                ARP_TABLE
+                    .lock()
+                    .insert(IPAddr::ipv4_addr_from_net(arp.dst_ip()), arp.dst_mac());
+            }
+        });
     }
 }
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -154,7 +158,13 @@ impl Ethernet {
             header.set_ether_type_be(0x0806u16.to_be());
             let arp_req = ARPEth { header, arp };
             let buf: &[u8; size_of::<ARPEth>()] = &unsafe { transmute(arp_req) };
-            while let Err(SendError::BufferFull) = device.driver.lock().send_packet(buf) {
+            while let Err(SendError::BufferFull) = without_interrupts(|| {
+                device
+                    .driver
+                    .try_lock()
+                    .ok_or(SendError::BufferFull)
+                    .and_then(|mut d| d.send_packet(buf))
+            }) {
                 yield_now()
             }
             return;
@@ -163,12 +173,12 @@ impl Ethernet {
 }
 
 pub fn lookup_ip(ip: IPAddr) -> Option<u64> {
-    for _ in 0..10 {
-        if let Some(mac) = ARP_TABLE.lock().get(&ip) {
-            return Some(*mac);
+    for _ in 0..5 {
+        if let Some(mac) = without_interrupts(|| ARP_TABLE.lock().get(&ip).cloned()) {
+            return Some(mac);
         };
         ETHERNET.lock().send_arp(ip.clone());
-        sleep(100)
+        sleep(1000)
     }
     None
 }

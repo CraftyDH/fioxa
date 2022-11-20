@@ -1,19 +1,22 @@
 use core::mem::size_of;
 
 use alloc::{slice, vec::Vec};
-use bit_field::BitField;
 
 use crate::{
-    driver::disk::ahci::{
-        fis::{FisRegH2D, FISTYPE},
-        HBACommandHeader, HBACommandTable,
+    driver::disk::{
+        ahci::{
+            fis::{FisRegH2D, FISTYPE},
+            HBACommandHeader, HBACommandTable,
+        },
+        ata::ATADiskIdentify,
+        DiskDevice,
     },
     paging::{
         get_uefi_active_mapper,
         page_allocator::{free_page, request_page},
         page_table_manager::ident_map_curr_process,
     },
-    syscall::yield_now,
+    syscall::{sleep, yield_now},
 };
 
 use super::{fis::ReceivedFis, HBAPort, HBA_PxCMD_CR, HBA_PxCMD_FR, HBA_PxCMD_FRE, HBA_PxCMD_ST};
@@ -27,14 +30,14 @@ pub enum PortType {
     SATAPI = 4,
 }
 
-pub struct Port<'p> {
-    hba_port: &'p mut HBAPort,
+pub struct Port {
+    hba_port: &'static mut HBAPort,
     received_fis: &'static mut ReceivedFis,
     cmd_list: &'static mut [HBACommandHeader],
     cmd_table_buffers: Vec<u64>,
 }
 
-impl Drop for Port<'_> {
+impl Drop for Port {
     fn drop(&mut self) {
         free_page(self.received_fis as *const ReceivedFis as u64).unwrap();
         free_page(&self.cmd_list[0] as *const HBACommandHeader as u64).unwrap();
@@ -45,8 +48,8 @@ impl Drop for Port<'_> {
     }
 }
 
-impl<'p> Port<'p> {
-    pub fn new(port: &'p mut HBAPort) -> Self {
+impl Port {
+    pub fn new(port: &'static mut HBAPort) -> Self {
         Self::stop_cmd(port);
 
         let rfis_addr = request_page().unwrap();
@@ -74,7 +77,7 @@ impl<'p> Port<'p> {
             cmd_table_buffers.push(command_table_addr);
 
             for i in 0..16 {
-                let index = i * c;
+                let index = i + c * 16;
                 // 8 PRDTS's per command table
                 // = 256 bytes per cammand table
                 cmd_list[index].set_prdt_length(8);
@@ -85,7 +88,7 @@ impl<'p> Port<'p> {
             }
         }
 
-        port.sata_active.write(u32::MAX);
+        // port.sata_active.write(u32::MAX);
 
         Self::start_cmd(port);
         Self {
@@ -97,50 +100,16 @@ impl<'p> Port<'p> {
     }
 
     pub fn find_slot(&mut self) -> u8 {
-        let test = self.hba_port.command_issue.read();
-        for slot in 0..32 {
-            if test & (1 << slot) == 0 {
-                return slot;
-            }
-        }
-        unimplemented!();
-    }
-
-    pub fn identify(&mut self) -> Vec<u8> {
-        let slot = self.find_slot() as usize;
-
-        let cmd_header = unsafe {
-            &mut *(self.hba_port.command_list_base.read() as *mut [HBACommandHeader; 32])
-        };
-        let cmd_table =
-            unsafe { &mut *(cmd_header[0].command_table_base_address() as *mut HBACommandTable) };
-
-        let buffer: Vec<u8> = vec![0; 512];
-
-        let addr = Self::get_address(buffer.as_ptr() as u64);
-
-        cmd_table.prdt_entry[0].set_data_base_address(addr);
-        cmd_table.prdt_entry[0].set_byte_count(512 - 1);
-
-        cmd_header[slot].set_prdt_length(1);
-        cmd_header[slot].set_command_fis_length(4);
-
-        let cmd_fis = unsafe { &mut *(cmd_table.command_fis.as_mut_ptr() as *mut FisRegH2D) };
-        cmd_fis.set_fis_type(FISTYPE::REGH2D as u8);
-        cmd_fis.set_command(0xec); // Ident
-        cmd_fis.set_countl(1);
-        cmd_fis.set_command_control(true);
-        self.hba_port.command_issue.write(1 << slot);
-
+        let test = self.hba_port.command_issue.read() | self.hba_port.sata_active.read();
         loop {
-            yield_now();
-            println!("Reading...: {:b}", self.hba_port.command_issue.read());
-            if !self.hba_port.command_issue.read().get_bit(slot) {
-                break;
+            for slot in 0..32 {
+                if test & (1 << slot) == 0 {
+                    return slot;
+                }
             }
+            sleep(10);
         }
-        println!("Port: {:?}", buffer);
-        buffer
+        // unimplemented!();
     }
 
     pub fn start_cmd(port: &mut HBAPort) {
@@ -167,11 +136,18 @@ impl<'p> Port<'p> {
         let addr = mapper.get_phys_addr(vaddr & !0xFFF as u64).unwrap();
         addr + vaddr % 0x1000
     }
-
-    pub fn read(&mut self, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()> {
+}
+impl DiskDevice for Port {
+    fn read(&mut self, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()> {
         if sector_count > 56 {
-            todo!("Sectors count of 64 is max atm")
+            todo!("Sectors count of 56 is max atm")
         }
+
+        assert!(
+            buffer.len() >= sector_count as usize * 512,
+            "Buffer is not large enough"
+        );
+
         let sector_low = sector as u32;
         let sector_high = (sector >> 32) as u32;
 
@@ -251,12 +227,13 @@ impl<'p> Port<'p> {
         cmd_fis.set_countl((sector_count & 0xFF) as u8);
         cmd_fis.set_counth(((sector_count >> 8) & 0xFF) as u8);
 
-        let mut spin = 0;
+        let mut spin = 100_000;
 
-        while ((self.hba_port.task_file_data.read() & (0x80 | 0x08)) > 0) && spin < 1000000 {
-            spin += 1;
+        while ((self.hba_port.task_file_data.read() & (0x80 | 0x08)) > 0) && spin > 0 {
+            spin -= 1;
+            yield_now();
         }
-        if spin == 1000000 {
+        if spin == 0 {
             println!("Port is hung");
             return None;
         }
@@ -264,7 +241,6 @@ impl<'p> Port<'p> {
         self.hba_port.command_issue.write(1 << slot);
         loop {
             yield_now();
-            println!("Test");
             if self.hba_port.command_issue.read() & (1 << slot) == 0 {
                 break;
             }
@@ -280,5 +256,67 @@ impl<'p> Port<'p> {
         }
 
         Some(())
+    }
+
+    fn write(&mut self, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()> {
+        todo!()
+    }
+
+    fn identify(&mut self) -> &ATADiskIdentify {
+        self.hba_port.interrupt_status.write(0xFFFFFFFF);
+        let slot = self.find_slot() as usize;
+
+        let cmd_list = &mut self.cmd_list[slot];
+        cmd_list.set_command_fis_length((size_of::<FisRegH2D>() / 4) as u8);
+        cmd_list.set_write(false); // This is read
+
+        let cmd_table =
+            unsafe { &mut *(cmd_list.command_table_base_address() as *mut HBACommandTable) };
+
+        let buffer: Vec<u8> = vec![0; 508];
+
+        let addr = Self::get_address(buffer.as_ptr() as u64);
+
+        cmd_table.prdt_entry[0].set_data_base_address(addr);
+        cmd_table.prdt_entry[0].set_byte_count(508 - 1);
+
+        cmd_list.set_prdt_length(1);
+
+        let cmd_fis = unsafe { &mut *(cmd_table.command_fis.as_mut_ptr() as *mut FisRegH2D) };
+        cmd_fis.set_fis_type(FISTYPE::REGH2D as u8);
+        // cmd_fis.set_control(1);
+
+        cmd_fis.set_command(0xec); // Ident
+        cmd_fis.set_countl(0);
+        cmd_fis.set_command_control(true);
+
+        let mut spin = 0;
+
+        while ((self.hba_port.task_file_data.read() & (0x80 | 0x08)) > 0) && spin < 1000000 {
+            spin += 1;
+        }
+        if spin == 1000000 {
+            todo!("Port is hung");
+        }
+
+        self.hba_port.command_issue.write(1 << slot);
+
+        let mut i = 1000;
+        while i > 0 {
+            yield_now();
+            // println!("Reading...: {:b}", self.hba_port.command_issue.read());
+            if self.hba_port.command_issue.read() & (1 << slot) == 0 {
+                break;
+            }
+            if self.hba_port.interrupt_status.read() & (1 << 30) > 0 {
+                println!("Error reading");
+                break;
+            }
+            i -= 1;
+        }
+        if i == 0 {
+            todo!("Failed to read identify")
+        }
+        unsafe { &*(buffer.as_ptr() as *const ATADiskIdentify) }
     }
 }

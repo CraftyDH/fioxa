@@ -37,13 +37,11 @@ pub unsafe fn new_cpu(core_id: u8) -> u64 {
 
     let stack_base = frame_alloc_exec(|c| c.lock().request_cont_pages(10)).unwrap();
 
-    // TODO: Fix page allocator to give continuous pages instead of this hack
-
     ls.stack_top = stack_base + CPU_STACK_SIZE;
     local_storage
 }
 pub fn get_current_cpu_id() -> u8 {
-    let pid: u16;
-    unsafe { core::arch::asm!("mov {:e}, gs:0", out(reg) pid) };
-    pid as u8
+    let cid: u16;
+    unsafe { core::arch::asm!("mov {:e}, gs:0", out(reg) cid) };
+    cid as u8
 }

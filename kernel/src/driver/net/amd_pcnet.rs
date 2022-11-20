@@ -232,6 +232,10 @@ impl Driver for PCNET<'_> {
         // Start card
         this.io.write_csr_32(0, 2 | 0x40);
         assert!(this.io.read_csr_32(0) == 0b111110011); // IDON + INTR + RXON + TXON + STRT + INIT + IENA
+
+        // Clear any interrupts the card send (INIT)
+        this.interrupt_handler();
+        println!("PCNET inited");
         Some(this)
     }
     fn unload(self) -> ! {
@@ -257,13 +261,12 @@ impl Driver for PCNET<'_> {
             // println!("AMD am79c973 DATA RECEIVED");
             self.receive();
         }
-        // if tmp & 0x200 > 0 {
-        //     println!("AMD am79c973 DATA SENT")
-        // }
+        if tmp & 0x200 > 0 {
+            // println!("AMD am79c973 DATA SENT")
+        }
         if tmp & 0x100 > 0 {
             println!("AMD am79c973 INIT DONE")
         }
-
         // Start interrupts again
         self.io.write_csr_32(0, 0x40);
     }
@@ -285,9 +288,11 @@ impl EthernetDriver for PCNET<'_> {
                 buffer_desc.avail = 0;
                 buffer_desc.flags_2 = 0;
                 // Then length is twos complement of bytes
-                buffer_desc.flags =
-                    0x8300F000 | BUFFER_SIZE_MASK | ((!data.len() + 1) as u16 as u32);
-                self.io.write_csr_32(0, 0x8);
+                buffer_desc.flags = 0x8300F000 | ((!data.len() + 1) as u16 as u32);
+
+                // Set TDMD
+                let tmp = self.io.read_csr_32(0);
+                self.io.write_csr_32(0, tmp | 0x8);
                 return Ok(());
             }
         }
