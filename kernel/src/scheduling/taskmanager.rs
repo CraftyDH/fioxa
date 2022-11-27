@@ -1,6 +1,6 @@
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use crossbeam_queue::SegQueue;
+use crossbeam_queue::ArrayQueue;
 use spin::Mutex;
 use x86_64::structures::idt::InterruptStackFrame;
 
@@ -12,14 +12,11 @@ use crate::{
 use super::process::{Process, Thread, PID, TID};
 
 lazy_static::lazy_static! {
-    static ref PROCESSOR_QUEUE: [SegQueue<(PID, TID)>; 8] = [0; 8].map(|_| SegQueue::new());
+    pub static ref TASKMANAGER: Mutex<TaskManager> = Mutex::new(TaskManager::uninit());
 }
-
-pub static TASKMANAGER: Mutex<TaskManager> = Mutex::new(TaskManager::uninit());
-
 pub struct TaskManager {
     core_cnt: u8,
-    task_queue: SegQueue<(PID, TID)>,
+    task_queue: ArrayQueue<(PID, TID)>,
     core_current_task: Vec<(PID, TID)>,
     processes: BTreeMap<PID, Process>,
 }
@@ -32,10 +29,10 @@ pub unsafe fn core_start_multitasking() -> ! {
 }
 
 impl TaskManager {
-    const fn uninit() -> Self {
+    fn uninit() -> Self {
         Self {
             core_cnt: 0,
-            task_queue: SegQueue::new(),
+            task_queue: ArrayQueue::new(100),
             core_current_task: Vec::new(),
             processes: BTreeMap::new(),
         }
@@ -87,7 +84,7 @@ impl TaskManager {
         thread.save(stack_frame, reg);
         // Don't save nop task
         if pid != 0.into() {
-            self.task_queue.push((pid, tid))
+            self.task_queue.push((pid, tid)).unwrap()
         }
         Some(())
     }
@@ -127,7 +124,7 @@ impl TaskManager {
         // TODO: Validate r8 is a valid entrypoint
         let thread = process.new_thread(reg.r8);
         self.processes.insert(pid, process);
-        self.task_queue.push((pid, thread));
+        self.task_queue.push((pid, thread)).unwrap();
         // Return process id as successful result;
         reg.rax = pid.into();
     }
@@ -139,7 +136,7 @@ impl TaskManager {
 
         // TODO: Validate r8 is a valid entrypoint
         let thread = process.new_thread(reg.r8);
-        self.task_queue.push((pid, thread));
+        self.task_queue.push((pid, thread)).unwrap();
         // Return task id as successful result;
         reg.rax = thread.into();
     }

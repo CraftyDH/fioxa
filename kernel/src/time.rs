@@ -28,3 +28,10 @@ pub fn init_time(acpi_tables: &AcpiTables<FioxaAcpiHandler>) {
         *h = Some(dev);
     };
 }
+
+pub fn uptime() -> u64 {
+    match &*HPET.lock() {
+        Some(hpet) => hpet.get_uptime(),
+        None => pit::get_uptime(),
+    }
+}

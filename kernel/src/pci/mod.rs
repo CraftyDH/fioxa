@@ -1,7 +1,7 @@
 use crate::{
     acpi::FioxaAcpiHandler,
     driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::PCNET},
-    fs::ROOTFS,
+    fs::FSDRIVES,
     interrupt_handler,
     net::ethernet::ETHERNET,
     pci::mcfg::get_mcfg,
@@ -246,7 +246,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                     0x01 => {
                         println!("AHCI");
                         match AHCIDriver::new(pci_header) {
-                            Some(d) => ROOTFS.lock().add_device(Box::new(d)),
+                            Some(d) => FSDRIVES.lock().add_device(Box::new(d)),
                             None => {
                                 println!("AHCI Driver failed to init.");
                             }

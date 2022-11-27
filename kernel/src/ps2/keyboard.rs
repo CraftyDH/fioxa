@@ -1,29 +1,35 @@
+use core::sync::atomic::AtomicUsize;
+
+use alloc::{collections::BTreeMap, sync::Weak};
 use conquer_once::spin::OnceCell;
-use crossbeam_queue::ArrayQueue;
+use crossbeam_queue::{ArrayQueue, SegQueue};
 use spin::Mutex;
 use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
 
 use crate::interrupt_handler;
 
 use super::{
-    scancode::{
-        keys::{RawKeyCode, RawKeyCodeState},
-        set2::ScancodeSet2,
-    },
-    translate::{translate_raw_keycode, KeyCode},
+    scancode::{keys::RawKeyCodeState, set2::ScancodeSet2},
     PS2Command,
 };
 
 static DECODER: Mutex<ScancodeSet2> = Mutex::new(ScancodeSet2::new());
 static SCANCODE_QUEUE: OnceCell<ArrayQueue<RawKeyCodeState>> = OnceCell::uninit();
 
+static SUBSCRIBERS: Mutex<BTreeMap<usize, Weak<SegQueue<RawKeyCodeState>>>> =
+    Mutex::new(BTreeMap::new());
+
+pub fn subscribe(queue: Weak<SegQueue<RawKeyCodeState>>) -> usize {
+    static SCANCODE_SUBSCRIBER: AtomicUsize = AtomicUsize::new(0);
+
+    let v = SCANCODE_SUBSCRIBER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+
+    SUBSCRIBERS.lock().insert(v, queue);
+    v
+}
+
 pub struct Keyboard {
     command: PS2Command,
-    caps_lock: bool,
-    num_lock: bool,
-    scroll_lock: bool,
-    lshift: bool,
-    rshift: bool,
 }
 
 interrupt_handler!(interrupt_handler => keyboard_int_handler);
@@ -45,14 +51,7 @@ pub fn interrupt_handler(_: InterruptStackFrame) {
 
 impl Keyboard {
     pub const fn new(command: PS2Command) -> Self {
-        Self {
-            command,
-            caps_lock: false,
-            num_lock: false,
-            scroll_lock: false,
-            lshift: false,
-            rshift: false,
-        }
+        Self { command }
     }
 
     fn send_command(&mut self, command: u8) -> Result<(), &'static str> {
@@ -75,8 +74,14 @@ impl Keyboard {
 
     pub fn check_packets(&mut self) {
         if let Ok(queue) = SCANCODE_QUEUE.try_get() {
+            let subscribers = SUBSCRIBERS.lock();
+
             while let Some(scan_code) = queue.pop() {
-                self.handle_code(scan_code)
+                for (_, v) in subscribers.iter() {
+                    if let Some(q) = v.upgrade() {
+                        q.push(scan_code);
+                    }
+                }
             }
         }
     }
@@ -111,52 +116,17 @@ impl Keyboard {
             .unwrap();
     }
 
-    fn update_leds(&mut self) {
-        // Create state packet as stated here
-        // https://wiki.osdev.org/PS/2_Keyboard
-        let state =
-            (self.caps_lock as u8) << 2 | (self.num_lock as u8) << 1 | self.scroll_lock as u8;
-        // 0xED is set LEDS
-        if let Err(e) = self
-            .send_command(0xED)
-            .and_then(|_| self.send_command(state))
-        {
-            println!("WARN: Kb failed to update leds: {}", e)
-        }
-    }
-
-    fn handle_code(&mut self, scan_code: RawKeyCodeState) {
-        match scan_code {
-            RawKeyCodeState::Up(code) => match code {
-                RawKeyCode::LeftShift => self.lshift = false,
-                RawKeyCode::RightShift => self.rshift = false,
-                // RawKeyCode::CapsLock => self.caps_lock = false,
-                // RawKeyCode::NumLock => self.num_lock = false,
-                _ => {}
-            },
-            RawKeyCodeState::Down(code) => match code {
-                RawKeyCode::LeftShift => self.lshift = true,
-                RawKeyCode::RightShift => self.rshift = true,
-                RawKeyCode::CapsLock => {
-                    self.caps_lock = !self.caps_lock;
-                    self.update_leds()
-                }
-                RawKeyCode::NumLock => {
-                    self.num_lock = !self.num_lock;
-                    self.update_leds()
-                }
-                RawKeyCode::ScrollLock => {
-                    self.scroll_lock = !self.scroll_lock;
-                    self.update_leds()
-                }
-                _ => {
-                    let shift = self.lshift | self.rshift;
-                    match translate_raw_keycode(code, shift, self.caps_lock, self.num_lock) {
-                        KeyCode::Unicode(key) => print!("{}", key),
-                        KeyCode::SpecialCodes(key) => print!("{}", key),
-                    }
-                }
-            },
-        }
-    }
+    // fn update_leds(&mut self) {
+    //     // Create state packet as stated here
+    //     // https://wiki.osdev.org/PS/2_Keyboard
+    //     let state =
+    //         (self.caps_lock as u8) << 2 | (self.num_lock as u8) << 1 | self.scroll_lock as u8;
+    //     // 0xED is set LEDS
+    //     if let Err(e) = self
+    //         .send_command(0xED)
+    //         .and_then(|_| self.send_command(state))
+    //     {
+    //         println!("WARN: Kb failed to update leds: {}", e)
+    //     }
+    // }
 }

@@ -4,8 +4,8 @@ use self::{keyboard::Keyboard, mouse::Mouse};
 
 pub mod keyboard;
 pub mod mouse;
-mod scancode;
-mod translate;
+pub mod scancode;
+pub mod translate;
 
 pub struct PS2Command {
     data_port: Port<u8>,

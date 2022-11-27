@@ -192,16 +192,16 @@ impl Writer {
             let buf = self.gop.buffer.get_mut();
             unsafe {
                 // Copy memory from bottom to top (aka scroll)
-                for l in (16 * 5)..max {
+                for l in 16..max {
                     core::ptr::copy(
                         buf.offset((l * self.gop.stride * 4) as isize),
-                        buf.offset(((l - 16 * 5) * self.gop.stride * 4) as isize),
+                        buf.offset(((l - 16) * self.gop.stride * 4) as isize),
                         self.gop.horizonal * 4,
                     )
                 }
 
                 // Clear the bottom line by writing zeros
-                for l in (max - 16 * 5)..self.gop.vertical {
+                for l in (max - 16)..self.gop.vertical {
                     core::ptr::write_bytes(
                         buf.offset((l * self.gop.stride * 4) as isize),
                         0,
@@ -210,7 +210,7 @@ impl Writer {
                 }
             }
 
-            self.pos.y -= 16 * 5;
+            self.pos.y -= 16;
             self.pos.x = 0
         }
     }

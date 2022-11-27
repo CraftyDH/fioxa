@@ -15,13 +15,13 @@ use ::acpi::{AcpiError, RsdpError};
 use acpi::sdt::Signature;
 use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
-use kernel::fs::ROOTFS;
+use kernel::fs::FSDRIVES;
 use kernel::interrupts::{self};
 
 use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::enable_localapic;
 use kernel::memory::MemoryMapIter;
-use kernel::net::ethernet::{ethernet_task, lookup_ip};
+use kernel::net::ethernet::ethernet_task;
 use kernel::paging::identity_map::{create_full_identity_map, FULL_IDENTITY_MAP};
 use kernel::paging::page_allocator::{free_page, request_page};
 use kernel::pci::enumerate_pci;
@@ -30,6 +30,7 @@ use kernel::scheduling::taskmanager::core_start_multitasking;
 use kernel::screen::gop::{self, WRITER};
 use kernel::screen::psf1;
 use kernel::syscall::{sleep, spawn_process, spawn_thread, yield_now};
+use kernel::terminal::terminal;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
@@ -161,36 +162,34 @@ fn after_boot() {
 
     let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
 
-    spawn_thread(|| {
-        log!("Initalizing PS2 devices...");
-        let mut ps2_controller = PS2Controller::new();
+    log!("Initalizing PS2 devices...");
+    let mut ps2_controller = PS2Controller::new();
 
-        if let Err(e) = ps2_controller.initialize() {
-            log!("PS2 Controller failed to init because: {}", e);
-            return;
-        }
-        loop {
+    if let Err(e) = ps2_controller.initialize() {
+        log!("PS2 Controller failed to init because: {}", e);
+        return;
+    } else {
+        spawn_thread(|| loop {
             ps2_controller.check_packets();
             yield_now();
-        }
-    });
+        });
+    }
 
-    spawn_thread(move || {
-        log!("Enumnerating PCI...");
+    log!("Enumnerating PCI...");
 
-        enumerate_pci(acpi_tables);
-
-        ROOTFS.lock().identify();
-    });
-
-    spawn_thread(|| {
-        for i in 0.. {
-            println!("Uptime: {i}s");
-            sleep(1000);
-        }
-    });
+    enumerate_pci(acpi_tables);
 
     spawn_thread(ethernet_task);
+
+    FSDRIVES.lock().identify();
+
+    // spawn_thread(|| {
+    //     for i in 0.. {
+    //         println!("Uptime: {i}s");
+    //         sleep(1000);
+    //     }
+    // });
+    terminal();
 }
 
 #[cfg(test)]

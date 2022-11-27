@@ -36,6 +36,7 @@ pub mod pci;
 pub mod ps2;
 pub mod scheduling;
 pub mod syscall;
+pub mod terminal;
 pub mod time;
 pub mod uefi;
 

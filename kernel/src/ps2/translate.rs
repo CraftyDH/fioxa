@@ -191,10 +191,10 @@ pub fn translate_raw_keycode(code: RawKeyCode, shift: bool, caps: bool, num_lock
             }
         }
         // Arrows
-        RawKeyCode::UpArrow => KeyCode::Unicode('\u{2191}'),
-        RawKeyCode::DownArrow => KeyCode::Unicode('\u{2193}'),
-        RawKeyCode::LeftArrow => KeyCode::Unicode('\u{2190}'),
-        RawKeyCode::RightArrow => KeyCode::Unicode('\u{2192}'),
+        RawKeyCode::UpArrow => KeyCode::SpecialCodes(SpecialCodes::UpArrow),
+        RawKeyCode::DownArrow => KeyCode::SpecialCodes(SpecialCodes::DownArrow),
+        RawKeyCode::LeftArrow => KeyCode::SpecialCodes(SpecialCodes::LeftArrow),
+        RawKeyCode::RightArrow => KeyCode::SpecialCodes(SpecialCodes::RightArrow),
 
         _ => KeyCode::Unicode('\u{0}'),
     }

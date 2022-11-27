@@ -1,10 +1,10 @@
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum RawKeyCodeState {
     Up(RawKeyCode),
     Down(RawKeyCode),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum RawKeyCode {
     // Control Characters
     Escape,
