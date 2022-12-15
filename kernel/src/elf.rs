@@ -1,11 +1,14 @@
 use core::cmp::{max, min};
 
-use uefi::{
-    prelude::BootServices,
-    table::boot::{AllocateType, MemoryType},
+use crate::{
+    assembly::registers::Registers,
+    paging::{
+        page_allocator::frame_alloc_exec,
+        page_table_manager::{page_4kb, Mapper},
+        virt_addr_for_phys,
+    },
+    scheduling::{process::Process, taskmanager::TASKMANAGER},
 };
-
-use crate::{paging::get_uefi_active_mapper, BootInfo, OwnedBuffer};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -49,13 +52,9 @@ const EM_X86_64: u16 = 62; // AMD x86-64 architecture
 // For the ELF Program Header https://refspecs.linuxbase.org/elf/gabi4+/ch5.pheader.html
 const PT_LOAD: u32 = 1; // A loadable segment
 
-pub fn load_kernel(
-    boot_services: &BootServices,
-    kernel_data: OwnedBuffer,
-    boot_info: &mut BootInfo,
-) -> u64 {
+pub fn load_elf(data: &[u8]) {
     // Transpose the header as an elf header
-    let elf_header = unsafe { *(kernel_data.buf.as_ptr() as *const Elf64Ehdr) };
+    let elf_header = unsafe { *(data.as_ptr() as *const Elf64Ehdr) };
     // Ensure that all the header flags are suitable
     if &elf_header.e_ident[0..6]
         == [
@@ -70,9 +69,9 @@ pub fn load_kernel(
         && elf_header.e_machine == EM_X86_64
         && elf_header.e_version == 1
     {
-        info!("Kernel Header Verified");
+        println!("Elf Header Verified");
     } else {
-        panic!("Kernel Header Invalid")
+        panic!("Elf Header Invalid")
     }
 
     let headers = (elf_header.e_phoff..((elf_header.e_phnum * elf_header.e_phentsize).into()))
@@ -82,9 +81,8 @@ pub fn load_kernel(
     let mut size = u64::MIN;
 
     for program_header_ptr in headers.clone() {
-        let program_header = unsafe {
-            *(kernel_data.buf.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr)
-        };
+        let program_header =
+            unsafe { *(data.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr) };
         base = min(base, program_header.p_vaddr);
         size = max(size, program_header.p_vaddr + program_header.p_memsz);
     }
@@ -94,59 +92,43 @@ pub fn load_kernel(
     let size = size - base;
     let pages = size / 4096 + 1;
 
-    let page = match boot_services.allocate_pages(
-        AllocateType::AnyPages,
-        MemoryType::LOADER_DATA,
-        pages as usize,
-    ) {
-        Err(err) => {
-            panic!("Couldn't allocate page {:?}", err);
-        }
-        Ok(p) => p,
-    };
+    println!(
+        "Elf size:{size}, base:{base}, entry: {}",
+        elf_header.e_entry
+    );
 
-    boot_info.kernel_start = page;
-    boot_info.kernel_pages = pages;
+    let mut proc = Process::new(crate::scheduling::process::ProcessPrivilige::USER);
+    let map = &mut proc.page_mapper;
 
-    let mut mapper = unsafe { get_uefi_active_mapper() };
+    let start = frame_alloc_exec(|c| c.request_cont_pages(pages as usize)).unwrap();
 
-    info!("Mapping kernel pages");
-    for p in 0..pages {
-        mapper
-            .map_memory(
-                mem_start + 0x1000 * p,
-                page + 0x1000 * p,
-                true,
-                boot_services,
-            )
+    for page in 0..pages {
+        let p = page * 0x1000;
+        map.map_memory(page_4kb(mem_start + p), page_4kb(start + p))
             .unwrap()
             .flush();
     }
 
-    info!("Zeroing kernel");
-    // Ensure all memory is zeroed
-    unsafe { core::ptr::write_bytes(mem_start as *mut u8, 0, size as usize) }
-
-    info!("Copying kernel");
     // Iterate over each header
     for program_header_ptr in headers {
         // Transpose the program header as an elf header
-        let program_header = unsafe {
-            *(kernel_data.buf.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr)
-        };
+        let program_header =
+            unsafe { *(data.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr) };
         if program_header.p_type == PT_LOAD {
             unsafe {
-                core::ptr::copy::<u8>(
-                    kernel_data
-                        .buf
-                        .as_ptr()
+                core::ptr::copy_nonoverlapping::<u8>(
+                    data.as_ptr()
                         .offset(program_header.p_offset.try_into().unwrap()),
-                    program_header.p_vaddr as *mut u8,
+                    virt_addr_for_phys(start + program_header.p_vaddr - mem_start) as *mut u8,
                     program_header.p_filesz.try_into().unwrap(),
                 )
             }
         }
     }
 
-    elf_header.e_entry
+    let tid = proc.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
+
+    let pid = proc.pid;
+    TASKMANAGER.lock().processes.insert(proc.pid, proc);
+    TASKMANAGER.lock().task_queue.push((pid, tid)).unwrap();
 }

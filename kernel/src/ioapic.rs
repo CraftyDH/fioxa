@@ -8,25 +8,18 @@ use alloc::vec::Vec;
 
 use crate::{
     interrupts::set_irq_handler,
-    paging::page_table_manager::PageTableManager,
+    paging::page_table_manager::{page_4kb, Mapper, PageLvl4, PageTable},
     pci,
     ps2::{keyboard, mouse},
 };
 
-pub fn enable_apic(madt: &Madt, mapper: &mut PageTableManager) {
+pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
     let (_, _, io_apics, apic_ints) = madt.find_ioapic();
-
-    unsafe {
-        // Make our gs 0 as other cores will use their id
-        core::arch::asm!("mov {0}, 0", "mov gs, {0}", out(reg) _);
-    }
 
     for apic in &io_apics {
         println!("APIC: {:?}", apic);
-        mapper
-            .map_memory(apic.apic_addr.into(), apic.apic_addr.into(), true)
-            .unwrap()
-            .flush();
+        let page = page_4kb(apic.apic_addr.into());
+        mapper.map_memory(page, page).unwrap().flush();
     }
 
     let apic = io_apics.first().unwrap();

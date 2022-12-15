@@ -1,57 +1,54 @@
 use core::{
-    arch::{
-        global_asm,
-        x86_64::{__cpuid, _mm_pause},
-    },
+    arch::x86_64::{__cpuid, _mm_pause},
     ptr::{read_volatile, write_volatile},
     sync::atomic::AtomicU32,
 };
 
 use crate::{
-    assembly::{ap_trampoline, ap_trampoline_end},
-    cpu_localstorage::{init_bsp_task, new_cpu},
-    gdt,
+    assembly::AP_TRAMPOLINE,
+    cpu_localstorage::new_cpu,
+    gdt::CPULocalGDT,
     interrupts::IDT,
     ioapic::Madt,
     lapic::{enable_localapic, LAPIC_ADDR},
     paging::{
-        get_uefi_active_mapper,
-        identity_map::FULL_IDENTITY_MAP,
+        self, get_uefi_active_mapper,
         page_allocator::frame_alloc_exec,
-        page_table_manager::{ident_map_curr_process, PageTableManager},
+        page_table_manager::{ident_map_curr_process, new_page_table_from_phys, page_4kb, Mapper},
+        MemoryLoc, KERNEL_MAP,
     },
     scheduling::taskmanager::{core_start_multitasking, TASKMANAGER},
     time::spin_sleep_ms,
 };
 
-#[no_mangle]
-pub static mut bspdone: u32 = 0;
-#[no_mangle]
-pub static aprunning: AtomicU32 = AtomicU32::new(1);
-#[no_mangle]
-pub static mut ap_startup: u64 = 0;
-
 pub fn boot_aps(madt: &Madt) {
     // Get current core id
     let bsp_addr = (unsafe { __cpuid(1) }.ebx >> 24) as u8;
-    frame_alloc_exec(|m| m.lock().lock_reserved_16bit_page(0x8000)).unwrap();
+    frame_alloc_exec(|m| m.lock_reserved_16bit_page(0x8000)).unwrap();
     ident_map_curr_process(0x8000, true);
 
-    unsafe { init_bsp_task() };
-
-    unsafe {
-        ap_startup = ap_startup_f as u64;
-    }
-    println!("AP: {}", ap_startup_f as u64);
-    let stack_ptr;
+    let bspdone;
+    let aprunning;
+    let core_local_storage;
     unsafe {
         core::ptr::copy(
-            ap_trampoline as u64 as *mut u8,
+            AP_TRAMPOLINE.as_ptr(),
             0x8000 as *mut u8,
-            ap_trampoline_end as usize,
+            AP_TRAMPOLINE.len(),
         );
-        stack_ptr = (0x8000 + ap_trampoline_end) as *mut u64;
+        let end = 0x8000 + AP_TRAMPOLINE.len();
+        bspdone = (end) as *mut u32;
+        aprunning = &mut *((end + 4) as *mut AtomicU32);
+        *((end + 8) as *mut u32) = (KERNEL_MAP.lock().get_lvl4_addr()
+            - paging::MemoryLoc::PhysMapOffset as u64)
+            .try_into()
+            .expect("KERNEL MAP SHOULD BE 32bits for AP BOOT");
+        *((end + 16) as *mut u64) = ap_startup_f as u64;
+        core_local_storage = (end + 24) as *mut u64;
     }
+
+    // We as BSP are running
+    aprunning.store(1, core::sync::atomic::Ordering::Relaxed);
 
     let apic_ipi_300 = (LAPIC_ADDR + 0x300) as *mut u32;
     let apic_ipi_310 = (LAPIC_ADDR + 0x310) as *mut u32;
@@ -69,7 +66,7 @@ pub fn boot_aps(madt: &Madt) {
 
         let id = id as usize;
 
-        unsafe { stack_ptr.add(id).write(local_storage) };
+        unsafe { core_local_storage.add(id).write(local_storage) };
 
         unsafe {
             // Select AP
@@ -102,7 +99,7 @@ pub fn boot_aps(madt: &Madt) {
     }
 
     unsafe {
-        bspdone = 1;
+        *bspdone = 1;
     }
 
     let n_cores = lapic_ids.len();
@@ -121,38 +118,39 @@ pub fn boot_aps(madt: &Madt) {
     }
 
     unsafe {
-        let mapper = PageTableManager::new(FULL_IDENTITY_MAP.lock().get_lvl4_addr());
+        let mapper = new_page_table_from_phys(
+            KERNEL_MAP.lock().get_lvl4_addr() - paging::MemoryLoc::PhysMapOffset as u64,
+        );
         TASKMANAGER.lock().init(mapper, n_cores.try_into().unwrap());
     }
 
-    unsafe {
-        core::ptr::copy(nop_task as u64 as *mut u8, 0x1000 as *mut u8, 10);
-    }
-}
+    ident_map_curr_process(0x1000, true);
 
-extern "C" {
-    fn nop_task();
+    KERNEL_MAP
+        .lock()
+        .unmap_memory(page_4kb(0x8000))
+        .unwrap()
+        .flush();
 }
-
-global_asm!(
-    ".global nop_task
-    nop_task:
-        cli
-        jmp nop_task
-    "
-);
 
 #[no_mangle]
 pub extern "C" fn ap_startup_f(core_id: u32) {
-    // Load IDT
-    unsafe { IDT.lock().load_unsafe() };
+    let vaddr_base = MemoryLoc::PerCpuMem as u64 + 0x100_0000 * core_id as u64;
 
-    // Load GDT
-    gdt::init(core_id as usize);
+    unsafe {
+        let gdt = &mut *((vaddr_base + 0x1000) as *mut CPULocalGDT);
 
-    let mut mapper = unsafe { get_uefi_active_mapper() };
+        // Load GDT
+        gdt.load();
 
-    enable_localapic(&mut mapper);
+        // Load IDT
+        IDT.lock().load_unsafe();
+
+        // Enable lapic
+        let mut mapper = get_uefi_active_mapper();
+        enable_localapic(&mut mapper);
+    }
+
     println!("Core: {core_id} booted");
 
     // loop {}

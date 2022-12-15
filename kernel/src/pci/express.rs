@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 
-use crate::paging::get_uefi_active_mapper;
+use crate::paging::page_table_manager::ident_map_curr_process;
 
 use super::{mcfg::MCFG, PCIBus, PCIDevice, PCIHeaderCommon};
 
@@ -63,9 +63,7 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
     fn get_device(&mut self, segment: u16, bus: u8, device: u8, function: u8) -> PCIHeaderCommon {
         let address = self.get_address(segment, bus, device, function).unwrap();
 
-        let mut mapper = unsafe { get_uefi_active_mapper() };
-
-        mapper.map_memory(address, address, true).unwrap().flush();
+        ident_map_curr_process(address, true);
 
         PCIHeaderCommon {
             device: Arc::new(PCIExpressDevice { address }),

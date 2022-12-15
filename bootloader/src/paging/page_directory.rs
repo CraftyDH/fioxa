@@ -11,9 +11,11 @@ pub struct PageDirectoryEntry {
     pub write_through: bool,
     pub cache_disabled: bool,
     pub accessed: bool,
-    pub dirty: bool,
+    #[skip]
+    _skip0: bool,
     pub larger_pages: bool,
-    pub global: bool,
+    #[skip]
+    _skip1: bool,
     pub available: B3,
     internal_address: B40,
     #[skip]
@@ -28,5 +30,16 @@ impl PageDirectoryEntry {
 
     pub fn set_address(&mut self, address: u64) {
         self.set_internal_address(address >> 12)
+    }
+}
+
+#[repr(C, align(0x1000))]
+pub struct PageTable {
+    pub entries: [PageDirectoryEntry; 512],
+}
+
+impl PageTable {
+    pub fn has_entries(&mut self) -> bool {
+        self.entries.iter().all(|pde| !pde.present())
     }
 }

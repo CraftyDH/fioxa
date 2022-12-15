@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(pointer_byte_offsets)]
 
 #[macro_use]
 extern crate alloc;
@@ -8,13 +9,14 @@ extern crate alloc;
 extern crate kernel;
 
 use core::ffi::c_void;
-use core::mem::transmute;
+use core::mem::{size_of, transmute};
 use core::ptr::slice_from_raw_parts_mut;
 
 use ::acpi::{AcpiError, RsdpError};
 use acpi::sdt::Signature;
 use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
+use kernel::cpu_localstorage::init_bsp_task;
 use kernel::fs::FSDRIVES;
 use kernel::interrupts::{self};
 
@@ -22,30 +24,38 @@ use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::enable_localapic;
 use kernel::memory::MemoryMapIter;
 use kernel::net::ethernet::ethernet_task;
-use kernel::paging::identity_map::{create_full_identity_map, FULL_IDENTITY_MAP};
-use kernel::paging::page_allocator::{free_page, request_page};
+use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
+use kernel::paging::page_allocator::{frame_alloc_exec, free_page, request_page};
+use kernel::paging::page_table_manager::{page_4kb, Mapper};
+use kernel::paging::{
+    get_uefi_active_mapper, set_mem_offset, virt_addr_for_phys, MemoryLoc, KERNEL_MAP,
+};
 use kernel::pci::enumerate_pci;
 use kernel::ps2::PS2Controller;
 use kernel::scheduling::taskmanager::core_start_multitasking;
 use kernel::screen::gop::{self, WRITER};
-use kernel::screen::psf1;
-use kernel::syscall::{sleep, spawn_process, spawn_thread, yield_now};
+use kernel::screen::psf1::{self, load_psf1_font};
+use kernel::syscall::{spawn_process, spawn_thread, yield_now};
 use kernel::terminal::terminal;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
 use kernel::{allocator, gdt, paging, BOOT_INFO};
 
-use uefi::table::cfg::ACPI2_GUID;
+use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
 use uefi::table::{Runtime, SystemTable};
 
 // #[no_mangle]
 entry_point!(main);
 
 pub fn main(info: *const BootInfo) -> ! {
+    let rsp: usize;
+
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp) }
     unsafe {
         BOOT_INFO = transmute(info);
     }
+
     let boot_info = unsafe { core::ptr::read(info) };
 
     let font = psf1::load_psf1_font(boot_info.font);
@@ -59,13 +69,13 @@ pub fn main(info: *const BootInfo) -> ! {
     gop::WRITER.lock().fill_screen(0);
     log!("Welcome to Fioxa...");
 
+    log!("Disabling interrupts...");
+    x86_64::instructions::interrupts::disable();
+
     log!("Getting UEFI runtime table");
     let runtime_table =
         unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
             .unwrap();
-
-    log!("Disabling interrupts...");
-    x86_64::instructions::interrupts::disable();
 
     // Init the frame allocator
     log!("Initializing Frame Allocator...");
@@ -79,46 +89,103 @@ pub fn main(info: *const BootInfo) -> ! {
     let mmap = MemoryMapIter::new(mmap_buf, boot_info.mmap_entry_size, boot_info.mmap_len);
 
     unsafe { paging::page_allocator::init(mmap.clone()) };
-
-    log!("Initializing GDT...");
-    gdt::init(0);
+    log!("Initalizing BOOT GDT...");
+    unsafe { gdt::init_bootgdt() };
 
     log!("Initalizing IDT...");
     interrupts::init_idt();
 
-    create_full_identity_map(mmap);
+    // {
+    //     println!("{:?}", get_chunked_page_range(0, 0x1000));
+    //     println!("{:?}", get_chunked_page_range(0, 0x20000));
+    //     println!("{:?}", get_chunked_page_range(0, 0x20000 - 0x1000));
+    //     println!("{:?}", get_chunked_page_range(0x2000, 0x400000));
+    // }
 
-    FULL_IDENTITY_MAP.lock().load_into_cr3();
+    {
+        let mut map = KERNEL_MAP.lock();
+
+        // Remap this threads stack
+        for page in ((rsp & !0xFFF) as u64..(rsp + 1024 * 1024 * 5) as u64).step_by(0x1000) {
+            map.map_memory(page_4kb(page), page_4kb(page))
+                .unwrap()
+                .ignore();
+        }
+
+        create_offset_map(&mut map.get_lvl3(MemoryLoc::PhysMapOffset as u64), mmap);
+        create_kernel_map(&mut map.get_lvl3(MemoryLoc::KernelStart as u64));
+        map_gop(&mut map);
+
+        let page = page_4kb((info as u64) & !0xFFF);
+        map.map_memory(page, page).unwrap().ignore();
+
+        let page = page_4kb(boot_info.uefi_runtime_table & !0xFFF);
+        map.map_memory(page, page).unwrap().ignore();
+
+        unsafe { set_mem_offset(MemoryLoc::PhysMapOffset as u64) }
+
+        unsafe {
+            frame_alloc_exec(|f| {
+                Some({
+                    f.push_up_to_offset_mapping();
+                })
+            });
+
+            // load and jump stack
+            core::arch::asm!(
+                "add rsp, {}",
+                "mov cr3, {}",
+                in(reg) MemoryLoc::PhysMapOffset as u64,
+                in(reg) map.get_lvl4_addr(),
+            );
+            map.shift_table_to_offset();
+        }
+    }
+
+    println!("Paging enabled");
 
     unsafe {
         let frame = request_page().unwrap();
-        FULL_IDENTITY_MAP
+        let page = page_4kb(0x400000000000);
+        KERNEL_MAP
             .lock()
-            .map_memory(0x600000000, frame as u64, false)
+            .map_memory(page, page_4kb(frame as u64))
             .unwrap()
             .flush();
-        let f = frame as *mut u64;
+        let f = virt_addr_for_phys(frame) as *mut u64;
 
+        println!("Page test");
         *f = 4493;
         assert!(
-            *((0x600000000 as u64) as *const u64) == 4493,
+            *((0x400000000000 as u64) as *const u64) == 4493,
             "Paging test failed"
         );
-        FULL_IDENTITY_MAP
-            .lock()
-            .unmap_memory(0x600000000)
-            .unwrap()
-            .flush();
+        KERNEL_MAP.lock().unmap_memory(page).unwrap().flush();
         free_page(frame);
     }
 
     log!("Initializing HEAP...");
-    allocator::init_heap(&mut FULL_IDENTITY_MAP.lock()).expect("Heap initialization failed");
+    allocator::init_heap(&mut KERNEL_MAP.lock()).expect("Heap initialization failed");
 
     // Set unicode mapping buffer (for more chacters than ascii)
-    WRITER.lock().generate_unicode_mapping(font.unicode_buffer);
+    // And update font to use new mapping
+    WRITER.lock().update_font(load_psf1_font(boot_info.font));
 
     let config_tables = runtime_table.config_table();
+
+    let base = (config_tables.as_ptr() as u64) & !0xFFF;
+    for page in (base..config_tables.as_ptr() as u64
+        + size_of::<ConfigTableEntry>() as u64 * config_tables.len() as u64)
+        .step_by(0x1000)
+    {
+        KERNEL_MAP
+            .lock()
+            .map_memory(page_4kb(page), page_4kb(page))
+            .unwrap()
+            .ignore();
+    }
+
+    println!("Config table: ptr{:?}", config_tables.as_ptr());
 
     let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
         .ok_or(AcpiError::Rsdp(RsdpError::NoValidRsdp))
@@ -131,11 +198,14 @@ pub fn main(info: *const BootInfo) -> ! {
         .unwrap()
         .unwrap();
 
-    enable_localapic(&mut FULL_IDENTITY_MAP.lock());
+    log!("Initializing BSP for multicore...");
+    unsafe { init_bsp_task() };
+
+    enable_localapic(&mut KERNEL_MAP.lock());
 
     unsafe { core::arch::asm!("sti") };
 
-    enable_apic(&madt, &mut FULL_IDENTITY_MAP.lock());
+    enable_apic(&madt, &mut KERNEL_MAP.lock());
 
     boot_aps(&madt);
     spawn_process(after_boot);
@@ -148,7 +218,30 @@ pub fn main(info: *const BootInfo) -> ! {
 }
 
 fn after_boot() {
-    let boot_info = unsafe { &*BOOT_INFO };
+    let boot_info = unsafe {
+        &*((BOOT_INFO as *const u8).add(MemoryLoc::PhysMapOffset as usize) as *const BootInfo)
+    };
+
+    let mut map = unsafe { get_uefi_active_mapper() };
+
+    let page = page_4kb(boot_info.uefi_runtime_table & !0xFFF);
+    map.map_memory(page, page).unwrap().ignore();
+
+    let runtime_table =
+        unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
+            .unwrap();
+
+    let config_tables = runtime_table.config_table();
+
+    let base = (config_tables.as_ptr() as u64) & !0xFFF;
+    for page in (base..config_tables.as_ptr() as u64
+        + size_of::<ConfigTableEntry>() as u64 * config_tables.len() as u64)
+        .step_by(0x1000)
+    {
+        map.map_memory(page_4kb(page), page_4kb(page))
+            .unwrap()
+            .ignore();
+    }
 
     let runtime_table =
         unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }

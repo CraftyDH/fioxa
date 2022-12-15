@@ -9,6 +9,7 @@
 // #![test_runner(test_runner)]
 #![feature(panic_info_message)]
 #![feature(const_for)]
+#![feature(pointer_byte_offsets)]
 
 //* */
 use bootloader::BootInfo;
@@ -23,6 +24,7 @@ pub mod assembly;
 pub mod boot_aps;
 pub mod cpu_localstorage;
 pub mod driver;
+pub mod elf;
 pub mod fs;
 pub mod gdt;
 pub mod interrupts;
@@ -41,6 +43,20 @@ pub mod time;
 pub mod uefi;
 
 pub static mut BOOT_INFO: *const BootInfo = 0 as *const BootInfo;
+extern "C" {
+    static KERNEL_START: u8;
+    static KERNEL_END: u8;
+}
+
+pub fn kernel_memory_loc() -> (u64, u64) {
+    // Safe since these are our own linker variables
+    unsafe {
+        (
+            &KERNEL_START as *const u8 as u64,
+            &KERNEL_END as *const u8 as u64,
+        )
+    }
+}
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {

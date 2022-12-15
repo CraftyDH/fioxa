@@ -155,7 +155,7 @@ impl Driver for PCNET<'_> {
         let (init_block, send_buffer_desc, recv_buffer_desc) = unsafe {
             // Allocate page below 4gb location.
             let mut buffer_start =
-                frame_alloc_exec(|m| m.lock().request_32bit_reserved_page()).unwrap() as *const u8;
+                frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap() as *const u8;
             ident_map_curr_process(buffer_start as u64, true);
 
             // Init block
@@ -187,8 +187,7 @@ impl Driver for PCNET<'_> {
         // Alloc buffer each 2 buffer
         for i in (0..SEND_BUFFER_CNT).step_by(2) {
             // Allocate page below 4gb location.
-            let buffer_start =
-                frame_alloc_exec(|m| m.lock().request_32bit_reserved_page()).unwrap();
+            let buffer_start = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
             ident_map_curr_process(buffer_start as u64, true);
             send_buffer_desc[i].address = buffer_start;
             send_buffer_desc[i].flags = BUFFER_SIZE_MASK;
@@ -198,8 +197,7 @@ impl Driver for PCNET<'_> {
         // Alloc buffer each 2 buffer
         for i in (0..RECV_BUFFER_CNT).step_by(2) {
             // Allocate page below 4gb location.
-            let buffer_start =
-                frame_alloc_exec(|m| m.lock().request_32bit_reserved_page()).unwrap();
+            let buffer_start = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
             ident_map_curr_process(buffer_start as u64, true);
             recv_buffer_desc[i].address = buffer_start;
             recv_buffer_desc[i].flags = BUFFER_SIZE_MASK | 0x80000000;

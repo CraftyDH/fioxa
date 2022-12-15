@@ -12,3 +12,4 @@ log = "0.4"
 lazy_static = {version = "1.4", features = ["spin_no_std"]}
 spin = "0.9"
 x86_64 = "0.14"
+modular-bitfield = { version = "0.11", default-features = false}

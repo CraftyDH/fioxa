@@ -12,12 +12,14 @@ fn main() {
 
     let bootloader = build("bootloader").unwrap();
     let kernel = build("kernel").unwrap();
+    let elf = build("test_elf").unwrap();
 
     dirs.recursive(true).create("fioxa/EFI/BOOT").unwrap();
     copy("assets/startup.nsh", "fioxa/startup.nsh").unwrap();
     copy("assets/zap-light16.psf", "fioxa/font.psf").unwrap();
     copy(bootloader, "fioxa/EFI/BOOT/BOOTx64.efi").unwrap();
     copy(kernel, "fioxa/fioxa.elf").unwrap();
+    copy(elf, "fioxa/elf.elf").unwrap();
 
     let mut args = args();
 

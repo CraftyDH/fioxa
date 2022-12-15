@@ -7,6 +7,7 @@ extern crate log;
 pub mod fs;
 pub mod gop;
 pub mod kernel;
+pub mod paging;
 
 use core::{mem::size_of, slice};
 
@@ -60,7 +61,7 @@ pub struct BootInfo<'f> {
     pub mmap_len: usize,
     pub rsdp_address: usize,
     pub kernel_start: u64,
-    pub kernel_end: u64,
+    pub kernel_pages: u64,
 }
 
 pub type EntryPoint = fn(*const BootInfo) -> !;

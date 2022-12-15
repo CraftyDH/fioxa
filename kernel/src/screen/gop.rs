@@ -28,7 +28,9 @@ impl Writer {
     }
 
     /// Requires Allocation to be enabled first!
-    pub fn generate_unicode_mapping(&mut self, unicode_buffer: &[u8]) {
+    pub fn update_font(&mut self, font: PSF1Font) {
+        let unicode_buffer = font.unicode_buffer;
+
         let mut unicode_table: BTreeMap<char, usize> = BTreeMap::new();
 
         let mut index = 0;
@@ -43,7 +45,8 @@ impl Writer {
             }
         }
 
-        self.unicode_table = Some(unicode_table)
+        self.unicode_table = Some(unicode_table);
+        self.font = font;
     }
 
     pub fn put_char(&mut self, colour: u32, chr: char, xoff: usize, yoff: usize) {
@@ -58,8 +61,6 @@ impl Writer {
             }
         }
         addr *= 16;
-
-        // let glyphbuf = font.glyph_buffer;
 
         let ptr = self.gop.buffer.get_mut();
 

@@ -1,47 +1,42 @@
-use core::{cmp::min, hint::spin_loop, mem::size_of, ptr::slice_from_raw_parts_mut};
+use core::{
+    cmp::min,
+    mem::{size_of, MaybeUninit},
+    ptr::slice_from_raw_parts_mut,
+};
 
 use bit_field::{BitArray, BitField};
-use conquer_once::spin::OnceCell;
 
 use spin::mutex::Mutex;
 use uefi::table::boot::MemoryType;
-use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::memory::MemoryMapIter;
 
-static GLOBAL_FRAME_ALLOCATOR: OnceCell<Mutex<PageFrameAllocator>> = OnceCell::uninit();
+use super::{virt_addr_for_phys, MemoryLoc};
+
+static GLOBAL_FRAME_ALLOCATOR: Mutex<MaybeUninit<PageFrameAllocator>> =
+    Mutex::new(MaybeUninit::uninit());
 
 const RESERVED_32BIT_MEM_PAGES: u64 = 32; // 16Kb
 
 pub fn frame_alloc_exec<T, F>(closure: F) -> Option<T>
 where
-    F: Fn(&Mutex<PageFrameAllocator>) -> Option<T>,
+    F: Fn(&mut PageFrameAllocator) -> Option<T>,
 {
-    for _ in 0..100 {
-        if let Some(t) = without_interrupts(|| {
-            let a = GLOBAL_FRAME_ALLOCATOR.try_get().ok();
-            a.and_then(&closure)
-        }) {
-            return Some(t);
-        }
-        spin_loop()
-    }
-    None
+    unsafe { closure(&mut *GLOBAL_FRAME_ALLOCATOR.lock().assume_init_mut()) }
 }
 
 pub unsafe fn init(mmap: MemoryMapIter) {
-    GLOBAL_FRAME_ALLOCATOR.init_once(|| {
-        let allocator = unsafe { PageFrameAllocator::new(mmap.clone()) };
-        Mutex::new(allocator)
-    });
+    GLOBAL_FRAME_ALLOCATOR
+        .lock()
+        .write(unsafe { PageFrameAllocator::new(mmap.clone()) });
 }
 
 pub fn request_page() -> Option<u64> {
-    frame_alloc_exec(|mutex| mutex.lock().request_page())
+    frame_alloc_exec(|mutex| mutex.request_page())
 }
 
 pub fn free_page(page: u64) -> Option<()> {
-    frame_alloc_exec(|mutex| mutex.lock().free_page(page))
+    frame_alloc_exec(|mutex| mutex.free_page(page))
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +76,26 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
     pub unsafe fn new(mmap: MemoryMapIter) -> Self {
         // Can inner self to get safe type checking
         Self::new_inner(mmap)
+    }
+
+    pub unsafe fn push_up_to_offset_mapping(&mut self) {
+        for bit in self.page_bitmap.iter_mut() {
+            bit.allocated = &mut *slice_from_raw_parts_mut(
+                bit.allocated
+                    .as_mut_ptr()
+                    .byte_add(MemoryLoc::PhysMapOffset as usize),
+                bit.allocated.len(),
+            );
+        }
+
+        self.page_bitmap = &mut *slice_from_raw_parts_mut(
+            self.page_bitmap
+                .as_mut_ptr()
+                .byte_add(MemoryLoc::PhysMapOffset as usize),
+            self.page_bitmap.len(),
+        );
+        self.reserved_32bit = &mut *(self.reserved_32bit as *mut MemoryRegion)
+            .byte_add(MemoryLoc::PhysMapOffset as usize);
     }
 
     pub fn get_free_pages(&self) -> usize {
@@ -231,7 +246,13 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
         for (i, mem_location) in (0..16).map(|v| (v, v * 0x1000)) {
             if !self.reserved_16bit_bitmap.get_bit(i) {
                 // Clear page
-                unsafe { core::ptr::write_bytes(mem_location as *mut u8, 0, 4096) };
+                unsafe {
+                    core::ptr::write_bytes(
+                        virt_addr_for_phys(mem_location as u64) as *mut u8,
+                        0,
+                        4096,
+                    )
+                };
                 self.reserved_16bit_bitmap.set_bit(i, true);
                 return Some(mem_location.try_into().unwrap());
             }
@@ -279,7 +300,9 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
                     }
                     bits.set_bit(i, true);
                     let loc = mem_region.phys_start + ((base_page + i) * 0x1000) as u64;
-                    unsafe { core::ptr::write_bytes(loc as *mut u8, 0, 0x1000) };
+                    unsafe {
+                        core::ptr::write_bytes(virt_addr_for_phys(loc) as *mut u8, 0, 0x1000)
+                    };
 
                     return Some(loc);
                 }
@@ -323,33 +346,38 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
                 continue;
             }
             for i in 0..8 {
-                if !bits.get_bit(i) {
+                if !bits.get_bit(i) && last == base_page + i {
                     // Ensure we arn't passed page count size bitmap has a bit of padding
                     if base_page + i + 1 > mem_region.page_count as usize {
                         return None;
                     }
-                    if last + 1 == base_page + i {
-                        n += 1;
-                        if n == cnt {
-                            for (bits, base_page) in
-                                mem_region.allocated.iter_mut().zip((0..).step_by(8))
-                            {
-                                for i in 0..8 {
-                                    if base_page + i >= start && base_page + i <= last {
-                                        bits.set_bit(i, true);
-                                    }
+                    n += 1;
+                    last += 1;
+                    if n == cnt {
+                        for (bits, base_page) in
+                            mem_region.allocated.iter_mut().zip((0..).step_by(8))
+                        {
+                            for i in 0..8 {
+                                if base_page + i >= start && base_page + i <= last {
+                                    bits.set_bit(i, true);
                                 }
                             }
-                            let start = mem_region.phys_start as usize + start * 0x1000;
-                            let last = mem_region.phys_start as usize + last * 0x1000;
-                            unsafe { core::ptr::write_bytes(start as *mut u8, 0, last - start) };
-                            return Some(start as u64);
                         }
-                    } else {
-                        n = 0;
-                        start = base_page + i;
+                        let start = mem_region.phys_start + start as u64 * 0x1000;
+                        let last = mem_region.phys_start + last as u64 * 0x1000;
+                        unsafe {
+                            core::ptr::write_bytes(
+                                virt_addr_for_phys(start) as *mut u8,
+                                0,
+                                (last - start) as usize,
+                            )
+                        };
+                        return Some(start as u64);
                     }
-                    last = base_page + i;
+                } else {
+                    n = 0;
+                    start = base_page + i + 1;
+                    last = start;
                 }
             }
         }

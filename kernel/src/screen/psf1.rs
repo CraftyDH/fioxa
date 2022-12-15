@@ -1,5 +1,7 @@
 use core::{mem::size_of, slice};
 
+use crate::paging::virt_addr_for_phys;
+
 pub const PSF1_MAGIC: [u8; 2] = [0x36, 0x04];
 
 #[derive(Debug, Clone, Copy)]
@@ -29,7 +31,8 @@ pub const PSF1_FONT_NULL: PSF1Font = PSF1Font {
 const PSF1_HEADER_SIZE: usize = size_of::<PSF1FontHeader>();
 
 pub fn load_psf1_font(file: &[u8]) -> PSF1Font {
-    let psf1_header = unsafe { &*(file.as_ptr() as *const PSF1FontHeader) };
+    let psf1_header =
+        unsafe { &*(virt_addr_for_phys(file.as_ptr() as u64) as *const PSF1FontHeader) };
 
     if psf1_header.magic != PSF1_MAGIC {
         panic!("PSF1 FONT not valid");
@@ -41,12 +44,18 @@ pub fn load_psf1_font(file: &[u8]) -> PSF1Font {
         glyph_buffer_size *= 2;
     }
 
-    let psf1_font =
-        unsafe { slice::from_raw_parts(file.as_ptr().add(PSF1_HEADER_SIZE), glyph_buffer_size) };
+    let psf1_font = unsafe {
+        slice::from_raw_parts(
+            virt_addr_for_phys(file.as_ptr() as u64 + PSF1_HEADER_SIZE as u64) as *mut u8,
+            glyph_buffer_size,
+        )
+    };
 
     let unicode_table_buffer = unsafe {
         slice::from_raw_parts(
-            file.as_ptr().add(PSF1_HEADER_SIZE + glyph_buffer_size),
+            virt_addr_for_phys(
+                file.as_ptr() as u64 + PSF1_HEADER_SIZE as u64 + glyph_buffer_size as u64,
+            ) as *const u8,
             file.len() - PSF1_HEADER_SIZE - glyph_buffer_size,
         )
     };

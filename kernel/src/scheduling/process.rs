@@ -2,21 +2,25 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::{boxed::Box, collections::BTreeMap};
 use x86_64::{
-    structures::idt::{InterruptStackFrame, InterruptStackFrameValue},
+    structures::{
+        gdt::SegmentSelector,
+        idt::{InterruptStackFrame, InterruptStackFrameValue},
+    },
     VirtAddr,
 };
 
 use crate::{
     assembly::registers::Registers,
-    gdt::GDT,
+    gdt,
     paging::{
-        identity_map::FULL_IDENTITY_MAP, page_allocator::request_page,
-        page_table_manager::PageTableManager,
+        offset_map::map_gop,
+        page_allocator::request_page,
+        page_table_manager::{new_page_table_from_phys, page_4kb, Mapper, PageLvl4, PageTable},
+        MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
     syscall::exit_thread,
 };
 
-// const STACK_ADDR: AtomicU64 = AtomicU64::new(0x100_000_000_000);
 const STACK_ADDR: u64 = 0x100_000_000_000;
 
 const STACK_SIZE: u64 = 1024 * 512;
@@ -76,30 +80,68 @@ impl From<u64> for TID {
     }
 }
 
+pub enum ProcessPrivilige {
+    KERNEL,
+    USER,
+}
+
+impl ProcessPrivilige {
+    pub fn get_code_segment(&self) -> SegmentSelector {
+        match self {
+            ProcessPrivilige::KERNEL => gdt::KERNEL_CODE_SELECTOR,
+            ProcessPrivilige::USER => gdt::USER_CODE_SELECTOR,
+        }
+    }
+
+    pub fn get_data_segment(&self) -> SegmentSelector {
+        match self {
+            ProcessPrivilige::KERNEL => gdt::KERNEL_DATA_SELECTOR,
+            ProcessPrivilige::USER => gdt::USER_DATA_SELECTOR,
+        }
+    }
+}
+
 pub struct Process {
     pub pid: PID,
     pub threads: BTreeMap<TID, Thread>,
-    pub page_mapper: PageTableManager,
+    pub page_mapper: PageTable<'static, PageLvl4>,
+    privilege: ProcessPrivilige,
     thread_next_id: u64,
 }
 
 impl Process {
-    pub fn new() -> Self {
+    pub fn new(privilege: ProcessPrivilige) -> Self {
         let pml4 = request_page().unwrap();
-        let page_mapper = PageTableManager::new(pml4);
+        let mut page_mapper = unsafe { new_page_table_from_phys(pml4) };
+
+        unsafe {
+            page_mapper.set_lvl3_location(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
+            page_mapper
+                .set_lvl3_location(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
+            page_mapper
+                .set_lvl3_location(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
+            page_mapper.set_lvl3_location(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
+            map_gop(&mut page_mapper);
+            page_mapper.map_memory(page_4kb(0xfee000b0 & !0xFFF), page_4kb(0xfee000b0 & !0xFFF));
+        }
 
         Self {
             pid: PID::new(),
             threads: Default::default(),
             page_mapper,
+            privilege,
             thread_next_id: 0,
         }
     }
-    pub unsafe fn new_with_page(page_mapper: PageTableManager) -> Self {
+    pub unsafe fn new_with_page(
+        privilege: ProcessPrivilige,
+        page_mapper: PageTable<'static, PageLvl4>,
+    ) -> Self {
         Self {
             pid: PID::new(),
             threads: Default::default(),
             page_mapper,
+            privilege,
             thread_next_id: 0,
         }
     }
@@ -129,39 +171,29 @@ impl Process {
         tid
     }
 
-    pub fn new_thread(&mut self, entry_point: usize) -> TID {
+    pub fn new_thread_direct(&mut self, entry_point: *const u64, register_state: Registers) -> TID {
         let tid = TID(self.thread_next_id);
         self.thread_next_id += 1;
 
-        // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::SeqCst);
+        // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0 as u64;
 
         for addr in (stack_base..(stack_base + STACK_SIZE as u64 - 1)).step_by(0x1000) {
             let frame = request_page().unwrap();
 
             self.page_mapper
-                .map_memory(addr, frame, true)
-                .unwrap()
-                .flush();
-            FULL_IDENTITY_MAP
-                .lock()
-                .map_memory(addr, frame, true)
+                .map_memory(page_4kb(addr), page_4kb(frame))
                 .unwrap()
                 .flush();
         }
 
-        let cs = GDT[0].1.code_selector.0 as u64;
-
         let pushed_register_state = InterruptStackFrameValue {
-            instruction_pointer: *THREAD_BOOTSTRAPER,
-            code_segment: cs,
+            instruction_pointer: VirtAddr::from_ptr(entry_point),
+            code_segment: self.privilege.get_code_segment().0 as u64,
             cpu_flags: 0x202,
             stack_pointer: VirtAddr::new(stack_base + STACK_SIZE as u64),
-            stack_segment: 0,
+            stack_segment: self.privilege.get_data_segment().0 as u64,
         };
-
-        let mut register_state = Registers::default();
-        register_state.rdi = entry_point;
 
         let thread = Thread {
             tid,
@@ -171,6 +203,13 @@ impl Process {
 
         self.threads.insert(tid, thread);
         tid
+    }
+
+    pub fn new_thread(&mut self, entry_point: usize) -> TID {
+        let mut register_state = Registers::default();
+        register_state.rdi = entry_point;
+
+        self.new_thread_direct(thread_bootstraper as *const u64, register_state)
     }
 }
 
@@ -195,12 +234,6 @@ impl Thread {
         }
         reg.clone_from(&self.register_state);
     }
-}
-
-use lazy_static::lazy_static;
-lazy_static! {
-    pub static ref THREAD_BOOTSTRAPER: VirtAddr =
-        VirtAddr::from_ptr(thread_bootstraper as *mut usize);
 }
 
 extern "C" fn thread_bootstraper(main: usize) {

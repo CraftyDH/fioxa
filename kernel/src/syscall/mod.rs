@@ -3,6 +3,7 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
     assembly::registers::Registers,
+    gdt::TASK_SWITCH_INDEX,
     scheduling::{
         process::{PID, TID},
         taskmanager::TASKMANAGER,
@@ -20,8 +21,12 @@ const SLEEP: usize = 4;
 const EXIT_THREAD: usize = 5;
 
 pub fn set_syscall_idt(idt: &mut InterruptDescriptorTable) {
-    idt[SYSCALL_ADDR].set_handler_fn(wrapped_syscall_handler);
-    // .disable_interrupts(false);
+    unsafe {
+        idt[SYSCALL_ADDR]
+            .set_handler_fn(wrapped_syscall_handler)
+            .set_stack_index(TASK_SWITCH_INDEX)
+            .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+    } // .disable_interrupts(false);
 }
 
 wrap_function_registers!(syscall_handler => wrapped_syscall_handler);
@@ -60,6 +65,7 @@ pub fn echo(number: usize) -> usize {
 
 fn echo_handler(regs: &mut Registers) {
     println!("Echoing: {}", regs.r8);
+    unsafe { core::arch::asm!("cli") }
     regs.rax = regs.r8
 }
 

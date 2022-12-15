@@ -5,8 +5,12 @@ use spin::Mutex;
 use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
-    assembly::registers::Registers, cpu_localstorage::get_current_cpu_id,
-    paging::page_table_manager::PageTableManager,
+    assembly::registers::Registers,
+    cpu_localstorage::get_current_cpu_id,
+    paging::{
+        page_table_manager::{PageLvl4, PageTable},
+        virt_addr_for_phys,
+    },
 };
 
 use super::process::{Process, Thread, PID, TID};
@@ -16,9 +20,9 @@ lazy_static::lazy_static! {
 }
 pub struct TaskManager {
     core_cnt: u8,
-    task_queue: ArrayQueue<(PID, TID)>,
+    pub task_queue: ArrayQueue<(PID, TID)>,
     core_current_task: Vec<(PID, TID)>,
-    processes: BTreeMap<PID, Process>,
+    pub processes: BTreeMap<PID, Process>,
 }
 
 pub unsafe fn core_start_multitasking() -> ! {
@@ -39,9 +43,10 @@ impl TaskManager {
     }
 
     // Can only be called once
-    pub unsafe fn init(&mut self, mapper: PageTableManager, core_cnt: u8) {
+    pub unsafe fn init(&mut self, mapper: PageTable<'static, PageLvl4>, core_cnt: u8) {
         self.core_cnt = core_cnt;
-        let mut p = Process::new_with_page(mapper);
+        let mut p =
+            Process::new_with_page(crate::scheduling::process::ProcessPrivilige::KERNEL, mapper);
         assert!(p.pid == 0.into());
 
         for _ in 0..core_cnt {
@@ -94,9 +99,15 @@ impl TaskManager {
         // Loop becuase we don't delete tasks from queue when they exit
         loop {
             let (pid, tid) = self.get_next_task(current_cpu);
-            if let Some((_p, thread)) = self.get_thread(pid, tid) {
+            if let Some((p, thread)) = self.get_thread(pid, tid) {
+                unsafe {
+                    let cr3 = p.page_mapper.get_lvl4_addr() - virt_addr_for_phys(0);
+                    core::arch::asm!(
+                        "mov cr3, {}",
+                        in(reg) cr3,
+                    );
+                }
                 thread.restore(stack_frame, reg);
-                // p.page_mapper.load_into_cr3();
                 self.core_current_task[current_cpu] = (pid, tid);
                 return;
             }
@@ -118,7 +129,7 @@ impl TaskManager {
     }
 
     pub fn spawn_process(&mut self, _stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-        let mut process = Process::new();
+        let mut process = Process::new(super::process::ProcessPrivilige::KERNEL);
         let pid = process.pid;
 
         // TODO: Validate r8 is a valid entrypoint

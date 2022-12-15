@@ -6,6 +6,7 @@ use conquer_once::spin::OnceCell;
 use crossbeam_queue::{ArrayQueue, SegQueue};
 
 use crate::{
+    elf::load_elf,
     fs::{self, add_path, get_file_from_path, read_file},
     ps2::{
         keyboard,
@@ -112,6 +113,20 @@ pub fn terminal() {
                     }
                 }
                 println!()
+            }
+            "exec" => {
+                let path = add_path(&cwd, rest);
+                if let Some(file) = get_file_from_path(&path) {
+                    match file.specialized {
+                        fs::VFileSpecialized::Folder(_) => println!("Not a file"),
+                        fs::VFileSpecialized::File(_) => {
+                            let buf = read_file(file.location);
+                            load_elf(&buf);
+                        }
+                    }
+                } else {
+                    println!("exec: no such file or directory")
+                }
             }
             "uptime" => {
                 let mut uptime = time::uptime() / 1000;

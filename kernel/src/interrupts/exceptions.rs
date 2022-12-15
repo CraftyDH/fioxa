@@ -4,7 +4,10 @@ use x86_64::{
     VirtAddr,
 };
 
-use crate::{gdt::tss, screen::gop::WRITER};
+use crate::{
+    gdt::{DOUBLE_FAULT_IST_INDEX, PAGE_FAULT_IST_INDEX},
+    screen::gop::WRITER,
+};
 
 /// Generates a handler for each PIC lane.
 /// Calls the appropiate handler in the HANDLERS list
@@ -47,7 +50,7 @@ pub fn set_exceptions_idt(idt: &mut InterruptDescriptorTable) {
     unsafe {
         idt.double_fault
             .set_handler_fn(double_fault_handler)
-            .set_stack_index(tss::DOUBLE_FAULT_IST_INDEX);
+            .set_stack_index(DOUBLE_FAULT_IST_INDEX);
     }
 
     idt.invalid_tss.set_handler_fn(invalid_tss);
@@ -61,7 +64,7 @@ pub fn set_exceptions_idt(idt: &mut InterruptDescriptorTable) {
 
         idt.page_fault
             .set_handler_addr(VirtAddr::new(page_fault_handler as u64))
-            .set_stack_index(tss::PAGE_FAULT_IST_INDEX);
+            .set_stack_index(PAGE_FAULT_IST_INDEX);
         // .disable_interrupts(false);
     }
     // idt.alignment_check

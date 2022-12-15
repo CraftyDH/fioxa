@@ -14,7 +14,7 @@ use crate::{
     paging::{
         get_uefi_active_mapper,
         page_allocator::{free_page, request_page},
-        page_table_manager::ident_map_curr_process,
+        page_table_manager::{ident_map_curr_process, page_4kb, Mapper},
     },
     syscall::{sleep, yield_now},
 };
@@ -130,13 +130,8 @@ impl Port {
         port.cmd_sts.update(|x| *x &= !HBA_PxCMD_FRE);
         while port.cmd_sts.read() | HBA_PxCMD_FR == 1 {}
     }
-
-    pub fn get_address(vaddr: u64) -> u64 {
-        let mapper = unsafe { get_uefi_active_mapper() };
-        let addr = mapper.get_phys_addr(vaddr & !0xFFF as u64).unwrap();
-        addr + vaddr % 0x1000
-    }
 }
+
 impl DiskDevice for Port {
     fn read(&mut self, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()> {
         if sector_count > 56 {
@@ -173,10 +168,9 @@ impl DiskDevice for Port {
             // Align ptr on prev boundary
             ptr_addr = ptr_addr & !0xFFF;
 
-            let phys_addr = mapper.get_phys_addr(ptr_addr).unwrap();
+            let phys_addr = mapper.get_phys_addr(page_4kb(ptr_addr)).unwrap();
             // Set the offset back on, since page offsets arn't supper pain yet (Only 4kb pages)
-            cmd_table.prdt_entry[0]
-                .set_data_base_address(Self::get_address(phys_addr) + left_align_size as u64);
+            cmd_table.prdt_entry[0].set_data_base_address(phys_addr + left_align_size as u64);
 
             cmd_table.prdt_entry[0].set_byte_count(0xFFF - left_align_size);
             // cmd_table.prdt_entry[0].set_interrupt_on_completion(true);
@@ -187,8 +181,8 @@ impl DiskDevice for Port {
         }
 
         while bytes_to_read > 0x1000 {
-            let phys_addr = mapper.get_phys_addr(ptr_addr).unwrap();
-            cmd_table.prdt_entry[prdt_length].set_data_base_address(Self::get_address(phys_addr));
+            let phys_addr = mapper.get_phys_addr(page_4kb(ptr_addr)).unwrap();
+            cmd_table.prdt_entry[prdt_length].set_data_base_address(phys_addr);
             // Read read of bytes
             cmd_table.prdt_entry[prdt_length].set_byte_count(0xFFF);
             bytes_to_read -= 0x1000;
@@ -197,8 +191,8 @@ impl DiskDevice for Port {
         }
 
         if bytes_to_read > 0 {
-            let phys_addr = mapper.get_phys_addr(ptr_addr).unwrap();
-            cmd_table.prdt_entry[prdt_length].set_data_base_address(Self::get_address(phys_addr));
+            let phys_addr = mapper.get_phys_addr(page_4kb(ptr_addr)).unwrap();
+            cmd_table.prdt_entry[prdt_length].set_data_base_address(phys_addr);
             // Read read of bytes
             cmd_table.prdt_entry[prdt_length].set_byte_count(bytes_to_read - 1);
             prdt_length += 1;
@@ -275,9 +269,15 @@ impl DiskDevice for Port {
 
         let buffer: Vec<u8> = vec![0; 508];
 
-        let addr = Self::get_address(buffer.as_ptr() as u64);
+        // TODO: Will probably break if buffer ever spans two non continuous pages
+        let mapper = unsafe { get_uefi_active_mapper() };
 
-        cmd_table.prdt_entry[0].set_data_base_address(addr);
+        let phys_addr = mapper
+            .get_phys_addr(page_4kb((buffer.as_ptr() as u64) & !0xFFF))
+            .unwrap()
+            + (buffer.as_ptr() as u64 & 0xFFF);
+
+        cmd_table.prdt_entry[0].set_data_base_address(phys_addr);
         cmd_table.prdt_entry[0].set_byte_count(508 - 1);
 
         cmd_list.set_prdt_length(1);

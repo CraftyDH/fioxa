@@ -12,8 +12,12 @@ use volatile::Volatile;
 
 use crate::{
     driver::{disk::DiskDevice, driver::Driver},
-    paging::get_uefi_active_mapper,
-    pci::{PCIHeader0, PCIHeaderCommon},};
+    paging::{
+        get_uefi_active_mapper,
+        page_table_manager::{page_4kb, Mapper},
+    },
+    pci::{PCIHeader0, PCIHeaderCommon},
+};
 
 use self::port::{Port, PortType};
 
@@ -158,7 +162,7 @@ impl Driver for AHCIDriver {
         let abar = header0.get_bar(5);
 
         mapper
-            .map_memory(abar as u64, abar as u64, true)
+            .map_memory(page_4kb(abar as u64), page_4kb(abar as u64))
             .unwrap()
             .flush();
 

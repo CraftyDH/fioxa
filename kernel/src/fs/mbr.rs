@@ -34,9 +34,11 @@ pub fn read_partitions(drive: Arc<Mutex<dyn DiskDevice>>) {
     drive.lock().read(0, 1, mbr_buf);
 
     let mbr = unsafe { &mut *(mbr_buf.as_ptr() as *mut MasterBootRecord) };
+
     assert!(
         { mbr.magic_number } == [0x55, 0xAA],
-        "MBR Magic number not valid"
+        "MBR Magic number not valid, was given: {:?}",
+        { mbr.magic_number }
     );
     for part in &mbr.partitions {
         if part.start_lba > 0 {

@@ -4,7 +4,12 @@
 
 use core::slice;
 
-use bootloader::{fs, gop, kernel::load_kernel, BootInfo};
+use bootloader::{
+    fs, gop,
+    kernel::load_kernel,
+    paging::{clone_pml4, get_uefi_active_mapper},
+    BootInfo,
+};
 use uefi::{
     prelude::{entry, BootServices},
     table::{boot::MemoryType, Boot, SystemTable},
@@ -54,6 +59,9 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
     info!("Starting Fioxa bootloader...");
 
     let boot_services = system_table.boot_services();
+
+    let map = unsafe { clone_pml4(&get_uefi_active_mapper(), boot_services) };
+    map.load_into_cr3();
 
     let stack = unsafe {
         let stack = boot_services
