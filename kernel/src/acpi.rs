@@ -42,7 +42,7 @@ impl AcpiHandler for FioxaAcpiHandler {
             physical_address & !0xFFF,
             NonNull::new(physical_address as *mut T).unwrap(),
             size,
-            (size + physical_address + 0xFFF) & !0xFFF - physical_address & 0xFFF,
+            (physical_address + size + 0xFFF) & !0xFFF - physical_address & !0xFFF,
             self.clone(),
         )
     }
@@ -53,7 +53,8 @@ impl AcpiHandler for FioxaAcpiHandler {
         for page in (region.physical_start()..(region.physical_start() + region.mapped_length()))
             .step_by(0x1000)
         {
-            mapper.unmap_memory(page_4kb(page as u64)).unwrap().flush();
+            //todo fix
+            // mapper.unmap_memory(page_4kb(page as u64)).unwrap().flush();
         }
     }
 }

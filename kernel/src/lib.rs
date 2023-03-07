@@ -37,6 +37,7 @@ pub mod paging;
 pub mod pci;
 pub mod ps2;
 pub mod scheduling;
+pub mod stream;
 pub mod syscall;
 pub mod terminal;
 pub mod time;

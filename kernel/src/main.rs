@@ -34,6 +34,7 @@ use kernel::pci::enumerate_pci;
 use kernel::ps2::PS2Controller;
 use kernel::scheduling::taskmanager::core_start_multitasking;
 use kernel::screen::gop::{self, WRITER};
+use kernel::screen::mouse;
 use kernel::screen::psf1::{self, load_psf1_font};
 use kernel::syscall::{spawn_process, spawn_thread, yield_now};
 use kernel::terminal::terminal;
@@ -112,6 +113,7 @@ pub fn main(info: *const BootInfo) -> ! {
                 .ignore();
         }
 
+        // create_offset_map(&mut map.get_lvl3(0), mmap.clone());
         create_offset_map(&mut map.get_lvl3(MemoryLoc::PhysMapOffset as u64), mmap);
         create_kernel_map(&mut map.get_lvl3(MemoryLoc::KernelStart as u64));
         map_gop(&mut map);
@@ -122,6 +124,7 @@ pub fn main(info: *const BootInfo) -> ! {
         let page = page_4kb(boot_info.uefi_runtime_table & !0xFFF);
         map.map_memory(page, page).unwrap().ignore();
 
+        println!("Remapping to higher half");
         unsafe { set_mem_offset(MemoryLoc::PhysMapOffset as u64) }
 
         unsafe {
@@ -167,15 +170,18 @@ pub fn main(info: *const BootInfo) -> ! {
     log!("Initializing HEAP...");
     allocator::init_heap(&mut KERNEL_MAP.lock()).expect("Heap initialization failed");
 
+    log!("Updating font...");
     // Set unicode mapping buffer (for more chacters than ascii)
     // And update font to use new mapping
     WRITER.lock().update_font(load_psf1_font(boot_info.font));
 
+    log!("Loading UEFI runtime table");
     let config_tables = runtime_table.config_table();
 
     let base = (config_tables.as_ptr() as u64) & !0xFFF;
     for page in (base..config_tables.as_ptr() as u64
-        + size_of::<ConfigTableEntry>() as u64 * config_tables.len() as u64)
+        + size_of::<ConfigTableEntry>() as u64 * config_tables.len() as u64
+        + 0xFFF)
         .step_by(0x1000)
     {
         KERNEL_MAP
@@ -208,11 +214,13 @@ pub fn main(info: *const BootInfo) -> ! {
     enable_apic(&madt, &mut KERNEL_MAP.lock());
 
     boot_aps(&madt);
-    spawn_process(after_boot);
+    spawn_process(after_boot, "");
 
     // Disable interrupts so when we enable switching this core can finish init.
     unsafe { core::arch::asm!("cli") };
     start_switching_tasks();
+
+    println!("Start multi");
 
     unsafe { core_start_multitasking() };
 }
@@ -260,13 +268,10 @@ fn after_boot() {
 
     if let Err(e) = ps2_controller.initialize() {
         log!("PS2 Controller failed to init because: {}", e);
-        return;
     } else {
-        spawn_thread(|| loop {
-            ps2_controller.check_packets();
-            yield_now();
-        });
+        spawn_thread(mouse::print_cursor);
     }
+    spawn_thread(gop::print_stdout);
 
     log!("Enumnerating PCI...");
 

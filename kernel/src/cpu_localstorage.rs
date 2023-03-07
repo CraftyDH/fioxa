@@ -79,6 +79,7 @@ pub unsafe fn new_cpu(core_id: u8) -> u64 {
     ls.stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE;
     vaddr
 }
+
 pub fn get_current_cpu_id() -> u8 {
     let cid: u16;
     unsafe { core::arch::asm!("mov {:e}, gs:0", out(reg) cid) };

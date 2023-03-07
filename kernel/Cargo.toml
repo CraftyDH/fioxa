@@ -7,6 +7,8 @@ edition = "2021"
 
 [dependencies]
 bootloader = {path = "../bootloader"}
+kernel_userspace = {path = "../kernel_userspace"}
+input = {path = "../input"}
 uefi = "0.17"
 
 x86_64 = "0.14"
@@ -20,3 +22,7 @@ acpi = "4.1"
 modular-bitfield = { version = "0.11", default-features = false}
 
 volatile = "0.3"
+
+[profile.dev]
+# Increase speed by 1000% since there are lots of hot loops / "zero cost" abstrations that need optimising
+opt-level = 1

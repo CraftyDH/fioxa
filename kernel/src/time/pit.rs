@@ -87,11 +87,11 @@ pub fn get_frequency() -> u64 {
 }
 
 pub fn start_switching_tasks() {
-    SWITCH_TASK.store(true, Ordering::Release)
+    SWITCH_TASK.store(true, Ordering::Relaxed)
 }
 
 pub fn stop_switching_tasks() {
-    SWITCH_TASK.store(false, Ordering::Release)
+    SWITCH_TASK.store(false, Ordering::Relaxed)
 }
 
 wrap_function_registers!(tick => tick_handler);
@@ -101,7 +101,7 @@ extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
         // Get the amount of milliseconds per interrupt
         let freq = 1000 / get_frequency();
         // Increment the uptime counter
-        TIME_SINCE_BOOT.fetch_add(freq, Ordering::Release);
+        TIME_SINCE_BOOT.fetch_add(freq, Ordering::Relaxed);
     }
 
     // If timer is used for switching tasks switch task

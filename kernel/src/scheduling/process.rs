@@ -1,6 +1,13 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use alloc::{boxed::Box, collections::BTreeMap};
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    string::String,
+    sync::{Arc, Weak},
+    vec::Vec,
+};
+use crossbeam_queue::ArrayQueue;
 use x86_64::{
     structures::{
         gdt::SegmentSelector,
@@ -18,6 +25,7 @@ use crate::{
         page_table_manager::{new_page_table_from_phys, page_4kb, Mapper, PageLvl4, PageTable},
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
+    stream::{STREAMRef, STREAM},
     syscall::exit_thread,
 };
 
@@ -107,10 +115,14 @@ pub struct Process {
     pub page_mapper: PageTable<'static, PageLvl4>,
     privilege: ProcessPrivilige,
     thread_next_id: u64,
+    pub args: String,
+    pub streams: Vec<STREAMRef>,
+    pub stdin: STREAM,
+    pub stdout: STREAM,
 }
 
 impl Process {
-    pub fn new(privilege: ProcessPrivilige) -> Self {
+    pub fn new(privilege: ProcessPrivilige, args: String) -> Self {
         let pml4 = request_page().unwrap();
         let mut page_mapper = unsafe { new_page_table_from_phys(pml4) };
 
@@ -125,24 +137,50 @@ impl Process {
             page_mapper.map_memory(page_4kb(0xfee000b0 & !0xFFF), page_4kb(0xfee000b0 & !0xFFF));
         }
 
+        let stdin = Arc::new(ArrayQueue::new(100));
+        let stdout = Arc::new(ArrayQueue::new(100));
+
+        let mut streams = Vec::new();
+
+        streams.push(Arc::downgrade(&stdin));
+        streams.push(Arc::downgrade(&stdout));
+
         Self {
             pid: PID::new(),
             threads: Default::default(),
             page_mapper,
             privilege,
             thread_next_id: 0,
+            args,
+            streams,
+            stdin,
+            stdout,
         }
     }
+
     pub unsafe fn new_with_page(
         privilege: ProcessPrivilige,
         page_mapper: PageTable<'static, PageLvl4>,
+        args: String,
     ) -> Self {
+        let stdin = Arc::new(ArrayQueue::new(100));
+        let stdout = Arc::new(ArrayQueue::new(100));
+
+        let mut streams = Vec::new();
+
+        streams.push(Arc::downgrade(&stdin));
+        streams.push(Arc::downgrade(&stdout));
+
         Self {
             pid: PID::new(),
             threads: Default::default(),
             page_mapper,
             privilege,
             thread_next_id: 0,
+            args,
+            streams,
+            stdin,
+            stdout,
         }
     }
 

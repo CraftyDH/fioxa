@@ -1,31 +1,23 @@
-use core::sync::atomic::AtomicUsize;
+use alloc::sync::Arc;
 
-use alloc::{collections::BTreeMap, sync::Weak};
-use conquer_once::spin::OnceCell;
-use crossbeam_queue::{ArrayQueue, SegQueue};
+use crossbeam_queue::ArrayQueue;
+use kernel_userspace::stream::{StreamMessage, StreamMessageType};
+use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
 
-use crate::interrupt_handler;
-
-use super::{
-    scancode::{keys::RawKeyCodeState, set2::ScancodeSet2},
-    PS2Command,
+use crate::{
+    interrupt_handler,
+    ioapic::mask_entry,
+    stream::{STREAM, STREAMS},
 };
 
+use super::{scancode::set2::ScancodeSet2, PS2Command};
+
 static DECODER: Mutex<ScancodeSet2> = Mutex::new(ScancodeSet2::new());
-static SCANCODE_QUEUE: OnceCell<ArrayQueue<RawKeyCodeState>> = OnceCell::uninit();
 
-static SUBSCRIBERS: Mutex<BTreeMap<usize, Weak<SegQueue<RawKeyCodeState>>>> =
-    Mutex::new(BTreeMap::new());
-
-pub fn subscribe(queue: Weak<SegQueue<RawKeyCodeState>>) -> usize {
-    static SCANCODE_SUBSCRIBER: AtomicUsize = AtomicUsize::new(0);
-
-    let v = SCANCODE_SUBSCRIBER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-
-    SUBSCRIBERS.lock().insert(v, queue);
-    v
+lazy_static! {
+    static ref KEYBOARD_QUEUE: STREAM = Arc::new(ArrayQueue::new(1000));
 }
 
 pub struct Keyboard {
@@ -35,16 +27,21 @@ pub struct Keyboard {
 interrupt_handler!(interrupt_handler => keyboard_int_handler);
 
 pub fn interrupt_handler(_: InterruptStackFrame) {
-    if let Ok(queue) = SCANCODE_QUEUE.try_get() {
-        let mut port = Port::new(0x60);
+    let mut port = Port::new(0x60);
 
-        let scancode: u8 = unsafe { port.read() };
+    let scancode: u8 = unsafe { port.read() };
 
-        let res = DECODER.lock().add_byte(scancode);
-        if let Some(key) = res {
-            if let Some(_) = queue.force_push(key) {
-                println!("WARN: Keyboard buffer full dropping packets")
-            }
+    let res = DECODER.lock().add_byte(scancode);
+    if let Some(key) = res {
+        let mut msg = StreamMessage {
+            message_type: StreamMessageType::InlineData,
+            timestamp: 0,
+            data: Default::default(),
+        };
+        msg.write_data(key);
+
+        if let Some(_) = KEYBOARD_QUEUE.force_push(msg) {
+            println!("WARN: Keyboard buffer full dropping packets")
         }
     }
 }
@@ -72,20 +69,6 @@ impl Keyboard {
         return Err("Keyboard required too many command resends");
     }
 
-    pub fn check_packets(&mut self) {
-        if let Ok(queue) = SCANCODE_QUEUE.try_get() {
-            let subscribers = SUBSCRIBERS.lock();
-
-            while let Some(scan_code) = queue.pop() {
-                for (_, v) in subscribers.iter() {
-                    if let Some(q) = v.upgrade() {
-                        q.push(scan_code);
-                    }
-                }
-            }
-        }
-    }
-
     pub fn initialize(&mut self) -> Result<(), &'static str> {
         // Enable kb interrupts
         self.command.write_command(0xAE)?;
@@ -107,13 +90,18 @@ impl Keyboard {
         self.send_command(0xF0)?;
         self.send_command(2)?;
 
+        if let Some(_) = STREAMS
+            .lock()
+            .insert("input:keyboard", KEYBOARD_QUEUE.clone())
+        {
+            panic!("Stream already existed")
+        }
+
         Ok(())
     }
 
     pub fn receive_interrupts(&self) {
-        SCANCODE_QUEUE
-            .try_init_once(|| ArrayQueue::new(1000))
-            .unwrap();
+        mask_entry(1, true);
     }
 
     // fn update_leds(&mut self) {

@@ -69,6 +69,7 @@ pub type MemoryLoc = MemoryLoc64bit48bits;
 /// First 4 bits need to either be 0xFFFF or 0x0000
 /// (depending on which side the 48th bit is, 0..7 = 0x0000, 8..F = 0xFFFF)
 pub enum MemoryLoc64bit48bits {
+    EndUserMem = 0x0000_FFFFFFFFFFFF,
     GlobalMapping = 0xffff_A00000000000,
     /// Each cpu core is given 0x10_0000 (1mb) virtual memory
     PerCpuMem = 0xffff_AC0000000000,

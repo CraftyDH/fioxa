@@ -76,11 +76,6 @@ impl PS2Controller {
         }
     }
 
-    pub fn check_packets(&mut self) {
-        self.keyboard.check_packets();
-        self.mouse.check_packets();
-    }
-
     pub fn initialize(&mut self) -> Result<(), &'static str> {
         // Disable both devices
         // Disable port 1

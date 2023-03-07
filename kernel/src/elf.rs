@@ -1,5 +1,7 @@
 use core::cmp::{max, min};
 
+use alloc::string::String;
+
 use crate::{
     assembly::registers::Registers,
     paging::{
@@ -7,7 +9,10 @@ use crate::{
         page_table_manager::{page_4kb, Mapper},
         virt_addr_for_phys,
     },
-    scheduling::{process::Process, taskmanager::TASKMANAGER},
+    scheduling::{
+        process::{Process, PID},
+        taskmanager::TASKMANAGER,
+    },
 };
 
 #[repr(C)]
@@ -52,7 +57,7 @@ const EM_X86_64: u16 = 62; // AMD x86-64 architecture
 // For the ELF Program Header https://refspecs.linuxbase.org/elf/gabi4+/ch5.pheader.html
 const PT_LOAD: u32 = 1; // A loadable segment
 
-pub fn load_elf(data: &[u8]) {
+pub fn load_elf(data: &[u8], args: String) -> PID {
     // Transpose the header as an elf header
     let elf_header = unsafe { *(data.as_ptr() as *const Elf64Ehdr) };
     // Ensure that all the header flags are suitable
@@ -69,7 +74,7 @@ pub fn load_elf(data: &[u8]) {
         && elf_header.e_machine == EM_X86_64
         && elf_header.e_version == 1
     {
-        println!("Elf Header Verified");
+        // println!("Elf Header Verified");
     } else {
         panic!("Elf Header Invalid")
     }
@@ -92,12 +97,12 @@ pub fn load_elf(data: &[u8]) {
     let size = size - base;
     let pages = size / 4096 + 1;
 
-    println!(
-        "Elf size:{size}, base:{base}, entry: {}",
-        elf_header.e_entry
-    );
+    // println!(
+    //     "Elf size:{size}, base:{base}, entry: {}",
+    //     elf_header.e_entry
+    // );
 
-    let mut proc = Process::new(crate::scheduling::process::ProcessPrivilige::USER);
+    let mut proc = Process::new(crate::scheduling::process::ProcessPrivilige::USER, args);
     let map = &mut proc.page_mapper;
 
     let start = frame_alloc_exec(|c| c.request_cont_pages(pages as usize)).unwrap();
@@ -131,4 +136,5 @@ pub fn load_elf(data: &[u8]) {
     let pid = proc.pid;
     TASKMANAGER.lock().processes.insert(proc.pid, proc);
     TASKMANAGER.lock().task_queue.push((pid, tid)).unwrap();
+    pid
 }

@@ -2,83 +2,108 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
-use conquer_once::spin::OnceCell;
-use crossbeam_queue::{ArrayQueue, SegQueue};
+use input::keyboard::{
+    virtual_code::{Modifier, VirtualKeyCode},
+    KeyboardEvent,
+};
 
 use crate::{
     elf::load_elf,
     fs::{self, add_path, get_file_from_path, read_file},
-    ps2::{
-        keyboard,
-        scancode::keys::{RawKeyCode, RawKeyCodeState},
-        translate::{translate_raw_keycode, KeyCode},
-    },
+    scheduling::taskmanager::TASKMANAGER,
+    stream::{STREAMRef, STREAMS},
     syscall::yield_now,
     time,
 };
 
-pub static KEYPRESS_QUEUE: OnceCell<ArrayQueue<KeyCode>> = OnceCell::uninit();
+pub struct KBInputDecoder {
+    stream: STREAMRef,
+    lshift: bool,
+    rshift: bool,
+    caps_lock: bool,
+    num_lock: bool,
+}
+
+impl KBInputDecoder {
+    pub fn new(stream: STREAMRef) -> Self {
+        Self {
+            stream,
+            lshift: false,
+            rshift: false,
+            caps_lock: false,
+            num_lock: false,
+        }
+    }
+}
+
+impl Iterator for KBInputDecoder {
+    type Item = char;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let stream = self.stream.upgrade()?;
+
+        loop {
+            if let Some(st_message) = stream.pop() {
+                let scan_code: &KeyboardEvent =
+                    unsafe { &*(&st_message.data as *const [u8] as *const KeyboardEvent) };
+
+                match scan_code {
+                    KeyboardEvent::Up(VirtualKeyCode::Modifier(key)) => match key {
+                        Modifier::LeftShift => self.lshift = false,
+                        Modifier::RightShift => self.rshift = false,
+                        _ => {}
+                    },
+                    KeyboardEvent::Up(_) => {}
+                    KeyboardEvent::Down(VirtualKeyCode::Modifier(key)) => match key {
+                        Modifier::LeftShift => self.lshift = true,
+                        Modifier::RightShift => self.rshift = true,
+                        Modifier::CapsLock => self.caps_lock = !self.caps_lock,
+                        Modifier::NumLock => self.num_lock = !self.num_lock,
+                        _ => {}
+                    },
+                    KeyboardEvent::Down(letter) => {
+                        return Some(input::keyboard::us_keyboard::USKeymap::get_unicode(
+                            letter.clone(),
+                            self.lshift,
+                            self.rshift,
+                            self.caps_lock,
+                            self.num_lock,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
 
 pub fn terminal() {
-    let keyboard_input = Arc::new(SegQueue::new());
-
-    keyboard::subscribe(Arc::downgrade(&keyboard_input));
-
-    let mut curr_line = String::new();
-
-    let mut lshift = false;
-    let mut rshift = false;
-    let mut caps_lock = false;
-    let mut num_lock = false;
+    let keyboard_input = STREAMS.lock().get_mut("input:keyboard").unwrap().clone();
+    let stdout_gop = STREAMS.lock().get("stdout").unwrap().clone();
 
     let mut cwd = String::from("/");
 
-    loop {
+    let mut input = KBInputDecoder::new(Arc::downgrade(&keyboard_input));
+
+    'outer: loop {
         print!("=> ");
-        'get_line: loop {
-            while let Some(scan_code) = keyboard_input.pop() {
-                match scan_code {
-                    RawKeyCodeState::Up(code) => match code {
-                        RawKeyCode::LeftShift => lshift = false,
-                        RawKeyCode::RightShift => rshift = false,
-                        _ => {}
-                    },
-                    RawKeyCodeState::Down(code) => match code {
-                        RawKeyCode::LeftShift => lshift = true,
-                        RawKeyCode::RightShift => rshift = true,
-                        RawKeyCode::CapsLock => {
-                            caps_lock = !caps_lock;
-                        }
-                        RawKeyCode::NumLock => {
-                            num_lock = !num_lock;
-                        }
-                        RawKeyCode::Enter => {
-                            print!("\n");
-                            break 'get_line;
-                        }
-                        RawKeyCode::Backspace => {
-                            if let Some(_) = curr_line.pop() {
-                                print!("\x08");
-                            }
-                        }
-                        _ => {
-                            let shift = lshift | rshift;
-                            match translate_raw_keycode(code, shift, caps_lock, num_lock) {
-                                KeyCode::Unicode(key) => {
-                                    curr_line.push(key);
-                                    print!("{}", key);
-                                }
-                                KeyCode::SpecialCodes(_) => {
-                                    curr_line.push('\0');
-                                    print!("\0");
-                                }
-                            }
-                        }
-                    },
+
+        let mut curr_line = String::new();
+
+        loop {
+            let c = input.next().unwrap();
+            if c == '\n' {
+                println!();
+                break;
+            } else if c == '\x08' {
+                if let Some(_) = curr_line.pop() {
+                    print!("\x08");
                 }
+            } else {
+                curr_line.push(c);
+                print!("{c}");
             }
-            yield_now()
         }
+
         let (command, rest) = curr_line
             .trim()
             .split_once(' ')
@@ -115,13 +140,42 @@ pub fn terminal() {
                 println!()
             }
             "exec" => {
-                let path = add_path(&cwd, rest);
+                let (prog, args) = rest.split_once(' ').unwrap_or_else(|| (rest, ""));
+
+                let path = add_path(&cwd, prog);
                 if let Some(file) = get_file_from_path(&path) {
                     match file.specialized {
                         fs::VFileSpecialized::Folder(_) => println!("Not a file"),
                         fs::VFileSpecialized::File(_) => {
                             let buf = read_file(file.location);
-                            load_elf(&buf);
+
+                            let pid = load_elf(&buf, args.to_string());
+
+                            let stdout = TASKMANAGER
+                                .lock()
+                                .processes
+                                .get(&pid)
+                                .unwrap()
+                                .stdout
+                                .clone();
+
+                            while TASKMANAGER.lock().processes.contains_key(&pid) {
+                                if let Some(txt) = stdout.pop() {
+                                    stdout_gop.force_push(txt);
+                                }
+                                if let Some(e) = keyboard_input.pop() {
+                                    let scan_code: &KeyboardEvent = unsafe {
+                                        &*(&e.data as *const [u8] as *const KeyboardEvent)
+                                    };
+
+                                    if let KeyboardEvent::Down(_) = scan_code {
+                                        TASKMANAGER.lock().processes.remove(&pid);
+                                        printsln!("Killed task");
+                                        continue 'outer;
+                                    }
+                                }
+                                yield_now();
+                            }
                         }
                     }
                 } else {
@@ -140,7 +194,6 @@ pub fn terminal() {
                 println!("{command}: command not found")
             }
         }
-        curr_line.clear();
     }
 }
 

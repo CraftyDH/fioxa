@@ -1,4 +1,10 @@
-use alloc::{collections::BTreeMap, vec::Vec};
+use core::ptr::slice_from_raw_parts;
+
+use alloc::{
+    collections::BTreeMap,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use crossbeam_queue::ArrayQueue;
 use spin::Mutex;
@@ -11,6 +17,7 @@ use crate::{
         page_table_manager::{PageLvl4, PageTable},
         virt_addr_for_phys,
     },
+    stream::STREAMRef,
 };
 
 use super::process::{Process, Thread, PID, TID};
@@ -21,7 +28,7 @@ lazy_static::lazy_static! {
 pub struct TaskManager {
     core_cnt: u8,
     pub task_queue: ArrayQueue<(PID, TID)>,
-    core_current_task: Vec<(PID, TID)>,
+    pub core_current_task: Vec<(PID, TID, u8)>,
     pub processes: BTreeMap<PID, Process>,
 }
 
@@ -45,13 +52,16 @@ impl TaskManager {
     // Can only be called once
     pub unsafe fn init(&mut self, mapper: PageTable<'static, PageLvl4>, core_cnt: u8) {
         self.core_cnt = core_cnt;
-        let mut p =
-            Process::new_with_page(crate::scheduling::process::ProcessPrivilige::KERNEL, mapper);
+        let mut p = Process::new_with_page(
+            crate::scheduling::process::ProcessPrivilige::KERNEL,
+            mapper,
+            "".into(),
+        );
         assert!(p.pid == 0.into());
 
         for _ in 0..core_cnt {
             let t = unsafe { p.new_overide_thread() };
-            self.core_current_task.push((p.pid, t));
+            self.core_current_task.push((p.pid, t, 0));
         }
         self.processes.insert(p.pid, p);
     }
@@ -84,7 +94,7 @@ impl TaskManager {
         reg: &mut Registers,
     ) -> Option<()> {
         let current_cpu = get_current_cpu_id() as usize;
-        let (pid, tid) = self.core_current_task[current_cpu];
+        let (pid, tid, _) = self.core_current_task[current_cpu];
         let thread = self.get_thread_mut(pid, tid)?;
         thread.save(stack_frame, reg);
         // Don't save nop task
@@ -108,28 +118,40 @@ impl TaskManager {
                     );
                 }
                 thread.restore(stack_frame, reg);
-                self.core_current_task[current_cpu] = (pid, tid);
+                self.core_current_task[current_cpu] = (pid, tid, 5);
+
                 return;
             }
         }
     }
 
     pub fn switch_task(&mut self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-        self.save_current_task(stack_frame, reg);
-        self.load_new_task(stack_frame, reg);
-        // println!("{}", 1);
+        let current_cpu = get_current_cpu_id() as usize;
+        match self.core_current_task[current_cpu].2.checked_sub(1) {
+            Some(n) => self.core_current_task[current_cpu].2 = n,
+            None => {
+                self.save_current_task(stack_frame, reg);
+                self.load_new_task(stack_frame, reg);
+            }
+        }
     }
 
     pub fn exit_thread(&mut self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
         let current_cpu = get_current_cpu_id() as usize;
-        let (pid, tid) = self.core_current_task[current_cpu];
+        let (pid, tid, _) = self.core_current_task[current_cpu];
         let process = self.processes.get_mut(&pid).unwrap();
         process.threads.remove(&tid).unwrap();
+        if process.threads.is_empty() {
+            self.processes.remove(&pid);
+        }
         self.load_new_task(stack_frame, reg);
     }
 
     pub fn spawn_process(&mut self, _stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-        let mut process = Process::new(super::process::ProcessPrivilige::KERNEL);
+        let nbytes = unsafe { &*slice_from_raw_parts(reg.r9 as *const u8, reg.r10) };
+        let args = String::from_utf8_lossy(nbytes).to_string();
+
+        let mut process = Process::new(super::process::ProcessPrivilige::KERNEL, args);
         let pid = process.pid;
 
         // TODO: Validate r8 is a valid entrypoint
@@ -140,21 +162,35 @@ impl TaskManager {
         reg.rax = pid.into();
     }
 
-    pub fn spawn_thread(&mut self, _stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
+    pub fn spawn_thread(
+        &mut self,
+        _stack_frame: &mut InterruptStackFrame,
+        reg: &mut Registers,
+    ) -> Option<()> {
         let current_cpu = get_current_cpu_id() as usize;
-        let (pid, _) = self.core_current_task[current_cpu];
-        let process = self.processes.get_mut(&pid).unwrap();
+        let (pid, _, _) = self.core_current_task[current_cpu];
+        let process = self.processes.get_mut(&pid)?;
 
         // TODO: Validate r8 is a valid entrypoint
         let thread = process.new_thread(reg.r8);
         self.task_queue.push((pid, thread)).unwrap();
         // Return task id as successful result;
         reg.rax = thread.into();
+        Some(())
     }
 
     pub fn yield_now(&mut self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
         self.save_current_task(stack_frame, reg);
         self.load_new_task(stack_frame, reg);
+    }
+
+    pub fn get_stream(&mut self, reg: &mut Registers) -> Option<&STREAMRef> {
+        let current_cpu = get_current_cpu_id() as usize;
+        let (pid, _, _) = self.core_current_task[current_cpu];
+        let process = self.processes.get_mut(&pid)?;
+
+        let stream_n = reg.r9;
+        process.streams.get(stream_n)
     }
 }
 

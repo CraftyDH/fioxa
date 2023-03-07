@@ -5,13 +5,20 @@ use core::{
 
 use acpi::{sdt::SdtHeader, AcpiTable};
 use alloc::vec::Vec;
+use bit_field::BitField;
+use conquer_once::noblock::OnceCell;
 
 use crate::{
     interrupts::set_irq_handler,
-    paging::page_table_manager::{page_4kb, Mapper, PageLvl4, PageTable},
+    paging::{
+        get_uefi_active_mapper,
+        page_table_manager::{page_4kb, Mapper, Page, PageLvl4, PageTable, Size4KB},
+    },
     pci,
     ps2::{keyboard, mouse},
 };
+
+static IOAPIC: OnceCell<IOApic> = OnceCell::uninit();
 
 pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
     let (_, _, io_apics, apic_ints) = madt.find_ioapic();
@@ -24,6 +31,8 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
 
     let apic = io_apics.first().unwrap();
 
+    IOAPIC.try_init_once(|| *apic).unwrap();
+
     for i in apic_ints {
         println!("Int override: {:?}", i);
     }
@@ -31,17 +40,17 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
     // Timer is usually overridden to irq 2
     // TODO: Parse overides and use those
     // 0xFF all cores
-    set_redirect_entry(apic.apic_addr, 0xFF, 2, 49);
+    set_redirect_entry(apic.apic_addr, 0xFF, 2, 49, true);
 
     set_irq_handler(50, keyboard::keyboard_int_handler);
-    set_redirect_entry(apic.apic_addr, 0, 1, 50);
+    set_redirect_entry(apic.apic_addr, 0, 1, 50, false);
 
     set_irq_handler(51, mouse::mouse_int_handler);
-    set_redirect_entry(apic.apic_addr, 0, 12, 51);
+    set_redirect_entry(apic.apic_addr, 0, 12, 51, false);
 
     set_irq_handler(52, pci::interrupt_handler);
-    set_redirect_entry(apic.apic_addr, 0, 10, 52);
-    set_redirect_entry(apic.apic_addr, 0, 11, 52);
+    set_redirect_entry(apic.apic_addr, 0, 10, 52, true);
+    set_redirect_entry(apic.apic_addr, 0, 11, 52, true);
 }
 
 pub fn send_ipi_to(apic_id: u8, vector: u8) {
@@ -53,7 +62,7 @@ pub fn send_ipi_to(apic_id: u8, vector: u8) {
     unsafe { *((0xfee00000u64 + 0x300) as *mut u32) = vector as u32 | 1 << 14 };
 }
 
-fn set_redirect_entry(apic_base: u32, processor: u32, irq: u8, vector: u8) {
+fn set_redirect_entry(apic_base: u32, processor: u32, irq: u8, vector: u8, enable: bool) {
     let mut low = read_ioapic_register(apic_base, 0x10 + 2 * irq);
     let mut high = read_ioapic_register(apic_base, 0x11 + 2 * irq);
 
@@ -61,8 +70,8 @@ fn set_redirect_entry(apic_base: u32, processor: u32, irq: u8, vector: u8) {
     high |= processor << 24;
     write_ioapic_register(apic_base, 0x11 + 2 * irq, high);
 
-    // Unmask
-    low &= !(1 << 16);
+    // Unmask?
+    low.set_bit(16, !enable);
     // Level sensitive
     // low |= 1 << 15;
 
@@ -75,6 +84,22 @@ fn set_redirect_entry(apic_base: u32, processor: u32, irq: u8, vector: u8) {
     low &= !0xFF;
     low |= vector as u32;
     write_ioapic_register(apic_base, 0x10 + 2 * irq, low);
+}
+
+pub fn mask_entry(irq: u8, enable: bool) {
+    let mut mapper = unsafe { get_uefi_active_mapper() };
+
+    let apic_base = unsafe { IOAPIC.get_unchecked().apic_addr };
+
+    let page = Page::<Size4KB>::new(apic_base as u64);
+
+    mapper.map_memory(page, page).unwrap().flush();
+    let mut low = read_ioapic_register(apic_base, 0x10 + 2 * irq);
+
+    low.set_bit(16, !enable);
+
+    write_ioapic_register(apic_base, 0x10 + 2 * irq, low);
+    mapper.unmap_memory(page).unwrap().flush();
 }
 
 fn write_ioapic_register(apic_base: u32, offset: u8, val: u32) {
@@ -119,10 +144,8 @@ impl Madt {
 
             match entry {
                 0 => {
-                    let ptr2 = unsafe { *start_ptr.add(2) };
                     let ptr3 = unsafe { *start_ptr.add(3) };
                     let ptr4 = unsafe { *start_ptr.add(4) };
-                    println!("Core: {ptr2} {ptr3}");
                     if ptr4 & 1 > 0 && ptr3 <= 8 {
                         lapic_ids.push(ptr3)
                     }
@@ -149,7 +172,7 @@ impl Madt {
         while length_left > 0 {
             let entry = unsafe { *start_ptr };
             let len = unsafe { *start_ptr.add(1) };
-            println!("E type: {entry}, {} bytes", len);
+            // println!("E type: {entry}, {} bytes", len);
 
             match entry {
                 0 => {

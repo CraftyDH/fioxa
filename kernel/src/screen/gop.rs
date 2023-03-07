@@ -1,7 +1,10 @@
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use bootloader::gop::GopInfo;
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
+use crossbeam_queue::{ArrayQueue, SegQueue};
+use kernel_userspace::stream::{StreamMessage, StreamMessageType};
 use lazy_static::lazy_static;
 use x86_64::instructions::interrupts::without_interrupts;
 
@@ -259,7 +262,11 @@ macro_rules! colour {
     };
 }
 
+use crate::paging::get_uefi_active_mapper;
+use crate::paging::offset_map::map_gop;
 use crate::screen::psf1::PSF1_FONT_NULL;
+use crate::stream::STREAMS;
+use crate::syscall::yield_now;
 use core::fmt::Arguments;
 use spin::mutex::Mutex;
 
@@ -278,5 +285,90 @@ pub fn _print(args: Arguments) {
         }) {
             return;
         }
+    }
+}
+
+pub struct Writers {}
+
+pub static WRITERS: Mutex<Writers> = Mutex::new(Writers {});
+
+impl Writers {
+    pub fn write_byte(&mut self, chr: char) {
+        let mut data = [0u8; 16];
+        data[0] = chr.len_utf8().try_into().unwrap();
+        chr.encode_utf8(&mut data[1..]);
+        let message = StreamMessage {
+            message_type: StreamMessageType::InlineData,
+            timestamp: 0,
+            data,
+        };
+        STREAMS.lock().get("stdout").unwrap().force_push(message);
+    }
+
+    pub fn write_string(&mut self, s: &str) {
+        let mut chunks = s.as_bytes().chunks(15);
+        while let Some(c) = chunks.next() {
+            let mut data = [0u8; 16];
+            data[0] = c.len().try_into().unwrap();
+            data[1..1 + c.len()].copy_from_slice(c);
+            let message = StreamMessage {
+                message_type: StreamMessageType::InlineData,
+                timestamp: 0,
+                data,
+            };
+            STREAMS.lock().get("stdout").unwrap().force_push(message);
+        }
+    }
+}
+
+impl core::fmt::Write for Writers {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.write_string(s);
+        Ok(())
+    }
+}
+
+#[macro_export]
+macro_rules! printsln {
+    () => (prints!("\n"));
+    ($($arg:tt)*) => (prints!("{}\n", format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! prints {
+    ($($arg:tt)*) => ($crate::screen::gop::_prints(format_args!($($arg)*)));
+}
+
+pub fn _prints(args: Arguments) {
+    WRITERS.lock().write_fmt(args).unwrap();
+}
+
+pub fn print_stdout() {
+    // let mut page_mapper = unsafe { get_uefi_active_mapper() };
+    // map_gop(&mut page_mapper);
+
+    let st = Arc::new(ArrayQueue::new(250));
+    if let Some(_) = STREAMS.lock().insert("stdout", st.clone()) {
+        panic!("Stream already existed")
+    }
+
+    'outer: loop {
+        let mut i = 0;
+        let mut w = WRITER.lock();
+        while let Some(message) = st.pop() {
+            let len = message.data[0] as usize;
+            match core::str::from_utf8(&message.data[1..len + 1]) {
+                Ok(s) => {
+                    w.write_str(s).unwrap();
+                }
+                Err(e) => println!("{:?}", e),
+            }
+            i += 1;
+            // Allow mutex to be released
+            if i > 100 {
+                continue 'outer;
+            }
+        }
+        yield_now();
     }
 }

@@ -103,10 +103,6 @@ pub fn boot_aps(madt: &Madt) {
     }
 
     let n_cores = lapic_ids.len();
-    assert!(
-        &(n_cores as u8 - 1) == lapic_ids.iter().max().unwrap(),
-        "CPU core id's are not linear"
-    );
 
     loop {
         let c = aprunning.load(core::sync::atomic::Ordering::SeqCst);

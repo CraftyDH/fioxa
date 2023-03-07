@@ -13,6 +13,7 @@ fn main() {
     let bootloader = build("bootloader").unwrap();
     let kernel = build("kernel").unwrap();
     let elf = build("test_elf").unwrap();
+    let calc = build("calc").unwrap();
 
     dirs.recursive(true).create("fioxa/EFI/BOOT").unwrap();
     copy("assets/startup.nsh", "fioxa/startup.nsh").unwrap();
@@ -20,6 +21,7 @@ fn main() {
     copy(bootloader, "fioxa/EFI/BOOT/BOOTx64.efi").unwrap();
     copy(kernel, "fioxa/fioxa.elf").unwrap();
     copy(elf, "fioxa/elf.elf").unwrap();
+    copy(calc, "fioxa/calc.elf").unwrap();
 
     let mut args = args();
 
@@ -32,18 +34,23 @@ fn main() {
                 // Args
                 "-machine",
                 "q35",
+                // "-no-shutdown",
+                // "-no-reboot",
                 "-cpu",
                 "qemu64",
                 "-smp",
+                // "cores=12",
                 "cores=4",
                 "-m",
-                "256M",
+                "512M",
                 "-serial",
                 "stdio",
                 "-drive",
                 "if=pflash,format=raw,file=ovmf/OVMF-pure-efi.fd",
                 "-drive",
                 "format=raw,file=fat:rw:fioxa",
+                "-drive",
+                "format=raw,file=fat:rw:src",
             ])
             .spawn()
             .unwrap();
@@ -56,7 +63,7 @@ fn build(name: &str) -> Result<Utf8PathBuf, String> {
         .current_dir(format!("../{}", name))
         .args([
             "build",
-            "--release",
+            // "--release",
             "--message-format=json-render-diagnostics",
         ])
         .stdout(Stdio::piped())

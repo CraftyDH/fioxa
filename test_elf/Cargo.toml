@@ -6,3 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+userspace_bumpalloc = { path = "../userspace_bumpalloc" }
+userspace = { path = "../userspace" }
+kernel_userspace = { path = "../kernel_userspace" }
