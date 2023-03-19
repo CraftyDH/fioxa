@@ -1,6 +1,6 @@
 use core::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
 
-use alloc::{boxed::Box, string::String, sync::Arc};
+use alloc::{boxed::Box, sync::Arc};
 use kernel_userspace::{
     stream::StreamMessage,
     syscall::{self, SYSCALL_NUMBER},
@@ -8,11 +8,9 @@ use kernel_userspace::{
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
-    allocator,
     assembly::registers::Registers,
-    cpu_localstorage::get_current_cpu_id,
+    cpu_localstorage::get_task_mgr_current_pid,
     gdt::TASK_SWITCH_INDEX,
-    memory,
     paging::{
         get_uefi_active_mapper,
         page_allocator::request_page,
@@ -99,13 +97,9 @@ fn echo_handler(regs: &mut Registers) {
 }
 
 fn read_args_handler(regs: &mut Registers) {
-    let current_cpu = get_current_cpu_id() as usize;
-
-    let t = TASKMANAGER.lock();
-
-    let pid = t.core_current_task[current_cpu].0;
-
-    let proc = t.processes.get(&pid).unwrap();
+    let pid = get_task_mgr_current_pid();
+    let mut t = TASKMANAGER.lock();
+    let proc = t.processes.get_mut(&pid).unwrap();
 
     if regs.r8 == 0 {
         regs.rax = proc.args.as_bytes().len();
@@ -126,10 +120,8 @@ fn stream_handler(regs: &mut Registers) {
 
             match STREAMS.lock().get_mut(name) {
                 Some(st) => {
+                    let pid = get_task_mgr_current_pid();
                     let mut t = TASKMANAGER.lock();
-                    let current_cpu = get_current_cpu_id() as usize;
-
-                    let (pid, _, _) = t.core_current_task[current_cpu];
                     let process = t.processes.get_mut(&pid).unwrap();
 
                     process.streams.push(Arc::downgrade(&st));

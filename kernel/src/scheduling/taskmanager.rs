@@ -3,7 +3,6 @@ use core::ptr::slice_from_raw_parts;
 use alloc::{
     collections::BTreeMap,
     string::{String, ToString},
-    vec::Vec,
 };
 
 use crossbeam_queue::ArrayQueue;
@@ -12,7 +11,10 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
     assembly::registers::Registers,
-    cpu_localstorage::get_current_cpu_id,
+    cpu_localstorage::{
+        get_current_cpu_id, get_task_mgr_current_pid, get_task_mgr_current_tid,
+        set_task_mgr_current_pid, set_task_mgr_current_ticks, set_task_mgr_current_tid,
+    },
     paging::{
         page_table_manager::{PageLvl4, PageTable},
         virt_addr_for_phys,
@@ -25,10 +27,10 @@ use super::process::{Process, Thread, PID, TID};
 lazy_static::lazy_static! {
     pub static ref TASKMANAGER: Mutex<TaskManager> = Mutex::new(TaskManager::uninit());
 }
+
 pub struct TaskManager {
     core_cnt: u8,
     pub task_queue: ArrayQueue<(PID, TID)>,
-    pub core_current_task: Vec<(PID, TID, u8)>,
     pub processes: BTreeMap<PID, Process>,
 }
 
@@ -44,7 +46,6 @@ impl TaskManager {
         Self {
             core_cnt: 0,
             task_queue: ArrayQueue::new(100),
-            core_current_task: Vec::new(),
             processes: BTreeMap::new(),
         }
     }
@@ -60,8 +61,7 @@ impl TaskManager {
         assert!(p.pid == 0.into());
 
         for _ in 0..core_cnt {
-            let t = unsafe { p.new_overide_thread() };
-            self.core_current_task.push((p.pid, t, 0));
+            unsafe { p.new_overide_thread() };
         }
         self.processes.insert(p.pid, p);
     }
@@ -93,8 +93,8 @@ impl TaskManager {
         stack_frame: &mut InterruptStackFrame,
         reg: &mut Registers,
     ) -> Option<()> {
-        let current_cpu = get_current_cpu_id() as usize;
-        let (pid, tid, _) = self.core_current_task[current_cpu];
+        let pid = get_task_mgr_current_pid();
+        let tid = get_task_mgr_current_tid();
         let thread = self.get_thread_mut(pid, tid)?;
         thread.save(stack_frame, reg);
         // Don't save nop task
@@ -118,27 +118,22 @@ impl TaskManager {
                     );
                 }
                 thread.restore(stack_frame, reg);
-                self.core_current_task[current_cpu] = (pid, tid, 5);
-
+                set_task_mgr_current_pid(pid);
+                set_task_mgr_current_tid(tid);
+                set_task_mgr_current_ticks(5);
                 return;
             }
         }
     }
 
     pub fn switch_task(&mut self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-        let current_cpu = get_current_cpu_id() as usize;
-        match self.core_current_task[current_cpu].2.checked_sub(1) {
-            Some(n) => self.core_current_task[current_cpu].2 = n,
-            None => {
-                self.save_current_task(stack_frame, reg);
-                self.load_new_task(stack_frame, reg);
-            }
-        }
+        self.save_current_task(stack_frame, reg);
+        self.load_new_task(stack_frame, reg);
     }
 
     pub fn exit_thread(&mut self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-        let current_cpu = get_current_cpu_id() as usize;
-        let (pid, tid, _) = self.core_current_task[current_cpu];
+        let pid = get_task_mgr_current_pid();
+        let tid = get_task_mgr_current_tid();
         let process = self.processes.get_mut(&pid).unwrap();
         process.threads.remove(&tid).unwrap();
         if process.threads.is_empty() {
@@ -167,8 +162,7 @@ impl TaskManager {
         _stack_frame: &mut InterruptStackFrame,
         reg: &mut Registers,
     ) -> Option<()> {
-        let current_cpu = get_current_cpu_id() as usize;
-        let (pid, _, _) = self.core_current_task[current_cpu];
+        let pid = get_task_mgr_current_pid();
         let process = self.processes.get_mut(&pid)?;
 
         // TODO: Validate r8 is a valid entrypoint
@@ -185,8 +179,7 @@ impl TaskManager {
     }
 
     pub fn get_stream(&mut self, reg: &mut Registers) -> Option<&STREAMRef> {
-        let current_cpu = get_current_cpu_id() as usize;
-        let (pid, _, _) = self.core_current_task[current_cpu];
+        let pid = get_task_mgr_current_pid();
         let process = self.processes.get_mut(&pid)?;
 
         let stream_n = reg.r9;

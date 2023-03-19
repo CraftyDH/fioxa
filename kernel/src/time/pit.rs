@@ -12,8 +12,12 @@ use x86_64::{
 };
 
 use crate::{
-    assembly::registers::Registers, cpu_localstorage::get_current_cpu_id,
-    scheduling::taskmanager::TASKMANAGER, wrap_function_registers,
+    assembly::registers::Registers,
+    cpu_localstorage::{
+        get_current_cpu_id, get_task_mgr_current_ticks, set_task_mgr_current_ticks,
+    },
+    scheduling::taskmanager::TASKMANAGER,
+    wrap_function_registers,
 };
 
 const PIT_BASE_FREQUENCY: u64 = 1193182;
@@ -106,9 +110,14 @@ extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
 
     // If timer is used for switching tasks switch task
     if SWITCH_TASK.load(Ordering::Acquire) {
-        TASKMANAGER
-            .try_lock()
-            .and_then(|mut t| Some(t.switch_task(stack_frame, regs)));
+        match get_task_mgr_current_ticks().checked_sub(1) {
+            Some(n) => set_task_mgr_current_ticks(n),
+            None => {
+                TASKMANAGER
+                    .try_lock()
+                    .and_then(|mut t| Some(t.switch_task(stack_frame, regs)));
+            }
+        }
     }
     // Ack interrupt
     unsafe { *(0xfee000b0 as *mut u32) = 0 }
