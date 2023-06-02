@@ -5,6 +5,7 @@ use core::{
 
 use alloc::{sync::Arc, vec::Vec};
 use crossbeam_queue::SegQueue;
+use kernel_userspace::syscall::yield_now;
 use lazy_static::lazy_static;
 use modular_bitfield::{bitfield, specifiers::B48};
 use spin::Mutex;
@@ -13,7 +14,7 @@ use x86_64::instructions::interrupts::without_interrupts;
 use crate::{
     driver::net::{EthernetDriver, SendError},
     net::arp::{ARP, ARP_TABLE},
-    syscall::{sleep, yield_now},
+    syscall::sleep,
 };
 
 use super::arp::ARPEth;

@@ -177,14 +177,6 @@ impl TaskManager {
         self.save_current_task(stack_frame, reg);
         self.load_new_task(stack_frame, reg);
     }
-
-    pub fn get_stream(&mut self, reg: &mut Registers) -> Option<&STREAMRef> {
-        let pid = get_task_mgr_current_pid();
-        let process = self.processes.get_mut(&pid)?;
-
-        let stream_n = reg.r9;
-        process.streams.get(stream_n)
-    }
 }
 
 extern "C" {

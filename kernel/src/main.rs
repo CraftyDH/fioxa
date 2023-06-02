@@ -31,18 +31,16 @@ use kernel::paging::{
     get_uefi_active_mapper, set_mem_offset, virt_addr_for_phys, MemoryLoc, KERNEL_MAP,
 };
 use kernel::pci::enumerate_pci;
-use kernel::ps2::PS2Controller;
 use kernel::scheduling::taskmanager::core_start_multitasking;
 use kernel::screen::gop::{self, WRITER};
-use kernel::screen::mouse;
 use kernel::screen::psf1::{self, load_psf1_font};
-use kernel::syscall::{spawn_process, spawn_thread, yield_now};
 use kernel::terminal::terminal;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
-use kernel::{allocator, gdt, paging, BOOT_INFO};
+use kernel::{allocator, gdt, init_streams, paging, ps2, BOOT_INFO};
 
+use kernel_userspace::syscall::{spawn_process, spawn_thread};
 use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
 use uefi::table::{Runtime, SystemTable};
 
@@ -226,6 +224,10 @@ pub fn main(info: *const BootInfo) -> ! {
 }
 
 fn after_boot() {
+    unsafe {
+        map_gop(&mut get_uefi_active_mapper());
+    }
+
     let boot_info = unsafe {
         &*((BOOT_INFO as *const u8).add(MemoryLoc::PhysMapOffset as usize) as *const BootInfo)
     };
@@ -263,15 +265,10 @@ fn after_boot() {
 
     let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
 
-    log!("Initalizing PS2 devices...");
-    let mut ps2_controller = PS2Controller::new();
+    init_streams();
 
-    if let Err(e) = ps2_controller.initialize() {
-        log!("PS2 Controller failed to init because: {}", e);
-    } else {
-        spawn_thread(mouse::print_cursor);
-    }
-    spawn_thread(gop::print_stdout);
+    spawn_process(gop::gop_entry, "");
+    spawn_process(ps2::main, "");
 
     log!("Enumnerating PCI...");
 

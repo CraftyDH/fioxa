@@ -19,9 +19,6 @@ use crate::{
 
 lazy_static::lazy_static! {
     pub static ref PARTITION: Mutex<BTreeMap<PartitionId, Box<dyn FileSystemDev>>> = Mutex::new(BTreeMap::new());
-    // Sorta works but the getfile by id isn't overriden atm
-    // TODO: Fix so that Tree works again
-    pub static ref MOUNTS: Mutex<BTreeMap<String, (PartitionId, usize)>> = Mutex::new({let mut b = BTreeMap::new(); b.insert("/".to_string(), (PartitionId(0), 0)); b});
     pub static ref FSDRIVES: Mutex<FileSystemDrives> = Mutex::new(FileSystemDrives { disks_buses: Default::default() });
 }
 pub struct FileSystemDrives {
@@ -29,10 +26,16 @@ pub struct FileSystemDrives {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub struct PartitionId(u64);
+pub struct PartitionId(pub u64);
+
+impl From<u64> for PartitionId {
+    fn from(value: u64) -> Self {
+        PartitionId(value)
+    }
+}
 
 pub fn next_partition_id() -> PartitionId {
-    static ID: AtomicU64 = AtomicU64::new(1);
+    static ID: AtomicU64 = AtomicU64::new(0);
     PartitionId(ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed))
 }
 
@@ -49,19 +52,6 @@ impl FileSystemDrives {
             }
         }
     }
-}
-
-pub fn mount(root: VFileID) {
-    let mut r = MOUNTS.lock();
-    let chr = ('A' as u8 + r.iter().filter(|a| !a.0.starts_with('/')).count() as u8) as char;
-
-    r.insert("/mnt/".to_string() + chr.to_string().as_str(), root);
-}
-
-pub fn mount_root(root: VFileID) {
-    let mut r = MOUNTS.lock();
-
-    r.insert("/".to_string(), root);
 }
 
 pub struct FSPartitionDisk {
@@ -103,10 +93,23 @@ pub fn read_file(id: VFileID) -> Vec<u8> {
     p.read_file(id.1)
 }
 
+pub fn read_file_sector(id: VFileID, sector: usize, buf: &mut [u8; 512]) -> Option<usize> {
+    let mut p = PARTITION.lock();
+    let p = p.get_mut(&id.0).unwrap();
+    p.read_file_sector(id.1, sector, buf)
+}
+
 pub trait FileSystemDev: Send + Sync {
     fn get_file_by_id(&mut self, file_id: usize) -> VFile;
 
     fn read_file(&mut self, file_id: usize) -> Vec<u8>;
+
+    fn read_file_sector(
+        &mut self,
+        file_id: usize,
+        file_sector: usize,
+        buffer: &mut [u8; 512],
+    ) -> Option<usize>;
 }
 
 impl Debug for dyn FileSystemDev {
@@ -137,31 +140,22 @@ pub enum VFileSpecialized {
     File(usize),
 }
 
-pub fn get_file_from_path(path: &str) -> Option<VFile> {
-    let mut file = None;
-    let mut rest = "";
+pub fn get_file_from_path(partition_id: PartitionId, path: &str) -> Option<VFile> {
+    let mut file = get_file_by_id((partition_id, 0));
 
-    for (mount, v) in MOUNTS.lock().iter().rev() {
-        if path.starts_with(mount) {
-            file = Some(*v);
-            rest = &path[mount.len()..];
-            break;
+    for sect in path.split('/') {
+        if sect == "" {
+            continue;
         }
-    }
-    let mut file = get_file_by_id(file.unwrap());
-
-    if rest.len() > 0 {
-        for sect in rest.split('/') {
-            let folder = match file.specialized {
-                VFileSpecialized::Folder(f) => f,
-                VFileSpecialized::File(_) => {
-                    println!("Not a directory");
-                    return None;
-                }
-            };
-            let id = folder.get(sect)?;
-            file = get_file_by_id(*id);
-        }
+        let folder = match file.specialized {
+            VFileSpecialized::Folder(f) => f,
+            VFileSpecialized::File(_) => {
+                println!("Not a directory");
+                return None;
+            }
+        };
+        let id = folder.get(sect)?;
+        file = get_file_by_id(*id);
     }
     Some(file)
 }

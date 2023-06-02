@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use userspace::syscall::{exit, read_args};
+use kernel_userspace::syscall::{exit, read_args};
 
 extern crate alloc;
 #[macro_use]

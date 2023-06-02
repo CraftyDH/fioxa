@@ -1,6 +1,7 @@
 use core::mem::size_of;
 
 use alloc::{slice, vec::Vec};
+use kernel_userspace::syscall::yield_now;
 
 use crate::{
     driver::disk::{
@@ -16,7 +17,7 @@ use crate::{
         page_allocator::{free_page, request_page},
         page_table_manager::{ident_map_curr_process, page_4kb, Mapper},
     },
-    syscall::{sleep, yield_now},
+    syscall::sleep,
 };
 
 use super::{fis::ReceivedFis, HBAPort, HBA_PxCMD_CR, HBA_PxCMD_FR, HBA_PxCMD_FRE, HBA_PxCMD_ST};

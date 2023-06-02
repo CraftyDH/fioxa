@@ -13,8 +13,8 @@ use crate::{
     net::ethernet::{EthernetFrame, EthernetFrameHeader, RECEIVED_FRAMES_QUEUE},
     paging::{page_allocator::frame_alloc_exec, page_table_manager::ident_map_curr_process},
     pci::PCIHeaderCommon,
-    syscall::yield_now,
 };
+use kernel_userspace::syscall::yield_now;
 
 use super::{EthernetDriver, SendError};
 

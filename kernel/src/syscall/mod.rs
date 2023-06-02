@@ -1,9 +1,8 @@
-use core::ptr::{slice_from_raw_parts, slice_from_raw_parts_mut};
+use core::ptr::slice_from_raw_parts_mut;
 
-use alloc::{boxed::Box, sync::Arc};
 use kernel_userspace::{
     stream::StreamMessage,
-    syscall::{self, SYSCALL_NUMBER},
+    syscall::{self, STREAM_GETID_KB, STREAM_GETID_SOUT, SYSCALL_NUMBER},
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
@@ -16,11 +15,8 @@ use crate::{
         page_allocator::request_page,
         page_table_manager::{Mapper, Page, Size4KB},
     },
-    scheduling::{
-        process::{PID, TID},
-        taskmanager::TASKMANAGER,
-    },
-    stream::STREAMS,
+    scheduling::taskmanager::TASKMANAGER,
+    stream::{self},
     time::spin_sleep_ms,
     wrap_function_registers,
 };
@@ -74,22 +70,6 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
     unsafe { *(0xfee000b0 as *mut u32) = 0 }
 }
 
-unsafe fn syscall1(mut syscall_number: usize, arg1: usize) -> usize {
-    core::arch::asm!("int 0x80", inout("rax") syscall_number, in("r8") arg1, options(nostack));
-    syscall_number
-}
-
-unsafe fn syscall3(mut syscall_number: usize, arg1: usize, arg2: usize, arg3: usize) -> usize {
-    core::arch::asm!("int 0x80", inout("rax") syscall_number, in("r8") arg1, in("r9") arg2, in("r10") arg3, options(nostack));
-    syscall_number
-}
-
-/// Syscall test
-/// Will return number passed as arg1
-pub fn echo(number: usize) -> usize {
-    unsafe { syscall1(syscall::ECHO, number) }
-}
-
 fn echo_handler(regs: &mut Registers) {
     println!("Echoing: {}", regs.r8);
     unsafe { core::arch::asm!("cli") }
@@ -111,53 +91,31 @@ fn read_args_handler(regs: &mut Registers) {
 }
 
 fn stream_handler(regs: &mut Registers) {
-    let message = unsafe { &mut *(regs.r10 as *mut StreamMessage) };
-
     match regs.r8 {
-        syscall::STREAM_CONNECT => {
-            let nbytes = unsafe { &*slice_from_raw_parts(regs.r9 as *const u8, regs.r10) };
-            let name = core::str::from_utf8(nbytes).unwrap();
-
-            match STREAMS.lock().get_mut(name) {
-                Some(st) => {
-                    let pid = get_task_mgr_current_pid();
-                    let mut t = TASKMANAGER.lock();
-                    let process = t.processes.get_mut(&pid).unwrap();
-
-                    process.streams.push(Arc::downgrade(&st));
-                    regs.r8 = process.streams.len();
-                    regs.rax = 0;
-                }
-                None => {
-                    regs.rax = 1;
-                }
-            }
-        }
         syscall::STREAM_PUSH => {
-            match TASKMANAGER
-                .lock()
-                .get_stream(regs)
-                .and_then(|s| s.upgrade())
-                .and_then(|s| s.push(*message).ok())
-            {
-                Some(_) => regs.rax = 0,
-                None => regs.rax = 1,
+            let message: &mut StreamMessage = unsafe { &mut *(regs.r9 as *mut StreamMessage) };
+
+            stream::push(message.clone());
+            regs.rax = 0;
+        }
+        syscall::STREAM_POP => match stream::pop() {
+            Some(e) => {
+                let message: &mut StreamMessage = unsafe { &mut *(regs.r9 as *mut StreamMessage) };
+
+                core::mem::swap(message, &mut (*e).clone());
+                regs.rax = 0
             }
-        }
-        syscall::STREAM_POP => {
-            match TASKMANAGER
-                .lock()
-                .get_stream(regs)
-                .and_then(|s| s.upgrade())
-                .and_then(|s| s.pop())
-            {
-                Some(e) => {
-                    *message = e;
-                    regs.rax = 0
-                }
-                None => regs.rax = 1,
-            };
-        }
+            None => regs.rax = 1,
+        },
+        syscall::STREAM_GETID => match regs.r9 {
+            STREAM_GETID_KB => {
+                regs.rax = (crate::KB_STREAM_ID.get().unwrap().0) as usize;
+            }
+            STREAM_GETID_SOUT => {
+                regs.rax = (crate::GOP_STREAM_ID.get().unwrap().0) as usize;
+            }
+            _ => regs.rax = 0,
+        },
         _ => (),
     }
 }
@@ -172,39 +130,6 @@ fn mmap_page_handler(regs: &mut Registers) {
         .flush();
 }
 
-pub fn yield_now() {
-    unsafe { syscall1(syscall::YIELD_NOW, 0) };
-    // unsafe { core::arch::asm!("hlt") }
-}
-
-pub fn spawn_process<F>(func: F, args: &str) -> PID
-where
-    F: Fn() + Send + Sync,
-{
-    let boxed_func: Box<dyn Fn()> = Box::new(func);
-    let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
-
-    let res = unsafe {
-        syscall3(
-            syscall::SPAWN_PROCESS,
-            raw as usize,
-            args.as_ptr() as usize,
-            args.len(),
-        )
-    } as u64;
-    PID::from(res)
-}
-
-pub fn spawn_thread<F>(func: F) -> TID
-where
-    F: FnOnce() + Send + Sync,
-{
-    let boxed_func: Box<dyn FnOnce()> = Box::new(func);
-    let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
-    let res = unsafe { syscall1(syscall::SPAWN_THREAD, raw as usize) } as u64;
-    TID::from(res)
-}
-
 pub fn sleep(ms: usize) {
     // unsafe { syscall1(SLEEP, ms) };
     spin_sleep_ms(ms as u64)
@@ -212,10 +137,4 @@ pub fn sleep(ms: usize) {
     // while end > get_uptime() {
     //     unsafe { _mm_pause() };
     // }
-}
-
-pub fn exit_thread() -> ! {
-    unsafe { syscall1(syscall::EXIT_THREAD, 0) };
-
-    panic!("Function failed to QUIT")
 }

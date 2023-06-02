@@ -11,8 +11,10 @@
 #![feature(const_for)]
 #![feature(pointer_byte_offsets)]
 
-//* */
 use bootloader::BootInfo;
+use conquer_once::spin::OnceCell;
+use stream::StreamId;
+
 #[macro_use]
 extern crate alloc;
 
@@ -82,4 +84,13 @@ macro_rules! log {
         // s_print!("{}\n", format_args!($($arg)*));
         print!("{}\n", format_args!($($arg)*));
     });
+}
+
+pub static GOP_STREAM_ID: OnceCell<StreamId> = OnceCell::uninit();
+pub static KB_STREAM_ID: OnceCell<StreamId> = OnceCell::uninit();
+pub static MOUSE_STREAM_ID: OnceCell<StreamId> = OnceCell::uninit();
+
+pub fn init_streams() {
+    KB_STREAM_ID.init_once(|| stream::new());
+    MOUSE_STREAM_ID.init_once(|| stream::new());
 }

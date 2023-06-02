@@ -9,7 +9,8 @@ use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
 use crate::{
     interrupt_handler,
     ioapic::mask_entry,
-    stream::{STREAM, STREAMS},
+    stream::{self, STREAM},
+    KB_STREAM_ID,
 };
 
 use super::{scancode::set2::ScancodeSet2, PS2Command};
@@ -34,6 +35,7 @@ pub fn interrupt_handler(_: InterruptStackFrame) {
     let res = DECODER.lock().add_byte(scancode);
     if let Some(key) = res {
         let mut msg = StreamMessage {
+            stream_id: KB_STREAM_ID.get().unwrap().0,
             message_type: StreamMessageType::InlineData,
             timestamp: 0,
             data: Default::default(),
@@ -43,6 +45,12 @@ pub fn interrupt_handler(_: InterruptStackFrame) {
         if let Some(_) = KEYBOARD_QUEUE.force_push(msg) {
             println!("WARN: Keyboard buffer full dropping packets")
         }
+    }
+}
+
+pub fn dispatch_events() {
+    while let Some(msg) = KEYBOARD_QUEUE.pop() {
+        stream::push(msg);
     }
 }
 
@@ -89,13 +97,6 @@ impl Keyboard {
         // Set keyboard layout to scancode set 2
         self.send_command(0xF0)?;
         self.send_command(2)?;
-
-        if let Some(_) = STREAMS
-            .lock()
-            .insert("input:keyboard", KEYBOARD_QUEUE.clone())
-        {
-            panic!("Stream already existed")
-        }
 
         Ok(())
     }

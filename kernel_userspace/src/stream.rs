@@ -6,8 +6,9 @@ pub enum StreamMessageType {
     InlineData,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct StreamMessage {
+    pub stream_id: u64,
     pub message_type: StreamMessageType,
     pub timestamp: u64,
     pub data: [u8; 16],
@@ -16,6 +17,7 @@ pub struct StreamMessage {
 impl StreamMessage {
     pub fn new(ty: StreamMessageType) -> Self {
         Self {
+            stream_id: 0,
             message_type: ty,
             timestamp: 0,
             data: [0; 16],

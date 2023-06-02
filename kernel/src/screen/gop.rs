@@ -1,10 +1,11 @@
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
+use alloc::string::String;
 use bootloader::gop::GopInfo;
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
-use crossbeam_queue::{ArrayQueue, SegQueue};
+use crossbeam_queue::ArrayQueue;
 use kernel_userspace::stream::{StreamMessage, StreamMessageType};
+use kernel_userspace::syscall::{self, spawn_thread, stream_push};
 use lazy_static::lazy_static;
 use x86_64::instructions::interrupts::without_interrupts;
 
@@ -265,11 +266,12 @@ macro_rules! colour {
 use crate::paging::get_uefi_active_mapper;
 use crate::paging::offset_map::map_gop;
 use crate::screen::psf1::PSF1_FONT_NULL;
-use crate::stream::STREAMS;
-use crate::syscall::yield_now;
+use crate::{stream, GOP_STREAM_ID, MOUSE_STREAM_ID};
 use core::fmt::Arguments;
+use kernel_userspace::syscall::yield_now;
 use spin::mutex::Mutex;
 
+use super::mouse::print_cursor;
 use super::psf1::PSF1Font;
 
 #[doc(hidden)]
@@ -298,11 +300,12 @@ impl Writers {
         data[0] = chr.len_utf8().try_into().unwrap();
         chr.encode_utf8(&mut data[1..]);
         let message = StreamMessage {
+            stream_id: GOP_STREAM_ID.get().unwrap().0,
             message_type: StreamMessageType::InlineData,
             timestamp: 0,
             data,
         };
-        STREAMS.lock().get("stdout").unwrap().force_push(message);
+        stream_push(message);
     }
 
     pub fn write_string(&mut self, s: &str) {
@@ -312,11 +315,12 @@ impl Writers {
             data[0] = c.len().try_into().unwrap();
             data[1..1 + c.len()].copy_from_slice(c);
             let message = StreamMessage {
+                stream_id: GOP_STREAM_ID.get().unwrap().0,
                 message_type: StreamMessageType::InlineData,
                 timestamp: 0,
                 data,
             };
-            STREAMS.lock().get("stdout").unwrap().force_push(message);
+            stream_push(message);
         }
     }
 }
@@ -343,30 +347,37 @@ pub fn _prints(args: Arguments) {
     WRITERS.lock().write_fmt(args).unwrap();
 }
 
-pub fn print_stdout() {
-    // let mut page_mapper = unsafe { get_uefi_active_mapper() };
-    // map_gop(&mut page_mapper);
+lazy_static! {
+    pub static ref QUEUE: ArrayQueue<StreamMessage> = ArrayQueue::new(250);
+}
+pub fn print_stdout(message: StreamMessage) {
+    let len = message.data[0] as usize;
+    print!("{}", String::from_utf8_lossy(&message.data[1..len + 1]));
+}
 
-    let st = Arc::new(ArrayQueue::new(250));
-    if let Some(_) = STREAMS.lock().insert("stdout", st.clone()) {
-        panic!("Stream already existed")
+pub fn gop_entry() {
+    unsafe {
+        map_gop(&mut get_uefi_active_mapper());
     }
+    // let st_id = GOP_STREAM_ID.get().unwrap();
+    let st_id = stream::new();
+    GOP_STREAM_ID.init_once(|| st_id);
 
-    'outer: loop {
-        let mut i = 0;
-        let mut w = WRITER.lock();
-        while let Some(message) = st.pop() {
-            let len = message.data[0] as usize;
-            match core::str::from_utf8(&message.data[1..len + 1]) {
-                Ok(s) => {
-                    w.write_str(s).unwrap();
-                }
-                Err(e) => println!("{:?}", e),
-            }
-            i += 1;
-            // Allow mutex to be released
-            if i > 100 {
-                continue 'outer;
+    let mouse_id = *MOUSE_STREAM_ID.get().unwrap();
+
+    let mut mouse_pod: Pos = Pos { x: 0, y: 0 };
+
+    stream::subscribe(st_id);
+    stream::subscribe(mouse_id);
+
+    loop {
+        while let Some(msg) = syscall::stream_pop() {
+            if msg.stream_id == st_id.0 {
+                print_stdout(msg);
+            } else if msg.stream_id == mouse_id.0 {
+                print_cursor(&mut mouse_pod, msg)
+            } else {
+                println!("Got message: {}", msg.stream_id);
             }
         }
         yield_now();

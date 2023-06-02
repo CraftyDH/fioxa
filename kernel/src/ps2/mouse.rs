@@ -3,11 +3,17 @@ use core::sync::atomic::{AtomicI8, AtomicU8, Ordering};
 use alloc::sync::Arc;
 
 use crossbeam_queue::ArrayQueue;
+use input::mouse::MousePacket;
 use kernel_userspace::stream::StreamMessage;
 use lazy_static::lazy_static;
 use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
 
-use crate::{interrupt_handler, ioapic::mask_entry, stream::{STREAMS, STREAM}};
+use crate::{
+    interrupt_handler,
+    ioapic::mask_entry,
+    stream::{self, STREAM},
+    MOUSE_STREAM_ID,
+};
 
 use super::PS2Command;
 
@@ -24,6 +30,7 @@ enum MouseTypeId {
 lazy_static! {
     static ref MOUSEPACKET_QUEUE: STREAM = Arc::new(ArrayQueue::new(1000));
 }
+
 static PACKETS_REQUIRED: AtomicI8 = AtomicI8::new(-1);
 static POS: AtomicU8 = AtomicU8::new(0);
 
@@ -86,12 +93,10 @@ pub fn interrupt_handler(_: InterruptStackFrame) {
     }
 }
 
-pub struct MousePacket {
-    pub left: bool,
-    pub right: bool,
-    pub middle: bool,
-    pub x_mov: i8,
-    pub y_mov: i8,
+pub fn dispatch_events() {
+    while let Some(msg) = MOUSEPACKET_QUEUE.pop() {
+        stream::push(msg);
+    }
 }
 
 pub fn send_packet(p1: u8, p2: u8, p3: u8) {
@@ -122,6 +127,7 @@ pub fn send_packet(p1: u8, p2: u8, p3: u8) {
     };
 
     let mut msg = StreamMessage {
+        stream_id: MOUSE_STREAM_ID.get().unwrap().0,
         message_type: kernel_userspace::stream::StreamMessageType::InlineData,
         timestamp: 0,
         data: [0; 16],
@@ -259,13 +265,6 @@ impl Mouse {
 
         // Enable packet streaming (aka interrupts)
         self.send_command(0xF4)?;
-
-        if let Some(_) = STREAMS
-            .lock()
-            .insert("input:mouse", MOUSEPACKET_QUEUE.clone())
-        {
-            panic!("Stream already existed")
-        }
 
         Ok(())
     }

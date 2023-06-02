@@ -2,6 +2,7 @@ use alloc::{
     string::{String, ToString},
     sync::Arc,
 };
+use crossbeam_queue::ArrayQueue;
 use input::keyboard::{
     virtual_code::{Modifier, VirtualKeyCode},
     KeyboardEvent,
@@ -9,12 +10,12 @@ use input::keyboard::{
 
 use crate::{
     elf::load_elf,
-    fs::{self, add_path, get_file_from_path, read_file},
+    fs::{self, add_path, get_file_from_path, read_file, read_file_sector, PartitionId},
     scheduling::taskmanager::TASKMANAGER,
-    stream::{STREAMRef, STREAMS},
-    syscall::yield_now,
-    time,
+    stream::{self, STREAMRef},
+    time, KB_STREAM_ID,
 };
+use kernel_userspace::syscall::yield_now;
 
 pub struct KBInputDecoder {
     stream: STREAMRef,
@@ -40,10 +41,10 @@ impl Iterator for KBInputDecoder {
     type Item = char;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let stream = self.stream.upgrade()?;
+        // let stream = self.stream.upgrade()?;
 
         loop {
-            if let Some(st_message) = stream.pop() {
+            if let Some(st_message) = stream::pop() {
                 let scan_code: &KeyboardEvent =
                     unsafe { &*(&st_message.data as *const [u8] as *const KeyboardEvent) };
 
@@ -77,15 +78,16 @@ impl Iterator for KBInputDecoder {
 }
 
 pub fn terminal() {
-    let keyboard_input = STREAMS.lock().get_mut("input:keyboard").unwrap().clone();
-    let stdout_gop = STREAMS.lock().get("stdout").unwrap().clone();
+    stream::subscribe(*KB_STREAM_ID.get().unwrap());
 
-    let mut cwd = String::from("/");
+    let mut cwd: String = String::from("/");
+    let mut partiton_id = 0;
 
-    let mut input = KBInputDecoder::new(Arc::downgrade(&keyboard_input));
+    let mut input: KBInputDecoder =
+        KBInputDecoder::new(Arc::downgrade(&Arc::new(ArrayQueue::new(1))));
 
-    'outer: loop {
-        print!("=> ");
+    loop {
+        print!("{partiton_id}:/ ");
 
         let mut curr_line = String::new();
 
@@ -111,11 +113,28 @@ pub fn terminal() {
         match command {
             "" => (),
             "pwd" => println!("{}", cwd.to_string()),
-            "echo" => println!("{rest}"),
-            "tree" => tree(&cwd, rest),
+            "echo" => {
+                prints!("ECHO!");
+            }
+            "tree" => tree(partiton_id.into(), &cwd, rest),
+            "disk" => {
+                let c = rest.trim();
+                let c = c.chars().next();
+                if let Some(chr) = c {
+                    if let Some(n) = chr.to_digit(10) {
+                        partiton_id = n.into();
+                        continue;
+                    }
+                }
+
+                println!("Drives:");
+                for part in fs::PARTITION.lock().keys() {
+                    println!("{}:", part.0)
+                }
+            }
             "ls" => {
                 let path = add_path(&cwd, rest);
-                if let Some(file) = get_file_from_path(&path) {
+                if let Some(file) = get_file_from_path(partiton_id.into(), &path) {
                     match file.specialized {
                         fs::VFileSpecialized::Folder(files) => {
                             for f in files {
@@ -132,9 +151,16 @@ pub fn terminal() {
             "cat" => {
                 for file in rest.split_ascii_whitespace() {
                     let path = add_path(&cwd, file);
-                    if let Some(file) = get_file_from_path(&path) {
-                        let buf = read_file(file.location);
-                        print!("{}", String::from_utf8_lossy(&buf));
+                    if let Some(file) = get_file_from_path(partiton_id.into(), &path) {
+                        let mut buffer = [0u8; 512];
+                        for i in 0.. {
+                            match read_file_sector(file.location, i, &mut buffer) {
+                                Some(len) => {
+                                    print!("{}", String::from_utf8_lossy(&buffer[0..len]));
+                                }
+                                None => break,
+                            }
+                        }
                     }
                 }
                 println!()
@@ -143,7 +169,7 @@ pub fn terminal() {
                 let (prog, args) = rest.split_once(' ').unwrap_or_else(|| (rest, ""));
 
                 let path = add_path(&cwd, prog);
-                if let Some(file) = get_file_from_path(&path) {
+                if let Some(file) = get_file_from_path(partiton_id.into(), &path) {
                     match file.specialized {
                         fs::VFileSpecialized::Folder(_) => println!("Not a file"),
                         fs::VFileSpecialized::File(_) => {
@@ -151,29 +177,7 @@ pub fn terminal() {
 
                             let pid = load_elf(&buf, args.to_string());
 
-                            let stdout = TASKMANAGER
-                                .lock()
-                                .processes
-                                .get(&pid)
-                                .unwrap()
-                                .stdout
-                                .clone();
-
                             while TASKMANAGER.lock().processes.contains_key(&pid) {
-                                if let Some(txt) = stdout.pop() {
-                                    stdout_gop.force_push(txt);
-                                }
-                                if let Some(e) = keyboard_input.pop() {
-                                    let scan_code: &KeyboardEvent = unsafe {
-                                        &*(&e.data as *const [u8] as *const KeyboardEvent)
-                                    };
-
-                                    if let KeyboardEvent::Down(_) = scan_code {
-                                        TASKMANAGER.lock().processes.remove(&pid);
-                                        printsln!("Killed task");
-                                        continue 'outer;
-                                    }
-                                }
                                 yield_now();
                             }
                         }
@@ -197,11 +201,11 @@ pub fn terminal() {
     }
 }
 
-pub fn tree(cwd: &str, args: &str) {
+pub fn tree(disk_id: PartitionId, cwd: &str, args: &str) {
     for sect in args.split(' ') {
         let path = fs::add_path(cwd, sect);
         println!("Path: {path}");
-        if let Some(file) = get_file_from_path(&path) {
+        if let Some(file) = get_file_from_path(disk_id, &path) {
             println!("{path}");
             fs::tree(file.location, String::new())
         } else {

@@ -12,9 +12,7 @@ use alloc::{
     vec::Vec,
 };
 
-use super::{
-    mount, mount_root, next_partition_id, FSPartitionDisk, FileSystemDev, PartitionId, PARTITION,
-};
+use super::{next_partition_id, FSPartitionDisk, FileSystemDev, PartitionId, PARTITION};
 
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
@@ -385,12 +383,6 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
 
     let root = fat.enumerate_root();
     PARTITION.lock().insert(partition_id, Box::new(fat));
-
-    if root.contains_key("fioxa.elf") {
-        mount_root((partition_id, 0));
-    } else {
-        mount((partition_id, 0));
-    }
 }
 
 impl FileSystemDev for FAT {
@@ -464,5 +456,40 @@ impl FileSystemDev for FAT {
         filebuffer.truncate(length as usize);
 
         filebuffer
+    }
+
+    fn read_file_sector(
+        &mut self,
+        file_id: usize,
+        file_sector: usize,
+        buffer: &mut [u8; 512],
+    ) -> Option<usize> {
+        let fat_file = self.file_id_lookup.get(&file_id).unwrap();
+
+        let length = match fat_file.entry_type {
+            FATFileType::Folder(_) => todo!(),
+            FATFileType::File(f) => f,
+        };
+
+        let sectors_to_read = (length + 511) / 512;
+
+        if file_sector == sectors_to_read as usize {
+            return None;
+        }
+        let length = if file_sector + 1 == sectors_to_read as usize {
+            (length % 512) as usize
+        } else {
+            512
+        };
+
+        let mut cluster = fat_file.cluster;
+        for _ in 0..(file_sector / self.bios_parameter_block.sectors_per_cluster as usize) {
+            cluster = self.get_next_cluster(cluster);
+        }
+        let file_sector = self.get_start_sector_of_cluster(cluster)
+            + file_sector as u32 % self.bios_parameter_block.sectors_per_cluster as u32;
+
+        self.disk.read(file_sector as usize, 1, buffer);
+        Some(length)
     }
 }

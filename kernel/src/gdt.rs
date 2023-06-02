@@ -72,7 +72,7 @@ impl CPULocalGDT {
     }
 }
 
-pub unsafe fn create_gdt_for_core(mut gdt: &'static mut CPULocalGDT) {
+pub unsafe fn create_gdt_for_core(gdt: &'static mut CPULocalGDT) {
     gdt.gdt = GlobalDescriptorTable::new();
     gdt.gdt.add_entry(Descriptor::kernel_code_segment());
     gdt.gdt.add_entry(Descriptor::kernel_data_segment());

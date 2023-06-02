@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 kernel_userspace = { path = "../kernel_userspace" }
 spin = "0.9"
+lazy_static = {version = "1.4", features = ["spin_no_std"]}

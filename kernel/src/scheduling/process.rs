@@ -2,12 +2,13 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::{
     boxed::Box,
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     string::String,
-    sync::{Arc, Weak},
+    sync::Arc,
     vec::Vec,
 };
 use crossbeam_queue::ArrayQueue;
+use kernel_userspace::{stream::StreamMessage, syscall::exit};
 use x86_64::{
     structures::{
         gdt::SegmentSelector,
@@ -26,7 +27,6 @@ use crate::{
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
     stream::{STREAMRef, STREAM},
-    syscall::exit_thread,
 };
 
 const STACK_ADDR: u64 = 0x100_000_000_000;
@@ -116,9 +116,7 @@ pub struct Process {
     privilege: ProcessPrivilige,
     thread_next_id: u64,
     pub args: String,
-    pub streams: Vec<STREAMRef>,
-    pub stdin: STREAM,
-    pub stdout: STREAM,
+    pub messages: VecDeque<Arc<StreamMessage>>,
 }
 
 impl Process {
@@ -137,14 +135,6 @@ impl Process {
             page_mapper.map_memory(page_4kb(0xfee000b0 & !0xFFF), page_4kb(0xfee000b0 & !0xFFF));
         }
 
-        let stdin = Arc::new(ArrayQueue::new(100));
-        let stdout = Arc::new(ArrayQueue::new(100));
-
-        let mut streams = Vec::new();
-
-        streams.push(Arc::downgrade(&stdin));
-        streams.push(Arc::downgrade(&stdout));
-
         Self {
             pid: PID::new(),
             threads: Default::default(),
@@ -152,9 +142,7 @@ impl Process {
             privilege,
             thread_next_id: 0,
             args,
-            streams,
-            stdin,
-            stdout,
+            messages: Default::default(),
         }
     }
 
@@ -163,14 +151,6 @@ impl Process {
         page_mapper: PageTable<'static, PageLvl4>,
         args: String,
     ) -> Self {
-        let stdin = Arc::new(ArrayQueue::new(100));
-        let stdout = Arc::new(ArrayQueue::new(100));
-
-        let mut streams = Vec::new();
-
-        streams.push(Arc::downgrade(&stdin));
-        streams.push(Arc::downgrade(&stdout));
-
         Self {
             pid: PID::new(),
             threads: Default::default(),
@@ -178,9 +158,7 @@ impl Process {
             privilege,
             thread_next_id: 0,
             args,
-            streams,
-            stdin,
-            stdout,
+            messages: Default::default(),
         }
     }
 
@@ -282,5 +260,5 @@ extern "C" fn thread_bootstraper(main: usize) {
     func.call_once(());
 
     // Function ended quit
-    exit_thread()
+    exit()
 }

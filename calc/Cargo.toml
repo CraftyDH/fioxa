@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 userspace_bumpalloc = { path = "../userspace_bumpalloc" }
 userspace = { path = "../userspace" }
+kernel_userspace = { path = "../kernel_userspace" }

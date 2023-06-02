@@ -2,7 +2,7 @@
 #![no_main]
 
 use alloc::vec::Vec;
-use userspace::syscall::echo;
+use kernel_userspace::syscall::{echo, exit};
 
 extern crate alloc;
 #[macro_use]
@@ -20,6 +20,7 @@ pub extern "C" fn main() {
     for i in x {
         println!("Hello {i}");
     }
+    exit()
 }
 
 #[panic_handler]

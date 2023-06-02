@@ -3,7 +3,7 @@ use core::{
     ptr,
 };
 
-use userspace::syscall::mmap_page;
+use kernel_userspace::syscall::mmap_page;
 
 use crate::locked_mutex::Locked;
 

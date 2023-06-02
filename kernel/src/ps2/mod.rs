@@ -1,4 +1,7 @@
+use kernel_userspace::syscall::yield_now;
 use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
+
+use crate::log;
 
 use self::{keyboard::Keyboard, mouse::Mouse};
 
@@ -6,6 +9,24 @@ pub mod keyboard;
 pub mod mouse;
 pub mod scancode;
 pub mod translate;
+
+pub fn main() {
+    log!("Initalizing PS2 devices...");
+    let mut ps2_controller = PS2Controller::new();
+
+    if let Err(e) = ps2_controller.initialize() {
+        log!("PS2 Controller failed to init because: {}", e);
+    }
+    dispatch_events()
+}
+
+pub fn dispatch_events() -> ! {
+    loop {
+        keyboard::dispatch_events();
+        mouse::dispatch_events();
+        yield_now();
+    }
+}
 
 pub struct PS2Command {
     data_port: Port<u8>,
