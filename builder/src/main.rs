@@ -1,5 +1,3 @@
-#![feature(string_leak)]
-
 use std::{
     env::args,
     fs::{copy, DirBuilder},
@@ -55,15 +53,23 @@ fn main() -> Result<()> {
 fn qemu() -> Result<()> {
     let mut qemu_args = vec![
         // GDB server
-        "-s", "-S", // Args
-        "-machine", "q35", // "-no-shutdown",
+        "-s".to_string(),
+        "-S".to_string(), // Args
+        "-machine".to_string(),
+        "q35".to_string(), // "-no-shutdown",
         // "-no-reboot",
-        "-cpu", "qemu64", "-smp", // "cores=12",
-        "cores=4", "-m", "512M", "-serial", "stdio",
+        "-cpu".to_string(),
+        "qemu64".to_string(),
+        "-smp".to_string(), // "cores=12",
+        "cores=4".to_string(),
+        "-m".to_string(),
+        "512M".to_string(),
+        "-serial".to_string(),
+        "stdio".to_string(),
     ];
 
     if has_kvm() {
-        qemu_args.push("-enable-kvm");
+        qemu_args.push("-enable-kvm".to_string());
     }
 
     let pure_path = Path::new(PURE_EFI_PATH);
@@ -74,8 +80,8 @@ fn qemu() -> Result<()> {
     if pure_path.exists() {
         println!("Using local OVFM");
 
-        qemu_args.push("-drive");
-        qemu_args.push(format!("if=pflash,format=raw,file={}", PURE_EFI_PATH).leak());
+        qemu_args.push("-drive".to_string());
+        qemu_args.push(format!("if=pflash,format=raw,file={}", PURE_EFI_PATH));
     } else if system_code.exists() && system_vars.exists() {
         println!("Using system OVFM");
 
@@ -92,20 +98,23 @@ fn qemu() -> Result<()> {
             return Err(QEMUErrors::MissingKVM.into());
         }
 
-        qemu_args.push("-drive");
-        qemu_args.push(format!("if=pflash,format=raw,readonly=on,file={}", SYSTEM_EFI_CODE).leak());
+        qemu_args.push("-drive".to_string());
+        qemu_args.push(format!(
+            "if=pflash,format=raw,readonly=on,file={}",
+            SYSTEM_EFI_CODE
+        ));
 
-        qemu_args.push("-drive");
-        qemu_args.push("if=pflash,format=raw,file=ovmf/VARS.fd");
+        qemu_args.push("-drive".to_string());
+        qemu_args.push("if=pflash,format=raw,file=ovmf/VARS.fd".to_string());
     } else {
-        panic!("Could not find local OVMF or system OVMF!");
+        return Err(QEMUErrors::NoOVMF.into());
     }
 
     qemu_args.append(&mut vec![
-        "-drive",
-        "format=raw,file=fat:rw:fioxa",
-        "-drive",
-        "format=raw,file=fat:rw:src",
+        "-drive".to_string(),
+        "format=raw,file=fat:rw:fioxa".to_string(),
+        "-drive".to_string(),
+        "format=raw,file=fat:rw:src".to_string(),
     ]);
 
     Command::new("qemu-system-x86_64")

@@ -16,4 +16,6 @@ pub enum BuildErrors {
 pub enum QEMUErrors {
     #[error("It looks like you don't have KVM enabled. System OVFM only seems to work with KVM enabled. If you think you know what you are doing, comment out this error code & rebuild.")]
     MissingKVM,
+    #[error("Could not find local OVMF or system OVMF!")]
+    NoOVMF,
 }
