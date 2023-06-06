@@ -166,7 +166,7 @@ fn has_kvm() -> bool {
     Path::new("/dev/kvm").exists()
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
+#[cfg(not(target_os = "linux"))]
 fn has_kvm() -> bool {
     // QEMU does not have KVM support on windows
     false
