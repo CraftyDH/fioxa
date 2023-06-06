@@ -1,63 +1,120 @@
+#![feature(string_leak)]
+
 use std::{
     env::args,
     fs::{copy, DirBuilder},
     io::BufReader,
+    path::Path,
     process::{Command, Stdio},
 };
 
+use anyhow::{Context, Result};
 use cargo_metadata::{camino::Utf8PathBuf, Message};
+use errors::BuildErrors;
 
-fn main() {
+use crate::errors::QEMUErrors;
+
+pub mod errors;
+
+const PURE_EFI_PATH: &'static str = "ovmf/OVMF-pure-efi.fd";
+const LOCAL_EFI_VARS: &'static str = "ovmf/VARS.fd";
+const SYSTEM_EFI_CODE: &'static str = "/usr/share/OVMF/OVMF_CODE.fd";
+const SYSTEM_EFI_VARS: &'static str = "/usr/share/OVMF/OVMF_VARS.fd";
+
+const TO_BUILD: [(&'static str, &'static str); 4] = [
+    ("bootloader", "EFI/BOOT/BOOTx64.efi"),
+    ("kernel", "fioxa.elf"),
+    ("test_elf", "elf.elf"),
+    ("calc", "calc.elf"),
+];
+
+fn main() -> Result<()> {
     let mut dirs = DirBuilder::new();
 
-    let bootloader = build("bootloader").unwrap();
-    let kernel = build("kernel").unwrap();
-    let elf = build("test_elf").unwrap();
-    let calc = build("calc").unwrap();
+    dirs.recursive(true).create("fioxa/EFI/BOOT")?;
+    copy("assets/startup.nsh", "fioxa/startup.nsh")?;
+    copy("assets/zap-light16.psf", "fioxa/font.psf")?;
 
-    dirs.recursive(true).create("fioxa/EFI/BOOT").unwrap();
-    copy("assets/startup.nsh", "fioxa/startup.nsh").unwrap();
-    copy("assets/zap-light16.psf", "fioxa/font.psf").unwrap();
-    copy(bootloader, "fioxa/EFI/BOOT/BOOTx64.efi").unwrap();
-    copy(kernel, "fioxa/fioxa.elf").unwrap();
-    copy(elf, "fioxa/elf.elf").unwrap();
-    copy(calc, "fioxa/calc.elf").unwrap();
+    for (package, out) in TO_BUILD {
+        let exec_path = build(package).with_context(|| format!("Failed to build {}", package))?;
+        copy(exec_path, format!("fioxa/{}", out)).with_context(|| {
+            format!("Failed to copy the output of {} to fioxa/{}", package, out)
+        })?;
+    }
 
     let mut args = args();
 
     if args.any(|a| a == "qemu") {
-        Command::new("qemu-system-x86_64")
-            .args([
-                // GDB server
-                "-s",
-                "-S",
-                // Args
-                "-machine",
-                "q35",
-                // "-no-shutdown",
-                // "-no-reboot",
-                "-cpu",
-                "qemu64",
-                "-smp",
-                // "cores=12",
-                "cores=4",
-                "-m",
-                "512M",
-                "-serial",
-                "stdio",
-                "-drive",
-                "if=pflash,format=raw,file=ovmf/OVMF-pure-efi.fd",
-                "-drive",
-                "format=raw,file=fat:rw:fioxa",
-                "-drive",
-                "format=raw,file=fat:rw:src",
-            ])
-            .spawn()
-            .unwrap();
+        qemu().context("Failed to launch qemu")?;
     }
+
+    Ok(())
 }
 
-fn build(name: &str) -> Result<Utf8PathBuf, String> {
+/// **Warning:** Contains intentional memory leaks, because I am lazy
+fn qemu() -> Result<()> {
+    let mut qemu_args = vec![
+        // GDB server
+        "-s", "-S", // Args
+        "-machine", "q35", // "-no-shutdown",
+        // "-no-reboot",
+        "-cpu", "qemu64", "-smp", // "cores=12",
+        "cores=4", "-m", "512M", "-serial", "stdio",
+    ];
+
+    let pure_path = Path::new(PURE_EFI_PATH);
+    let local_vars = Path::new(LOCAL_EFI_VARS);
+    let system_code = Path::new(SYSTEM_EFI_CODE);
+    let system_vars = Path::new(SYSTEM_EFI_VARS);
+
+    if pure_path.exists() {
+        println!("Using local OVFM");
+
+        qemu_args.push("-drive");
+        qemu_args.push(format!("if=pflash,format=raw,file={}", PURE_EFI_PATH).leak());
+    } else if system_code.exists() && system_vars.exists() {
+        println!("Using system OVFM");
+
+        // QEMU will make changes to this file, so we need a local copy. We do
+        // not want to overwrite it every build
+        if !local_vars.exists() {
+            copy(system_vars, "ovmf/VARS.fd")
+                .context("Could not copy VARS.fd into local directory")?;
+        }
+
+        // For some unknown reason, system OVMF doesn't work unless KVM is
+        // enabled
+        qemu_args.push("-enable-kvm");
+
+        if !has_kvm() {
+            return Err(QEMUErrors::MissingKVM.into());
+        }
+
+        qemu_args.push("-drive");
+        qemu_args.push(format!("if=pflash,format=raw,readonly=on,file={}", SYSTEM_EFI_CODE).leak());
+
+        qemu_args.push("-drive");
+        qemu_args.push("if=pflash,format=raw,file=ovmf/VARS.fd");
+    } else {
+        panic!("Could not find local OVMF or system OVMF!");
+    }
+
+    qemu_args.append(&mut vec![
+        "-drive",
+        "format=raw,file=fat:rw:fioxa",
+        "-drive",
+        "format=raw,file=fat:rw:src",
+    ]);
+
+    Command::new("qemu-system-x86_64")
+        .args(qemu_args)
+        .spawn()
+        .context("Failed to run qemu-system-x86_64")?;
+
+    Ok(())
+}
+
+fn build(name: &str) -> Result<Utf8PathBuf> {
     // Build subprocess
     let mut cargo = Command::new("cargo")
         .current_dir(format!("../{}", name))
@@ -68,10 +125,10 @@ fn build(name: &str) -> Result<Utf8PathBuf, String> {
         ])
         .stdout(Stdio::piped())
         .spawn()
-        .unwrap();
+        .context("Failed to builds")?;
 
     // Grab stout and read it
-    let reader = BufReader::new(cargo.stdout.take().unwrap());
+    let reader = BufReader::new(cargo.stdout.take().ok_or(BuildErrors::NoOutput)?);
     let mut path: Option<Utf8PathBuf> = None;
     for message in Message::parse_stream(reader) {
         match message.unwrap() {
@@ -85,17 +142,23 @@ fn build(name: &str) -> Result<Utf8PathBuf, String> {
             Message::BuildFinished(finished) => {
                 // Successful build return path of executable
                 if finished.success {
-                    return Ok(path.expect(
-                        format!("No executable found in artifact for: {}", name).as_str(),
-                    ));
+                    let exec = path.ok_or(BuildErrors::MissingExec)?;
+                    return Ok(exec);
+
                 // Didn't build correctly :(
                 } else {
-                    return Err(format!("Failed build of: {}", name));
+                    return Err(BuildErrors::BuildFailed.into());
                 }
             }
             // Ignore other messages
             _ => {}
         }
     }
-    Err(format!("Unexpected error for package: {}", name))
+
+    Err(BuildErrors::Incomplete.into())
+}
+
+/// Checks `/dev/kvm` to determine if the OS has kvm or not
+fn has_kvm() -> bool {
+    Path::new("/dev/kvm").exists()
 }
