@@ -62,6 +62,10 @@ fn qemu() -> Result<()> {
         "cores=4", "-m", "512M", "-serial", "stdio",
     ];
 
+    if has_kvm() {
+        qemu_args.push("-enable-kvm");
+    }
+
     let pure_path = Path::new(PURE_EFI_PATH);
     let local_vars = Path::new(LOCAL_EFI_VARS);
     let system_code = Path::new(SYSTEM_EFI_CODE);
@@ -84,8 +88,6 @@ fn qemu() -> Result<()> {
 
         // For some unknown reason, system OVMF doesn't work unless KVM is
         // enabled
-        qemu_args.push("-enable-kvm");
-
         if !has_kvm() {
             return Err(QEMUErrors::MissingKVM.into());
         }
@@ -159,6 +161,13 @@ fn build(name: &str) -> Result<Utf8PathBuf> {
 }
 
 /// Checks `/dev/kvm` to determine if the OS has kvm or not
+#[cfg(target_os = "linux")]
 fn has_kvm() -> bool {
     Path::new("/dev/kvm").exists()
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn has_kvm() -> bool {
+    // QEMU does not have KVM support on windows
+    false
 }
