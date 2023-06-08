@@ -4,17 +4,22 @@ pub mod mbr;
 use core::{fmt::Debug, sync::atomic::AtomicU64};
 
 use alloc::{
-    boxed::Box,
-    collections::BTreeMap,
-    string::{String, ToString},
-    sync::Arc,
-    vec::Vec,
+    borrow::ToOwned, boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec,
+};
+use kernel_userspace::{
+    fs::{
+        ReadFullFileRequest, ReadRequest, ReadResponse, ReadResponseVec, StatRequest, StatResponse,
+        StatResponseFile, StatResponseFolder, FS_GETDISKS, FS_READ, FS_READ_FULL_FILE, FS_STAT,
+    },
+    service::{send_service_message, MessageType, SendMessageHeader},
+    syscall::{service_create, service_push_msg},
 };
 use spin::Mutex;
 
 use crate::{
     driver::disk::{DiskBusDriver, DiskDevice},
     fs::mbr::read_partitions,
+    service::PUBLIC_SERVICES,
 };
 
 lazy_static::lazy_static! {
@@ -160,25 +165,6 @@ pub fn get_file_from_path(partition_id: PartitionId, path: &str) -> Option<VFile
     Some(file)
 }
 
-pub fn add_path(folder: &str, file: &str) -> String {
-    if file.starts_with('/') {
-        return file.to_string();
-    }
-
-    let mut path: Vec<&str> = folder.split('/').filter(|a| !a.is_empty()).collect();
-
-    for sect in file.split('/') {
-        if sect.is_empty() || sect == "." {
-            continue;
-        } else if sect == ".." {
-            path.pop();
-        } else {
-            path.push(sect)
-        }
-    }
-
-    String::from("/") + path.join("/").as_str()
-}
 pub fn tree(folder: VFileID, prefix: String) {
     let file = get_file_by_id(folder);
 
@@ -196,5 +182,123 @@ pub fn tree(folder: VFileID, prefix: String) {
         println!("{}{}── {}", &prefix, t, name);
 
         tree(node, prefix.clone() + pref);
+    }
+}
+
+pub fn file_handler() {
+    let sid = service_create();
+    PUBLIC_SERVICES.lock().insert("FS", sid);
+
+    let mut buffer = [0u8; 512];
+    loop {
+        let response = kernel_userspace::service::get_service_messages_sync(sid);
+        let msg = response.get_message_header();
+        if msg.data_type == FS_STAT {
+            let m: StatRequest = match response.get_data_as() {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("FS Failed to decode message: {:?}", e);
+                    break;
+                }
+            };
+
+            if let Some(file) = get_file_from_path(PartitionId(m.disk as u64), &m.path) {
+                let stat = match file.specialized {
+                    VFileSpecialized::Folder(children) => {
+                        StatResponse::Folder(StatResponseFolder {
+                            node_id: file.location.1,
+                            children: children.keys().map(|c| c.to_owned()).collect(),
+                        })
+                    }
+                    VFileSpecialized::File(size) => StatResponse::File(StatResponseFile {
+                        node_id: file.location.1,
+                        file_size: size,
+                    }),
+                };
+
+                send_service_message(
+                    sid,
+                    MessageType::Response,
+                    msg.tracking_number,
+                    FS_STAT,
+                    stat,
+                    msg.sender_pid,
+                );
+                continue;
+            }
+        } else if msg.data_type == FS_READ {
+            let m: ReadRequest = match response.get_data_as() {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("FS Failed to decode message: {:?}", e);
+                    break;
+                }
+            };
+
+            if let Some(len) = read_file_sector(
+                (PartitionId(m.disk_id as u64), m.node_id as usize),
+                m.sector as usize,
+                &mut buffer,
+            ) {
+                let res = ReadResponse {
+                    data: &buffer[0..len],
+                };
+
+                send_service_message(
+                    sid,
+                    MessageType::Response,
+                    msg.tracking_number,
+                    FS_READ,
+                    res,
+                    msg.sender_pid,
+                );
+
+                continue;
+            }
+        } else if msg.data_type == FS_READ_FULL_FILE {
+            let m: ReadFullFileRequest = match response.get_data_as() {
+                Ok(r) => r,
+                Err(e) => {
+                    println!("FS Failed to decode message: {:?}", e);
+                    break;
+                }
+            };
+
+            let f = read_file((PartitionId(m.disk_id as u64), m.node_id as usize));
+            let res = ReadResponseVec { data: f };
+
+            send_service_message(
+                sid,
+                MessageType::Response,
+                msg.tracking_number,
+                FS_READ_FULL_FILE,
+                res,
+                msg.sender_pid,
+            );
+            continue;
+        } else if msg.data_type == FS_GETDISKS {
+            let res: Vec<u64> = PARTITION.lock().keys().map(|p| p.0).collect();
+            send_service_message(
+                sid,
+                MessageType::Response,
+                msg.tracking_number,
+                FS_GETDISKS,
+                res,
+                msg.sender_pid,
+            );
+            continue;
+        }
+
+        // ERROR
+        service_push_msg(SendMessageHeader {
+            service_id: sid,
+            message_type: MessageType::Response,
+            tracking_number: msg.tracking_number,
+            data_length: 0,
+            data_ptr: buffer.as_ptr(),
+            receiver_pid: msg.sender_pid,
+            data_type: usize::MAX,
+        })
+        .unwrap();
     }
 }

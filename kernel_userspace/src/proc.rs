@@ -1,5 +1,5 @@
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub struct PID(u64);
+pub struct PID(pub u64);
 
 impl Into<u64> for PID {
     fn into(self) -> u64 {
@@ -14,7 +14,7 @@ impl From<u64> for PID {
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub struct TID(u64);
+pub struct TID(pub u64);
 
 impl Into<u64> for TID {
     fn into(self) -> u64 {

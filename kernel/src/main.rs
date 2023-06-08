@@ -17,7 +17,7 @@ use acpi::sdt::Signature;
 use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
 use kernel::cpu_localstorage::init_bsp_task;
-use kernel::fs::FSDRIVES;
+use kernel::fs::{self, FSDRIVES};
 use kernel::interrupts::{self};
 
 use kernel::ioapic::{enable_apic, Madt};
@@ -34,13 +34,13 @@ use kernel::pci::enumerate_pci;
 use kernel::scheduling::taskmanager::core_start_multitasking;
 use kernel::screen::gop::{self, WRITER};
 use kernel::screen::psf1::{self, load_psf1_font};
-use kernel::terminal::terminal;
+use kernel::terminal::load_terminal;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
-use kernel::{allocator, gdt, init_streams, paging, ps2, BOOT_INFO};
+use kernel::{allocator, gdt, paging, ps2, service, BOOT_INFO};
 
-use kernel_userspace::syscall::{spawn_process, spawn_thread};
+use kernel_userspace::syscall::{exit, spawn_process, spawn_thread};
 use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
 use uefi::table::{Runtime, SystemTable};
 
@@ -265,10 +265,11 @@ fn after_boot() {
 
     let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
 
-    init_streams();
+    spawn_process(service::start_mgmt, "");
 
-    spawn_process(gop::gop_entry, "");
     spawn_process(ps2::main, "");
+    spawn_process(gop::gop_entry, "");
+    spawn_thread(fs::file_handler);
 
     log!("Enumnerating PCI...");
 
@@ -284,7 +285,9 @@ fn after_boot() {
     //         sleep(1000);
     //     }
     // });
-    terminal();
+    // ! IMPORTANT: This must be a new process
+    spawn_process(load_terminal, "");
+    exit();
 }
 
 #[cfg(test)]

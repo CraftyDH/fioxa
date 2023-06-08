@@ -1,11 +1,11 @@
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use bootloader::gop::GopInfo;
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
-use crossbeam_queue::ArrayQueue;
-use kernel_userspace::stream::{StreamMessage, StreamMessageType};
-use kernel_userspace::syscall::{self, spawn_thread, stream_push};
+use kernel_userspace::service::{
+    generate_tracking_number, send_and_get_response_sync, send_service_message, MessageType, SID,
+};
+use kernel_userspace::syscall::{service_create, spawn_thread};
 use lazy_static::lazy_static;
 use x86_64::instructions::interrupts::without_interrupts;
 
@@ -266,12 +266,11 @@ macro_rules! colour {
 use crate::paging::get_uefi_active_mapper;
 use crate::paging::offset_map::map_gop;
 use crate::screen::psf1::PSF1_FONT_NULL;
-use crate::{stream, GOP_STREAM_ID, MOUSE_STREAM_ID};
+use crate::service::PUBLIC_SERVICES;
 use core::fmt::Arguments;
-use kernel_userspace::syscall::yield_now;
 use spin::mutex::Mutex;
 
-use super::mouse::print_cursor;
+use super::mouse::monitor_cursor_task;
 use super::psf1::PSF1Font;
 
 #[doc(hidden)]
@@ -294,34 +293,37 @@ pub struct Writers {}
 
 pub static WRITERS: Mutex<Writers> = Mutex::new(Writers {});
 
+lazy_static::lazy_static! {
+    pub static ref STDOUT: SID = {
+        let sid = service_create();
+        PUBLIC_SERVICES.lock().insert("STDOUT", sid);
+        sid
+    };
+}
+
 impl Writers {
     pub fn write_byte(&mut self, chr: char) {
-        let mut data = [0u8; 16];
-        data[0] = chr.len_utf8().try_into().unwrap();
-        chr.encode_utf8(&mut data[1..]);
-        let message = StreamMessage {
-            stream_id: GOP_STREAM_ID.get().unwrap().0,
-            message_type: StreamMessageType::InlineData,
-            timestamp: 0,
-            data,
-        };
-        stream_push(message);
+        let write = send_and_get_response_sync(
+            *STDOUT,
+            MessageType::Request,
+            generate_tracking_number(),
+            0,
+            chr,
+            0,
+        );
+        assert!(write.get_data_as::<bool>().unwrap())
     }
 
     pub fn write_string(&mut self, s: &str) {
-        let mut chunks = s.as_bytes().chunks(15);
-        while let Some(c) = chunks.next() {
-            let mut data = [0u8; 16];
-            data[0] = c.len().try_into().unwrap();
-            data[1..1 + c.len()].copy_from_slice(c);
-            let message = StreamMessage {
-                stream_id: GOP_STREAM_ID.get().unwrap().0,
-                message_type: StreamMessageType::InlineData,
-                timestamp: 0,
-                data,
-            };
-            stream_push(message);
-        }
+        let write = send_and_get_response_sync(
+            *STDOUT,
+            MessageType::Request,
+            generate_tracking_number(),
+            0,
+            s,
+            0,
+        );
+        assert!(write.get_data_as::<bool>().unwrap())
     }
 }
 
@@ -347,39 +349,37 @@ pub fn _prints(args: Arguments) {
     WRITERS.lock().write_fmt(args).unwrap();
 }
 
-lazy_static! {
-    pub static ref QUEUE: ArrayQueue<StreamMessage> = ArrayQueue::new(250);
-}
-pub fn print_stdout(message: StreamMessage) {
-    let len = message.data[0] as usize;
-    print!("{}", String::from_utf8_lossy(&message.data[1..len + 1]));
+pub fn monitor_stdout_task() {
+    loop {
+        let message = kernel_userspace::service::get_service_messages_sync(*STDOUT);
+
+        let header = message.get_message_header();
+
+        let mut result = false;
+        if header.data_type == 0 {
+            let write = message
+                .get_data_as::<kernel_userspace::SOUT_WRITE_LINE>()
+                .unwrap();
+            print!("{write}");
+            result = true;
+        }
+
+        send_service_message(
+            *STDOUT,
+            kernel_userspace::service::MessageType::Response,
+            header.tracking_number,
+            0,
+            result,
+            header.sender_pid,
+        )
+    }
 }
 
 pub fn gop_entry() {
     unsafe {
         map_gop(&mut get_uefi_active_mapper());
     }
-    // let st_id = GOP_STREAM_ID.get().unwrap();
-    let st_id = stream::new();
-    GOP_STREAM_ID.init_once(|| st_id);
 
-    let mouse_id = *MOUSE_STREAM_ID.get().unwrap();
-
-    let mut mouse_pod: Pos = Pos { x: 0, y: 0 };
-
-    stream::subscribe(st_id);
-    stream::subscribe(mouse_id);
-
-    loop {
-        while let Some(msg) = syscall::stream_pop() {
-            if msg.stream_id == st_id.0 {
-                print_stdout(msg);
-            } else if msg.stream_id == mouse_id.0 {
-                print_cursor(&mut mouse_pod, msg)
-            } else {
-                println!("Got message: {}", msg.stream_id);
-            }
-        }
-        yield_now();
-    }
+    spawn_thread(monitor_cursor_task);
+    monitor_stdout_task()
 }

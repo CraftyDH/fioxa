@@ -1,7 +1,5 @@
 use core::cmp::{max, min};
 
-use alloc::string::String;
-
 use crate::{
     assembly::registers::Registers,
     paging::{
@@ -57,9 +55,10 @@ const EM_X86_64: u16 = 62; // AMD x86-64 architecture
 // For the ELF Program Header https://refspecs.linuxbase.org/elf/gabi4+/ch5.pheader.html
 const PT_LOAD: u32 = 1; // A loadable segment
 
-pub fn load_elf(data: &[u8], args: String) -> PID {
+pub fn load_elf(data: &[u8], args: &[u8]) -> PID {
     // Transpose the header as an elf header
-    let elf_header = unsafe { *(data.as_ptr() as *const Elf64Ehdr) };
+    let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
+
     // Ensure that all the header flags are suitable
     if &elf_header.e_ident[0..6]
         == [
@@ -102,7 +101,7 @@ pub fn load_elf(data: &[u8], args: String) -> PID {
     //     elf_header.e_entry
     // );
 
-    let mut proc = Process::new(crate::scheduling::process::ProcessPrivilige::USER, args);
+    let mut proc: Process = Process::new(crate::scheduling::process::ProcessPrivilige::USER, args);
     let map = &mut proc.page_mapper;
 
     let start = frame_alloc_exec(|c| c.request_cont_pages(pages as usize)).unwrap();

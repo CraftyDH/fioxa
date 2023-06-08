@@ -1,7 +1,15 @@
 use core::fmt::{Arguments, Write};
 
-use kernel_userspace::stream::{StreamMessage, StreamMessageType};
-use kernel_userspace::syscall::{self, stream_push, STREAM_GETID_SOUT};
+use kernel_userspace::{
+    fs::{stat_file, ReadRequest, ReadResponse, StatResponse, FS_STAT},
+    service::{
+        generate_tracking_number, get_public_service_id, get_service_messages_sync,
+        send_and_get_response_sync, MessageType, SendMessageHeader, ServiceRequestServiceID,
+        ServiceRequestServiceIDResponse, SID,
+    },
+    syscall::{service_push_msg, service_subscribe, spawn_thread, yield_now},
+};
+
 use spin::Mutex;
 
 pub struct Writer {}
@@ -9,37 +17,32 @@ pub struct Writer {}
 pub static WRITER: Mutex<Writer> = Mutex::new(Writer {});
 
 lazy_static::lazy_static! {
-    pub static ref SOUT_ID: u64 = syscall::stream_get_id(STREAM_GETID_SOUT) as u64;
+    pub static ref STDOUT: SID = get_public_service_id("STDOUT").unwrap();
 }
 
 impl Writer {
     pub fn write_byte(&mut self, chr: char) {
-        let mut data: [u8; 16] = [0u8; 16];
-        data[0] = chr.len_utf8().try_into().unwrap();
-        chr.encode_utf8(&mut data[1..]);
-        let message = StreamMessage {
-            stream_id: *SOUT_ID,
-            message_type: StreamMessageType::InlineData,
-            timestamp: 0,
-            data,
-        };
-        stream_push(message);
+        let write = send_and_get_response_sync(
+            *STDOUT,
+            MessageType::Request,
+            generate_tracking_number(),
+            0,
+            chr,
+            0,
+        );
+        assert!(write.get_data_as::<bool>().unwrap())
     }
 
     pub fn write_string(&mut self, s: &str) {
-        let mut chunks = s.as_bytes().chunks(15);
-        while let Some(c) = chunks.next() {
-            let mut data = [0u8; 16];
-            data[0] = c.len().try_into().unwrap();
-            data[1..1 + c.len()].copy_from_slice(c);
-            let message: StreamMessage = StreamMessage {
-                stream_id: *SOUT_ID,
-                message_type: StreamMessageType::InlineData,
-                timestamp: 0,
-                data,
-            };
-            stream_push(message);
-        }
+        let write = send_and_get_response_sync(
+            *STDOUT,
+            MessageType::Request,
+            generate_tracking_number(),
+            0,
+            s,
+            0,
+        );
+        assert!(write.get_data_as::<bool>().unwrap())
     }
 }
 

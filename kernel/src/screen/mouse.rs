@@ -1,6 +1,7 @@
-use crossbeam_queue::ArrayQueue;
-use kernel_userspace::{stream::StreamMessage, syscall::yield_now};
-use lazy_static::lazy_static;
+use kernel_userspace::{
+    service::get_public_service_id,
+    syscall::{service_subscribe, yield_now},
+};
 use x86_64::instructions::interrupts::without_interrupts;
 
 use input::mouse::MousePacket;
@@ -26,9 +27,33 @@ const MOUSE_POINTER: &[u16; 16] = &[
     0b0000000000000000,
 ];
 
-pub fn print_cursor(pos: &mut Pos, msg: StreamMessage) {
-    let mouse: MousePacket = msg.read_data();
+pub fn monitor_cursor_task() {
+    let mouse_id;
+    // Poll the mouse until the service exists
+    loop {
+        if let Some(m) = get_public_service_id("INPUT:MOUSE") {
+            mouse_id = m;
+            break;
+        }
+        yield_now();
+    }
+    service_subscribe(mouse_id);
 
+    let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
+
+    loop {
+        let message = kernel_userspace::service::get_service_messages_sync(mouse_id);
+
+        let header = message.get_message_header();
+
+        if header.data_type == 0 {
+            let mouse = message.get_data_as::<MousePacket>().unwrap();
+            print_cursor(&mut mouse_pos, mouse)
+        }
+    }
+}
+
+pub fn print_cursor(pos: &mut Pos, mouse: MousePacket) {
     let mut colour: u32 = 0x50_50_50;
 
     if mouse.left {

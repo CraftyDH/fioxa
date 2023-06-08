@@ -1,14 +1,14 @@
 use core::ptr::slice_from_raw_parts_mut;
 
 use kernel_userspace::{
-    stream::StreamMessage,
-    syscall::{self, STREAM_GETID_KB, STREAM_GETID_SOUT, SYSCALL_NUMBER},
+    service::{ReceiveMessageHeader, SendMessageHeader, SID},
+    syscall::{self, SYSCALL_NUMBER},
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
     assembly::registers::Registers,
-    cpu_localstorage::get_task_mgr_current_pid,
+    cpu_localstorage::{get_task_mgr_current_pid, get_task_mgr_current_tid},
     gdt::TASK_SWITCH_INDEX,
     paging::{
         get_uefi_active_mapper,
@@ -16,7 +16,7 @@ use crate::{
         page_table_manager::{Mapper, Page, Size4KB},
     },
     scheduling::taskmanager::TASKMANAGER,
-    stream::{self},
+    service,
     time::spin_sleep_ms,
     wrap_function_registers,
 };
@@ -57,7 +57,7 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
         // SLEEP => task_manager.sleep(stack_frame, regs),
         EXIT_THREAD => TASKMANAGER.lock().exit_thread(stack_frame, regs),
         MMAP_PAGE => mmap_page_handler(regs),
-        STREAM => stream_handler(regs),
+        SERVICE => service_handler(regs),
         READ_ARGS => read_args_handler(regs),
         _ => println!("Unknown syscall class: {}", regs.rax),
     }
@@ -82,40 +82,61 @@ fn read_args_handler(regs: &mut Registers) {
     let proc = t.processes.get_mut(&pid).unwrap();
 
     if regs.r8 == 0 {
-        regs.rax = proc.args.as_bytes().len();
+        regs.rax = proc.args.len();
     } else {
-        let bytes = proc.args.as_bytes();
+        let bytes = &proc.args;
         let buf = unsafe { &mut *slice_from_raw_parts_mut(regs.r8 as *mut u8, bytes.len()) };
-        buf.copy_from_slice(bytes);
+        buf.copy_from_slice(&bytes);
     }
 }
 
-fn stream_handler(regs: &mut Registers) {
+fn service_handler(regs: &mut Registers) {
     match regs.r8 {
-        syscall::STREAM_PUSH => {
-            let message: &mut StreamMessage = unsafe { &mut *(regs.r9 as *mut StreamMessage) };
-
-            stream::push(message.clone());
-            regs.rax = 0;
+        syscall::SERVICE_CREATE => {
+            let pid = get_task_mgr_current_pid();
+            regs.rax = service::new(pid).0 as usize;
         }
-        syscall::STREAM_POP => match stream::pop() {
-            Some(e) => {
-                let message: &mut StreamMessage = unsafe { &mut *(regs.r9 as *mut StreamMessage) };
+        syscall::SERVICE_SUBSCRIBE => {
+            let pid = get_task_mgr_current_pid();
+            service::subscribe(pid, SID(regs.r9 as u64));
+        }
+        syscall::SERVICE_POP => {
+            let pid = get_task_mgr_current_pid();
+            let tid = get_task_mgr_current_tid();
 
-                core::mem::swap(message, &mut (*e).clone());
-                regs.rax = 0
+            match service::pop(pid, tid, SID(regs.r10 as u64), regs.r11 as u64) {
+                Some(msg) => {
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            &msg as *const ReceiveMessageHeader,
+                            regs.r9 as *mut ReceiveMessageHeader,
+                            1,
+                        )
+                    }
+                    regs.rax = 0
+                }
+                None => regs.rax = 1,
             }
-            None => regs.rax = 1,
-        },
-        syscall::STREAM_GETID => match regs.r9 {
-            STREAM_GETID_KB => {
-                regs.rax = (crate::KB_STREAM_ID.get().unwrap().0) as usize;
+        }
+        syscall::SERVICE_GETDATA => {
+            let pid = get_task_mgr_current_pid();
+            let tid = get_task_mgr_current_tid();
+
+            match service::get_data(pid, tid, regs.r9 as *mut u8) {
+                Some(_) => regs.rax = 0,
+                None => regs.rax = 1,
             }
-            STREAM_GETID_SOUT => {
-                regs.rax = (crate::GOP_STREAM_ID.get().unwrap().0) as usize;
+        }
+        syscall::SERVICE_PUSH => {
+            let pid = get_task_mgr_current_pid();
+
+            let message: &SendMessageHeader = unsafe { &*(regs.r9 as *const SendMessageHeader) };
+
+            match service::push(pid, message) {
+                Some(_) => regs.rax = 0,
+                None => regs.rax = 1,
             }
-            _ => regs.rax = 0,
-        },
+        }
         _ => (),
     }
 }

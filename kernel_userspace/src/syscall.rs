@@ -1,8 +1,10 @@
+use core::mem::MaybeUninit;
+
 use alloc::{boxed::Box, string::String, vec};
 
 use crate::{
     proc::{PID, TID},
-    stream::StreamMessage,
+    service::{ReceiveMessageHeader, SendMessageHeader, SID},
 };
 
 pub const SYSCALL_NUMBER: usize = 0x80;
@@ -19,14 +21,14 @@ pub const SPAWN_THREAD: usize = 3;
 pub const SLEEP: usize = 4;
 pub const EXIT_THREAD: usize = 5;
 pub const MMAP_PAGE: usize = 6;
-pub const STREAM: usize = 7;
 
-pub const STREAM_PUSH: usize = 0;
-pub const STREAM_POP: usize = 1;
-pub const STREAM_GETID: usize = 2;
+pub const SERVICE: usize = 7;
 
-pub const STREAM_GETID_KB: usize = 1;
-pub const STREAM_GETID_SOUT: usize = 2;
+pub const SERVICE_CREATE: usize = 0;
+pub const SERVICE_SUBSCRIBE: usize = 1;
+pub const SERVICE_PUSH: usize = 2;
+pub const SERVICE_POP: usize = 3;
+pub const SERVICE_GETDATA: usize = 4;
 
 pub const READ_ARGS: usize = 8;
 
@@ -110,32 +112,65 @@ pub fn mmap_page(vmem: usize) {
     unsafe { syscall1(MMAP_PAGE, vmem) };
 }
 
-pub fn stream_pop() -> Option<StreamMessage> {
-    let mut v = unsafe { core::mem::zeroed() };
+pub fn service_create() -> SID {
     unsafe {
-        let x = syscall2(STREAM, STREAM_POP, &mut v as *mut StreamMessage as usize);
-        if x == 0 {
-            Some(v)
+        let sid = syscall1(SERVICE, SERVICE_CREATE);
+        SID(sid.try_into().unwrap())
+    }
+}
+
+pub fn service_subscribe(id: SID) {
+    unsafe {
+        syscall2(SERVICE, SERVICE_SUBSCRIBE, id.0 as usize);
+    }
+}
+
+pub fn poll_service(id: SID, tracking_number: u64) -> Option<ReceiveMessageHeader> {
+    unsafe {
+        let mut msg: MaybeUninit<ReceiveMessageHeader> = MaybeUninit::uninit();
+        let result = syscall4(
+            SERVICE,
+            SERVICE_POP,
+            msg.as_mut_ptr() as usize,
+            id.0 as usize,
+            tracking_number as usize,
+        );
+        if result == 0 {
+            return Some(msg.assume_init());
+        } else {
+            return None;
+        }
+    }
+}
+
+pub fn service_receive_msg() -> Option<ReceiveMessageHeader> {
+    poll_service(SID(u64::MAX), u64::MAX)
+}
+
+pub fn service_get_data(loc: &mut [u8]) -> Option<()> {
+    unsafe {
+        let result = syscall2(SERVICE, SERVICE_GETDATA, loc.as_ptr() as usize);
+        if result == 0 {
+            Some(())
         } else {
             None
         }
     }
 }
 
-pub fn stream_push(value: StreamMessage) {
-    let mut rax: usize = 1;
-    while rax != 0 {
-        unsafe { rax = syscall2(STREAM, STREAM_PUSH, &value as *const StreamMessage as usize) };
-        if rax == 1 {
-            yield_now()
+pub fn service_push_msg(msg: SendMessageHeader) -> Option<()> {
+    unsafe {
+        let result = syscall2(
+            SERVICE,
+            SERVICE_PUSH,
+            &msg as *const SendMessageHeader as usize,
+        );
+        if result == 0 {
+            return Some(());
+        } else {
+            return None;
         }
     }
-}
-
-pub fn stream_get_id(number: usize) -> usize {
-    let rax;
-    unsafe { rax = syscall2(STREAM, STREAM_GETID, number) };
-    rax
 }
 
 pub fn read_args() -> String {

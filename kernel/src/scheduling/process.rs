@@ -7,8 +7,7 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use crossbeam_queue::ArrayQueue;
-use kernel_userspace::{stream::StreamMessage, syscall::exit};
+use kernel_userspace::syscall::exit;
 use x86_64::{
     structures::{
         gdt::SegmentSelector,
@@ -26,7 +25,7 @@ use crate::{
         page_table_manager::{new_page_table_from_phys, page_4kb, Mapper, PageLvl4, PageTable},
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
-    stream::{STREAMRef, STREAM},
+    service::KernelMessageHeader,
 };
 
 const STACK_ADDR: u64 = 0x100_000_000_000;
@@ -34,7 +33,7 @@ const STACK_ADDR: u64 = 0x100_000_000_000;
 const STACK_SIZE: u64 = 1024 * 512;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub struct PID(u64);
+pub struct PID(pub u64);
 
 impl PID {
     pub fn nop() -> Self {
@@ -115,12 +114,12 @@ pub struct Process {
     pub page_mapper: PageTable<'static, PageLvl4>,
     privilege: ProcessPrivilige,
     thread_next_id: u64,
-    pub args: String,
-    pub messages: VecDeque<Arc<StreamMessage>>,
+    pub args: Vec<u8>,
+    pub service_msgs: VecDeque<Arc<KernelMessageHeader>>,
 }
 
 impl Process {
-    pub fn new(privilege: ProcessPrivilige, args: String) -> Self {
+    pub fn new(privilege: ProcessPrivilige, args: &[u8]) -> Self {
         let pml4 = request_page().unwrap();
         let mut page_mapper = unsafe { new_page_table_from_phys(pml4) };
 
@@ -141,8 +140,8 @@ impl Process {
             page_mapper,
             privilege,
             thread_next_id: 0,
-            args,
-            messages: Default::default(),
+            args: args.to_vec(),
+            service_msgs: Default::default(),
         }
     }
 
@@ -157,8 +156,8 @@ impl Process {
             page_mapper,
             privilege,
             thread_next_id: 0,
-            args,
-            messages: Default::default(),
+            args: Vec::new(),
+            service_msgs: Default::default(),
         }
     }
 
@@ -181,6 +180,7 @@ impl Process {
             tid,
             register_state,
             pushed_register_state,
+            current_message: Default::default(),
         };
 
         self.threads.insert(tid, thread);
@@ -215,6 +215,7 @@ impl Process {
             tid,
             register_state,
             pushed_register_state,
+            current_message: Default::default(),
         };
 
         self.threads.insert(tid, thread);
@@ -234,6 +235,8 @@ pub struct Thread {
     pub register_state: Registers,
     // Rest of the data inclusing rip & rsp
     pub pushed_register_state: InterruptStackFrameValue,
+    // Used for storing current msg, so that the popdata can get the data
+    pub current_message: Option<Arc<KernelMessageHeader>>,
 }
 
 impl Thread {

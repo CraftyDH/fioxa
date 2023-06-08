@@ -19,7 +19,6 @@ use crate::{
         page_table_manager::{PageLvl4, PageTable},
         virt_addr_for_phys,
     },
-    stream::STREAMRef,
 };
 
 use super::process::{Process, Thread, PID, TID};
@@ -144,9 +143,8 @@ impl TaskManager {
 
     pub fn spawn_process(&mut self, _stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
         let nbytes = unsafe { &*slice_from_raw_parts(reg.r9 as *const u8, reg.r10) };
-        let args = String::from_utf8_lossy(nbytes).to_string();
 
-        let mut process = Process::new(super::process::ProcessPrivilige::KERNEL, args);
+        let mut process = Process::new(super::process::ProcessPrivilige::KERNEL, nbytes);
         let pid = process.pid;
 
         // TODO: Validate r8 is a valid entrypoint

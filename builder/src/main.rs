@@ -19,11 +19,12 @@ const LOCAL_EFI_VARS: &'static str = "ovmf/VARS.fd";
 const SYSTEM_EFI_CODE: &'static str = "/usr/share/OVMF/OVMF_CODE.fd";
 const SYSTEM_EFI_VARS: &'static str = "/usr/share/OVMF/OVMF_VARS.fd";
 
-const TO_BUILD: [(&'static str, &'static str); 4] = [
+const TO_BUILD: [(&'static str, &'static str); 5] = [
     ("bootloader", "EFI/BOOT/BOOTx64.efi"),
     ("kernel", "fioxa.elf"),
     ("test_elf", "elf.elf"),
     ("calc", "calc.elf"),
+    ("terminal", "terminal.elf"),
 ];
 
 fn main() -> Result<()> {

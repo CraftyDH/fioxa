@@ -1,24 +1,26 @@
-use alloc::sync::Arc;
-
 use crossbeam_queue::ArrayQueue;
-use kernel_userspace::stream::{StreamMessage, StreamMessageType};
+use input::keyboard::KeyboardEvent;
+use kernel_userspace::{
+    service::{send_service_message, SID},
+    syscall::service_create,
+};
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
 
-use crate::{
-    interrupt_handler,
-    ioapic::mask_entry,
-    stream::{self, STREAM},
-    KB_STREAM_ID,
-};
+use crate::{interrupt_handler, ioapic::mask_entry, service::PUBLIC_SERVICES};
 
 use super::{scancode::set2::ScancodeSet2, PS2Command};
 
 static DECODER: Mutex<ScancodeSet2> = Mutex::new(ScancodeSet2::new());
 
 lazy_static! {
-    static ref KEYBOARD_QUEUE: STREAM = Arc::new(ArrayQueue::new(1000));
+    static ref KEYBOARD_QUEUE: ArrayQueue<KeyboardEvent> = ArrayQueue::new(100);
+    static ref KEYBOARD_SERVICE: SID = {
+        let sid = service_create();
+        PUBLIC_SERVICES.lock().insert("INPUT:KB", sid);
+        sid
+    };
 }
 
 pub struct Keyboard {
@@ -34,15 +36,7 @@ pub fn interrupt_handler(_: InterruptStackFrame) {
 
     let res = DECODER.lock().add_byte(scancode);
     if let Some(key) = res {
-        let mut msg = StreamMessage {
-            stream_id: KB_STREAM_ID.get().unwrap().0,
-            message_type: StreamMessageType::InlineData,
-            timestamp: 0,
-            data: Default::default(),
-        };
-        msg.write_data(key);
-
-        if let Some(_) = KEYBOARD_QUEUE.force_push(msg) {
+        if let Some(_) = KEYBOARD_QUEUE.force_push(key) {
             println!("WARN: Keyboard buffer full dropping packets")
         }
     }
@@ -50,7 +44,14 @@ pub fn interrupt_handler(_: InterruptStackFrame) {
 
 pub fn dispatch_events() {
     while let Some(msg) = KEYBOARD_QUEUE.pop() {
-        stream::push(msg);
+        send_service_message(
+            *KEYBOARD_SERVICE,
+            kernel_userspace::service::MessageType::Announcement,
+            0,
+            0,
+            msg,
+            0,
+        )
     }
 }
 
@@ -97,6 +98,9 @@ impl Keyboard {
         // Set keyboard layout to scancode set 2
         self.send_command(0xF0)?;
         self.send_command(2)?;
+
+        // Init the service
+        core::hint::black_box(*KEYBOARD_SERVICE);
 
         Ok(())
     }

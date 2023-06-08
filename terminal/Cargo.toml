@@ -1,5 +1,5 @@
 [package]
-name = "calc"
+name = "terminal"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,6 +9,7 @@ edition = "2021"
 userspace_bumpalloc = { path = "../userspace_bumpalloc" }
 userspace = { path = "../userspace" }
 kernel_userspace = { path = "../kernel_userspace" }
+input = { path = "../input" }
 
 [profile.dev]
 strip = true

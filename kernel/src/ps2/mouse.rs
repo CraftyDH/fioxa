@@ -1,19 +1,15 @@
 use core::sync::atomic::{AtomicI8, AtomicU8, Ordering};
 
-use alloc::sync::Arc;
-
 use crossbeam_queue::ArrayQueue;
 use input::mouse::MousePacket;
-use kernel_userspace::stream::StreamMessage;
+use kernel_userspace::{
+    service::{send_service_message, SID},
+    syscall::service_create,
+};
 use lazy_static::lazy_static;
 use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
 
-use crate::{
-    interrupt_handler,
-    ioapic::mask_entry,
-    stream::{self, STREAM},
-    MOUSE_STREAM_ID,
-};
+use crate::{interrupt_handler, ioapic::mask_entry, service::PUBLIC_SERVICES};
 
 use super::PS2Command;
 
@@ -28,7 +24,12 @@ enum MouseTypeId {
 }
 
 lazy_static! {
-    static ref MOUSEPACKET_QUEUE: STREAM = Arc::new(ArrayQueue::new(1000));
+    static ref MOUSEPACKET_QUEUE: ArrayQueue<MousePacket> = ArrayQueue::new(250);
+    static ref MOUSE_SERVICE: SID = {
+        let sid = service_create();
+        PUBLIC_SERVICES.lock().insert("INPUT:MOUSE", sid);
+        sid
+    };
 }
 
 static PACKETS_REQUIRED: AtomicI8 = AtomicI8::new(-1);
@@ -95,7 +96,14 @@ pub fn interrupt_handler(_: InterruptStackFrame) {
 
 pub fn dispatch_events() {
     while let Some(msg) = MOUSEPACKET_QUEUE.pop() {
-        stream::push(msg);
+        send_service_message(
+            *MOUSE_SERVICE,
+            kernel_userspace::service::MessageType::Announcement,
+            0,
+            0,
+            msg,
+            0,
+        )
     }
 }
 
@@ -126,16 +134,7 @@ pub fn send_packet(p1: u8, p2: u8, p3: u8) {
         y_mov: y as i8,
     };
 
-    let mut msg = StreamMessage {
-        stream_id: MOUSE_STREAM_ID.get().unwrap().0,
-        message_type: kernel_userspace::stream::StreamMessageType::InlineData,
-        timestamp: 0,
-        data: [0; 16],
-    };
-
-    msg.write_data(packet);
-
-    if let Some(_) = MOUSEPACKET_QUEUE.force_push(msg) {
+    if let Some(_) = MOUSEPACKET_QUEUE.force_push(packet) {
         println!("WARN: Mouse buffer full dropping packets")
     }
 }
@@ -265,6 +264,9 @@ impl Mouse {
 
         // Enable packet streaming (aka interrupts)
         self.send_command(0xF4)?;
+
+        // Init the service
+        core::hint::black_box(*MOUSE_SERVICE);
 
         Ok(())
     }
