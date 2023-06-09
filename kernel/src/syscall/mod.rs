@@ -11,7 +11,6 @@ use crate::{
     cpu_localstorage::{get_task_mgr_current_pid, get_task_mgr_current_tid},
     gdt::TASK_SWITCH_INDEX,
     paging::{
-        get_uefi_active_mapper,
         page_allocator::request_page,
         page_table_manager::{Mapper, Page, Size4KB},
     },
@@ -129,10 +128,19 @@ fn service_handler(regs: &mut Registers) {
 
 fn mmap_page_handler(regs: &mut Registers) {
     assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
-    let page = request_page().unwrap();
-    let mut mapper = unsafe { get_uefi_active_mapper() };
-    mapper
-        .map_memory(Page::<Size4KB>::new(regs.r8 as u64), Page::new(page))
+
+    let pid = get_task_mgr_current_pid();
+    let mut processes = PROCESSES.lock();
+
+    let process = processes.get_mut(&pid).unwrap();
+
+    let page = Page::new(request_page().unwrap());
+
+    process.owned_pages.push(page);
+
+    process
+        .page_mapper
+        .map_memory(Page::<Size4KB>::new(regs.r8 as u64), page)
         .unwrap()
         .flush();
 }

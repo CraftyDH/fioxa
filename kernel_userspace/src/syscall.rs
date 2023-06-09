@@ -79,19 +79,22 @@ pub fn yield_now() {
     unsafe { syscall(YIELD_NOW) };
 }
 
-pub fn spawn_process<F>(func: F, args: &str) -> PID
+pub fn spawn_process<F>(func: F, args: &str, kernel: bool) -> PID
 where
     F: Fn() + Send + Sync,
 {
     let boxed_func: Box<dyn Fn()> = Box::new(func);
     let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
 
+    let privilege = if kernel { 1 } else { 0 };
+
     let res = unsafe {
-        syscall3(
+        syscall4(
             SPAWN_PROCESS,
             raw as usize,
             args.as_ptr() as usize,
             args.len(),
+            privilege,
         )
     } as u64;
     PID::from(res)

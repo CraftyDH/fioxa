@@ -17,17 +17,12 @@ pub fn main() {
     if let Err(e) = ps2_controller.initialize() {
         log!("PS2 Controller failed to init because: {}", e);
     }
-    dispatch_events()
-}
 
-pub fn dispatch_events() -> ! {
     loop {
-        keyboard::dispatch_events();
-        mouse::dispatch_events();
-        yield_now();
+        ps2_controller.check_interrupts();
+        yield_now()
     }
 }
-
 pub struct PS2Command {
     data_port: Port<u8>,
     status_port: PortReadOnly<u8>,
@@ -85,7 +80,7 @@ pub struct PS2Controller {
 }
 
 impl PS2Controller {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         // Values from https://wiki.osdev.org/%228042%22_PS/2_Controller
         let command = PS2Command::new();
         let keyboard = Keyboard::new(PS2Command::new());
@@ -172,5 +167,10 @@ impl PS2Controller {
         // Even if there was an error with the keyboard or mouse we can still continue
         // And use the working one
         Ok(())
+    }
+
+    pub fn check_interrupts(&mut self) {
+        self.keyboard.check_interrupts();
+        self.mouse.check_interrupts();
     }
 }

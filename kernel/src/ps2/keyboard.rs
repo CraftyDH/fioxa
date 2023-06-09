@@ -1,63 +1,43 @@
-use crossbeam_queue::ArrayQueue;
-use input::keyboard::KeyboardEvent;
+use core::sync::atomic::AtomicBool;
+
+use alloc::boxed::Box;
 use kernel_userspace::{
     service::{send_service_message, SID},
     syscall::service_create,
 };
-use lazy_static::lazy_static;
-use spin::Mutex;
-use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
+
+use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{interrupt_handler, ioapic::mask_entry, service::PUBLIC_SERVICES};
 
-use super::{scancode::set2::ScancodeSet2, PS2Command};
+use super::{
+    scancode::{set2::ScancodeSet2, Scancode},
+    PS2Command,
+};
 
-static DECODER: Mutex<ScancodeSet2> = Mutex::new(ScancodeSet2::new());
-
-lazy_static! {
-    static ref KEYBOARD_QUEUE: ArrayQueue<KeyboardEvent> = ArrayQueue::new(100);
-    static ref KEYBOARD_SERVICE: SID = {
-        let sid = service_create();
-        PUBLIC_SERVICES.lock().insert("INPUT:KB", sid);
-        sid
-    };
-}
-
-pub struct Keyboard {
-    command: PS2Command,
-}
+static INT_WAITING: AtomicBool = AtomicBool::new(false);
 
 interrupt_handler!(interrupt_handler => keyboard_int_handler);
 
 pub fn interrupt_handler(_: InterruptStackFrame) {
-    let mut port = Port::new(0x60);
-
-    let scancode: u8 = unsafe { port.read() };
-
-    let res = DECODER.lock().add_byte(scancode);
-    if let Some(key) = res {
-        if let Some(_) = KEYBOARD_QUEUE.force_push(key) {
-            println!("WARN: Keyboard buffer full dropping packets")
-        }
-    }
+    INT_WAITING.store(true, core::sync::atomic::Ordering::SeqCst)
 }
 
-pub fn dispatch_events() {
-    while let Some(msg) = KEYBOARD_QUEUE.pop() {
-        send_service_message(
-            *KEYBOARD_SERVICE,
-            kernel_userspace::service::MessageType::Announcement,
-            0,
-            0,
-            msg,
-            0,
-        )
-    }
+pub struct Keyboard {
+    command: PS2Command,
+    keyboard_service: SID,
+    decoder: Box<dyn Scancode>,
 }
 
 impl Keyboard {
-    pub const fn new(command: PS2Command) -> Self {
-        Self { command }
+    pub fn new(command: PS2Command) -> Self {
+        let keyboard_service = service_create();
+        PUBLIC_SERVICES.lock().insert("INPUT:KB", keyboard_service);
+        Self {
+            command,
+            keyboard_service,
+            decoder: Box::new(ScancodeSet2::new()),
+        }
     }
 
     fn send_command(&mut self, command: u8) -> Result<(), &'static str> {
@@ -99,14 +79,35 @@ impl Keyboard {
         self.send_command(0xF0)?;
         self.send_command(2)?;
 
-        // Init the service
-        core::hint::black_box(*KEYBOARD_SERVICE);
-
         Ok(())
     }
 
     pub fn receive_interrupts(&self) {
         mask_entry(1, true);
+    }
+
+    pub fn check_interrupts(&mut self) {
+        loop {
+            let waiting = INT_WAITING.swap(false, core::sync::atomic::Ordering::SeqCst);
+
+            if !waiting {
+                return;
+            }
+
+            let scancode: u8 = unsafe { self.command.data_port.read() };
+
+            let res = self.decoder.add_byte(scancode);
+            if let Some(key) = res {
+                send_service_message(
+                    self.keyboard_service,
+                    kernel_userspace::service::MessageType::Announcement,
+                    0,
+                    0,
+                    key,
+                    0,
+                )
+            }
+        }
     }
 
     // fn update_leds(&mut self) {

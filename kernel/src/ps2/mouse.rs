@@ -1,4 +1,4 @@
-use core::sync::atomic::{AtomicI8, AtomicU8, Ordering};
+use core::sync::atomic::AtomicBool;
 
 use crossbeam_queue::ArrayQueue;
 use input::mouse::MousePacket;
@@ -7,7 +7,7 @@ use kernel_userspace::{
     syscall::service_create,
 };
 use lazy_static::lazy_static;
-use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
+use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{interrupt_handler, ioapic::mask_entry, service::PUBLIC_SERVICES};
 
@@ -25,130 +25,40 @@ enum MouseTypeId {
 
 lazy_static! {
     static ref MOUSEPACKET_QUEUE: ArrayQueue<MousePacket> = ArrayQueue::new(250);
-    static ref MOUSE_SERVICE: SID = {
-        let sid = service_create();
-        PUBLIC_SERVICES.lock().insert("INPUT:MOUSE", sid);
-        sid
-    };
 }
-
-static PACKETS_REQUIRED: AtomicI8 = AtomicI8::new(-1);
-static POS: AtomicU8 = AtomicU8::new(0);
-
-static PACKET_0: AtomicU8 = AtomicU8::new(0);
-static PACKET_1: AtomicU8 = AtomicU8::new(0);
-static PACKET_2: AtomicU8 = AtomicU8::new(0);
 
 interrupt_handler!(interrupt_handler => mouse_int_handler);
 
+static INT_WAITING: AtomicBool = AtomicBool::new(false);
+
 pub fn interrupt_handler(_: InterruptStackFrame) {
-    let mut port = Port::new(0x60);
-
-    let data: u8 = unsafe { port.read() };
-
-    let packets_required = PACKETS_REQUIRED.load(Ordering::SeqCst);
-    let pos = POS.load(Ordering::SeqCst);
-
-    // Packets not accepted
-    if packets_required == -1 {
-        return;
-    }
-
-    let reset = || {
-        POS.store(0, Ordering::SeqCst);
-    };
-
-    match pos {
-        0 => {
-            if data & 0b00001000 == 0 {
-                return;
-            }
-            PACKET_0.store(data, Ordering::SeqCst);
-            POS.store(1, Ordering::SeqCst);
-        }
-        1 => {
-            PACKET_1.store(data, Ordering::SeqCst);
-            POS.store(2, Ordering::SeqCst);
-        }
-        2 => {
-            if packets_required == 3 {
-                let val0 = PACKET_0.load(Ordering::SeqCst);
-                let val1 = PACKET_1.load(Ordering::SeqCst);
-                send_packet(val0, val1, data);
-
-                reset()
-            } else {
-                PACKET_2.store(data, Ordering::SeqCst);
-                POS.store(3, Ordering::SeqCst);
-            }
-        }
-        3 => {
-            let val0 = PACKET_0.load(Ordering::SeqCst);
-            let val1 = PACKET_1.load(Ordering::SeqCst);
-            let val2 = PACKET_2.load(Ordering::SeqCst);
-            send_packet(val0, val1, val2);
-            reset()
-        }
-        // Shouln't be possible
-        _ => unreachable!(),
-    }
+    INT_WAITING.store(true, core::sync::atomic::Ordering::SeqCst)
 }
 
-pub fn dispatch_events() {
-    while let Some(msg) = MOUSEPACKET_QUEUE.pop() {
-        send_service_message(
-            *MOUSE_SERVICE,
-            kernel_userspace::service::MessageType::Announcement,
-            0,
-            0,
-            msg,
-            0,
-        )
-    }
-}
-
-pub fn send_packet(p1: u8, p2: u8, p3: u8) {
-    let left = p1 & 0b0000_0001 > 0;
-    let right = p1 & 0b0000_0010 > 0;
-    let middle = p1 & 0b0000_0100 > 0;
-
-    let mut x: i16 = p2.into();
-    // X is negative
-    if p1 & 0b0001_0000 > 0 {
-        x = -(256 - x)
-    }
-
-    let mut y: i16 = p3.into();
-    // X is negative
-    if p1 & 0b0010_0000 > 0 {
-        y = 256 - y;
-    } else {
-        y = -y;
-    }
-
-    let packet = MousePacket {
-        left,
-        right,
-        middle,
-        x_mov: x as i8,
-        y_mov: y as i8,
-    };
-
-    if let Some(_) = MOUSEPACKET_QUEUE.force_push(packet) {
-        println!("WARN: Mouse buffer full dropping packets")
-    }
+enum PS2MousePackets {
+    None,
+    One(u8),
+    Two(u8, u8),
+    Three(u8, u8, u8),
 }
 
 pub struct Mouse {
     command: PS2Command,
     mouse_type: MouseTypeId,
+    packet_state: PS2MousePackets,
+    mouse_service: SID,
 }
 
 impl Mouse {
-    pub const fn new(command: PS2Command) -> Self {
+    pub fn new(command: PS2Command) -> Self {
+        let mouse_service = service_create();
+        PUBLIC_SERVICES.lock().insert("INPUT:MOUSE", mouse_service);
+
         Self {
             command,
             mouse_type: MouseTypeId::Standard,
+            packet_state: PS2MousePackets::None,
+            mouse_service,
         }
     }
 
@@ -241,36 +151,87 @@ impl Mouse {
 
         // Save mouse type
         self.mouse_type = match mode {
-            0 => {
-                PACKETS_REQUIRED.store(3, Ordering::SeqCst);
-                MouseTypeId::Standard
-            }
-            3 => {
-                PACKETS_REQUIRED.store(4, Ordering::SeqCst);
-                MouseTypeId::WithScrollWheel
-            }
-            4 => {
-                PACKETS_REQUIRED.store(4, Ordering::SeqCst);
-                MouseTypeId::WithExtraButtons
-            }
+            0 => MouseTypeId::Standard,
+            3 => MouseTypeId::WithScrollWheel,
+            4 => MouseTypeId::WithExtraButtons,
             // Who knows, just emulate a standard
-            _ => {
-                PACKETS_REQUIRED.store(3, Ordering::SeqCst);
-                MouseTypeId::Standard
-            }
+            _ => MouseTypeId::Standard,
         };
-
-        POS.store(0, Ordering::SeqCst);
 
         // Enable packet streaming (aka interrupts)
         self.send_command(0xF4)?;
 
-        // Init the service
-        core::hint::black_box(*MOUSE_SERVICE);
-
         Ok(())
     }
+
     pub fn receive_interrupts(&self) {
         mask_entry(12, true);
+    }
+
+    pub fn check_interrupts(&mut self) {
+        loop {
+            let waiting = INT_WAITING.swap(false, core::sync::atomic::Ordering::SeqCst);
+
+            if !waiting {
+                return;
+            }
+            let data: u8 = unsafe { self.command.data_port.read() };
+
+            self.packet_state = match (&self.packet_state, &self.mouse_type) {
+                (PS2MousePackets::None, _) => PS2MousePackets::One(data),
+                (PS2MousePackets::One(a), _) => PS2MousePackets::Two(*a, data),
+                (PS2MousePackets::Two(a, b), MouseTypeId::Standard) => {
+                    self.send_packet(*a, *b, data);
+                    PS2MousePackets::None
+                }
+                (_, MouseTypeId::Standard) => unreachable!(),
+                (PS2MousePackets::Two(a, b), _) => PS2MousePackets::Three(*a, *b, data),
+                (
+                    PS2MousePackets::Three(a, b, c),
+                    MouseTypeId::WithExtraButtons | MouseTypeId::WithScrollWheel,
+                ) => {
+                    // Discard scroll wheel for now
+                    self.send_packet(*a, *b, *c);
+                    PS2MousePackets::None
+                }
+            };
+        }
+    }
+
+    pub fn send_packet(&mut self, p1: u8, p2: u8, p3: u8) {
+        let left = p1 & 0b0000_0001 > 0;
+        let right = p1 & 0b0000_0010 > 0;
+        let middle = p1 & 0b0000_0100 > 0;
+
+        let mut x: i16 = p2.into();
+        // X is negative
+        if p1 & 0b0001_0000 > 0 {
+            x = -(256 - x)
+        }
+
+        let mut y: i16 = p3.into();
+        // X is negative
+        if p1 & 0b0010_0000 > 0 {
+            y = 256 - y;
+        } else {
+            y = -y;
+        }
+
+        let packet = MousePacket {
+            left,
+            right,
+            middle,
+            x_mov: x as i8,
+            y_mov: y as i8,
+        };
+
+        send_service_message(
+            self.mouse_service,
+            kernel_userspace::service::MessageType::Announcement,
+            0,
+            0,
+            packet,
+            0,
+        )
     }
 }

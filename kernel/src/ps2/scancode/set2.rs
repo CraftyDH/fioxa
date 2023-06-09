@@ -1,5 +1,7 @@
 use input::keyboard::KeyboardEvent;
 
+use super::Scancode;
+
 const RELEASE_CODE: u8 = 0xF0;
 const EXTENDED_CODE: u8 = 0xE0;
 enum State {
@@ -13,14 +15,8 @@ pub struct ScancodeSet2 {
     state: State,
 }
 
-impl ScancodeSet2 {
-    pub const fn new() -> Self {
-        Self {
-            state: State::Start,
-        }
-    }
-
-    pub fn add_byte(&mut self, code: u8) -> Option<KeyboardEvent> {
+impl Scancode for ScancodeSet2 {
+    fn add_byte(&mut self, code: u8) -> Option<KeyboardEvent> {
         // If byte is an ack ignore it
         if code == 0xFA {
             return None;
@@ -71,6 +67,14 @@ impl ScancodeSet2 {
                 }
                 None
             }
+        }
+    }
+}
+
+impl ScancodeSet2 {
+    pub const fn new() -> Self {
+        Self {
+            state: State::Start,
         }
     }
 

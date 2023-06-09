@@ -163,7 +163,13 @@ pub fn exit_thread(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
 pub fn spawn_process(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
     let nbytes = unsafe { &*slice_from_raw_parts(reg.r9 as *const u8, reg.r10) };
 
-    let mut process = Process::new(super::process::ProcessPrivilige::KERNEL, nbytes);
+    let privilege = if reg.r11 == 1 {
+        super::process::ProcessPrivilige::KERNEL
+    } else {
+        super::process::ProcessPrivilige::USER
+    };
+
+    let mut process = Process::new(privilege, nbytes);
     let pid = process.pid;
 
     // TODO: Validate r8 is a valid entrypoint

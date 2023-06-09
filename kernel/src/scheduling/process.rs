@@ -20,8 +20,10 @@ use crate::{
     gdt,
     paging::{
         offset_map::map_gop,
-        page_allocator::request_page,
-        page_table_manager::{new_page_table_from_phys, page_4kb, Mapper, PageLvl4, PageTable},
+        page_allocator::{free_page, request_page},
+        page_table_manager::{
+            new_page_table_from_phys, page_4kb, Mapper, Page, PageLvl4, PageTable, Size4KB,
+        },
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
     service::KernelMessageHeader,
@@ -115,6 +117,7 @@ pub struct Process {
     thread_next_id: u64,
     pub args: Vec<u8>,
     pub service_msgs: VecDeque<Arc<KernelMessageHeader>>,
+    pub owned_pages: Vec<Page<Size4KB>>,
 }
 
 impl Process {
@@ -141,6 +144,7 @@ impl Process {
             thread_next_id: 0,
             args: args.to_vec(),
             service_msgs: Default::default(),
+            owned_pages: Vec::new(),
         }
     }
 
@@ -157,6 +161,7 @@ impl Process {
             thread_next_id: 0,
             args: args.to_vec(),
             service_msgs: Default::default(),
+            owned_pages: Vec::new(),
         }
     }
 
@@ -196,8 +201,12 @@ impl Process {
         for addr in (stack_base..(stack_base + STACK_SIZE as u64 - 1)).step_by(0x1000) {
             let frame = request_page().unwrap();
 
+            let page = page_4kb(frame);
+
+            self.owned_pages.push(page);
+
             self.page_mapper
-                .map_memory(page_4kb(addr), page_4kb(frame))
+                .map_memory(page_4kb(addr), page)
                 .unwrap()
                 .flush();
         }
@@ -226,6 +235,15 @@ impl Process {
         register_state.rdi = entry_point;
 
         self.new_thread_direct(thread_bootstraper as *const u64, register_state)
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        // Free pages
+        for page in &self.owned_pages {
+            free_page(page.get_address());
+        }
     }
 }
 

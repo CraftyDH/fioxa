@@ -212,7 +212,7 @@ pub fn main(info: *const BootInfo) -> ! {
     enable_apic(&madt, &mut KERNEL_MAP.lock());
 
     boot_aps(&madt);
-    spawn_process(after_boot, "");
+    spawn_process(after_boot, "", true);
 
     // Disable interrupts so when we enable switching this core can finish init.
     unsafe { core::arch::asm!("cli") };
@@ -265,10 +265,10 @@ fn after_boot() {
 
     let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
 
-    spawn_process(service::start_mgmt, "");
+    spawn_process(service::start_mgmt, "", true);
 
-    spawn_process(ps2::main, "");
-    spawn_process(gop::gop_entry, "");
+    spawn_process(ps2::main, "", true);
+    spawn_process(gop::gop_entry, "", true);
     spawn_thread(fs::file_handler);
 
     log!("Enumnerating PCI...");
@@ -286,7 +286,7 @@ fn after_boot() {
     //     }
     // });
     // ! IMPORTANT: This must be a new process
-    spawn_process(load_terminal, "");
+    spawn_process(load_terminal, "", false);
     exit();
 }
 

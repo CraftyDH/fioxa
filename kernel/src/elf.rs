@@ -109,7 +109,11 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> PID {
 
     for page in 0..pages {
         let p = page * 0x1000;
-        map.map_memory(page_4kb(mem_start + p), page_4kb(start + p))
+        let page = page_4kb(start + p);
+
+        proc.owned_pages.push(page);
+
+        map.map_memory(page_4kb(mem_start + p), page)
             .unwrap()
             .flush();
     }

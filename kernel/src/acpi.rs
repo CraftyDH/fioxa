@@ -31,7 +31,10 @@ impl AcpiHandler for FioxaAcpiHandler {
     ) -> acpi::PhysicalMapping<Self, T> {
         let mut mapper = get_uefi_active_mapper();
 
-        for page in (physical_address & !0xFFF..(physical_address + size + 0xFFF)).step_by(0x1000) {
+        let start = physical_address & !0xFFF;
+        let end = (physical_address + size + 0xFFF) & !0xFFF;
+
+        for page in (start..end).step_by(0x1000) {
             mapper
                 .map_memory(page_4kb(page as u64), page_4kb(page as u64))
                 .unwrap()
@@ -39,10 +42,10 @@ impl AcpiHandler for FioxaAcpiHandler {
         }
 
         PhysicalMapping::new(
-            physical_address & !0xFFF,
+            start,
             NonNull::new(physical_address as *mut T).unwrap(),
             size,
-            (physical_address + size + 0xFFF) & !0xFFF - physical_address & !0xFFF,
+            end - start,
             self.clone(),
         )
     }
@@ -53,8 +56,7 @@ impl AcpiHandler for FioxaAcpiHandler {
         for page in (region.physical_start()..(region.physical_start() + region.mapped_length()))
             .step_by(0x1000)
         {
-            //todo fix
-            // mapper.unmap_memory(page_4kb(page as u64)).unwrap().flush();
+            mapper.unmap_memory(page_4kb(page as u64)).unwrap().flush();
         }
     }
 }
