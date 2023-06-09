@@ -13,7 +13,7 @@ use self::fixed_size_block::FixedSizeBlockAllocator;
 
 // pub const HEAP_START: usize = 0xFFFFFFFE00000000;
 const HEAP_START: usize = MemoryLoc::KernelHeap as usize;
-pub const HEAP_SIZE: usize = 1024 * 1024 * 5; // 5 MiB
+pub const HEAP_SIZE: usize = 1024 * 1024 * 50; // 50 MiB
 
 pub mod bump;
 pub mod fixed_size_block;

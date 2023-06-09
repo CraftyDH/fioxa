@@ -17,7 +17,7 @@ use crate::{
         page_table_manager::{ident_map_curr_process, new_page_table_from_phys, page_4kb, Mapper},
         MemoryLoc, KERNEL_MAP,
     },
-    scheduling::taskmanager::{core_start_multitasking, TASKMANAGER},
+    scheduling::taskmanager::{self, core_start_multitasking},
     time::spin_sleep_ms,
 };
 
@@ -117,7 +117,7 @@ pub fn boot_aps(madt: &Madt) {
         let mapper = new_page_table_from_phys(
             KERNEL_MAP.lock().get_lvl4_addr() - paging::MemoryLoc::PhysMapOffset as u64,
         );
-        TASKMANAGER.lock().init(mapper, n_cores.try_into().unwrap());
+        taskmanager::init(mapper, n_cores.try_into().unwrap());
     }
 
     ident_map_curr_process(0x1000, true);

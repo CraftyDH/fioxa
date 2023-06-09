@@ -1,28 +1,51 @@
 use core::fmt::{Arguments, Write};
 
+use alloc::vec;
 use kernel_userspace::{
-    fs::{stat_file, ReadRequest, ReadResponse, StatResponse, FS_STAT},
     service::{
-        generate_tracking_number, get_public_service_id, get_service_messages_sync,
-        send_and_get_response_sync, MessageType, SendMessageHeader, ServiceRequestServiceID,
-        ServiceRequestServiceIDResponse, SID,
+        generate_tracking_number, get_public_service_id, send_service_message, MessageType,
+        ServiceResponse, SID,
     },
-    syscall::{service_push_msg, service_subscribe, spawn_thread, yield_now},
+    syscall::{poll_service, service_get_data, yield_now},
 };
 
 use spin::Mutex;
 
-pub struct Writer {}
+pub struct Writer {
+    pub pending_response: u8,
+}
 
-pub static WRITER: Mutex<Writer> = Mutex::new(Writer {});
+pub static WRITER: Mutex<Writer> = Mutex::new(Writer {
+    pending_response: 0,
+});
 
 lazy_static::lazy_static! {
     pub static ref STDOUT: SID = get_public_service_id("STDOUT").unwrap();
 }
 
 impl Writer {
+    // Poll writes results later so that we can send multiple packets and not require as many round trips to send
+    pub fn poll_errors(&mut self) {
+        loop {
+            while let Some(msg) = poll_service(*STDOUT, u64::MAX) {
+                let mut data_buf = vec![0u8; msg.data_length];
+                service_get_data(&mut data_buf).unwrap();
+                let write = ServiceResponse::new(msg, data_buf);
+                assert!(write.get_data_as::<bool>().unwrap());
+                self.pending_response -= 1;
+            }
+
+            if self.pending_response > 100 {
+                yield_now()
+            } else {
+                break;
+            }
+        }
+    }
     pub fn write_byte(&mut self, chr: char) {
-        let write = send_and_get_response_sync(
+        self.poll_errors();
+        self.pending_response += 1;
+        send_service_message(
             *STDOUT,
             MessageType::Request,
             generate_tracking_number(),
@@ -30,11 +53,12 @@ impl Writer {
             chr,
             0,
         );
-        assert!(write.get_data_as::<bool>().unwrap())
     }
 
     pub fn write_string(&mut self, s: &str) {
-        let write = send_and_get_response_sync(
+        self.poll_errors();
+        self.pending_response += 1;
+        send_service_message(
             *STDOUT,
             MessageType::Request,
             generate_tracking_number(),
@@ -42,7 +66,6 @@ impl Writer {
             s,
             0,
         );
-        assert!(write.get_data_as::<bool>().unwrap())
     }
 }
 

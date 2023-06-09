@@ -13,7 +13,7 @@ use crate::{
     elf,
     scheduling::{
         process::{PID, TID},
-        taskmanager::TASKMANAGER,
+        taskmanager::PROCESSES,
     },
 };
 
@@ -88,9 +88,9 @@ pub fn push(current_pid: PID, msg: &SendMessageHeader) -> Option<()> {
             if service.owner != current_pid {
                 return None;
             }
-            let mut t = TASKMANAGER.lock();
+            let mut processes = PROCESSES.lock();
             for client in &service.clients {
-                t.processes
+                processes
                     .get_mut(client)
                     .unwrap()
                     .service_msgs
@@ -98,23 +98,17 @@ pub fn push(current_pid: PID, msg: &SendMessageHeader) -> Option<()> {
             }
         }
         MessageType::Request => {
-            let mut t = TASKMANAGER.lock();
-            t.processes
-                .get_mut(&service.owner)
-                .unwrap()
-                .service_msgs
-                .push_back(m);
+            let mut p = PROCESSES.lock();
+            p.get_mut(&service.owner).unwrap().service_msgs.push_back(m);
         }
         MessageType::Response => {
             if service.owner != current_pid {
                 return None;
             }
-            let mut t = TASKMANAGER.lock();
-            t.processes
+            let mut processes = PROCESSES.lock();
+            processes
                 .get_mut(&msg.receiver_pid.into())
-                .unwrap()
-                .service_msgs
-                .push_back(m);
+                .and_then(|p| Some(p.service_msgs.push_back(m)));
         }
     }
     Some(())
@@ -126,8 +120,8 @@ pub fn pop(
     narrow_by_sid: SID,
     narrow_by_tracking: u64,
 ) -> Option<ReceiveMessageHeader> {
-    let mut t = TASKMANAGER.lock();
-    let proc = t.processes.get_mut(&current_pid).unwrap();
+    let mut processes = PROCESSES.lock();
+    let proc = processes.get_mut(&current_pid).unwrap();
     let msg;
 
     if narrow_by_sid.0 == u64::MAX {
@@ -160,8 +154,8 @@ pub fn pop(
 }
 
 pub fn get_data(current_pid: PID, current_thread: TID, ptr: *mut u8) -> Option<()> {
-    let mut t = TASKMANAGER.lock();
-    let proc = t.processes.get_mut(&current_pid)?;
+    let mut p = PROCESSES.lock();
+    let proc = p.get_mut(&current_pid)?;
     let thread = proc.threads.get_mut(&current_thread)?;
 
     let msg = thread.current_message.take()?;

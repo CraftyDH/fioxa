@@ -9,7 +9,8 @@ use crate::{
     },
     scheduling::{
         process::{Process, PID},
-        taskmanager::TASKMANAGER,
+        taskmanager::{PROCESSES, TASK_QUEUE},
+        without_context_switch,
     },
 };
 
@@ -133,7 +134,9 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> PID {
     let tid = proc.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
 
     let pid = proc.pid;
-    TASKMANAGER.lock().processes.insert(proc.pid, proc);
-    TASKMANAGER.lock().task_queue.push((pid, tid)).unwrap();
+    without_context_switch(|| {
+        PROCESSES.lock().insert(proc.pid, proc);
+    });
+    TASK_QUEUE.push((pid, tid)).unwrap();
     pid
 }

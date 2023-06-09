@@ -15,7 +15,7 @@ use crate::{
         page_allocator::request_page,
         page_table_manager::{Mapper, Page, Size4KB},
     },
-    scheduling::taskmanager::TASKMANAGER,
+    scheduling::taskmanager::{self, PROCESSES},
     service,
     time::spin_sleep_ms,
     wrap_function_registers,
@@ -38,33 +38,19 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
     use kernel_userspace::syscall::*;
     match regs.rax {
         ECHO => echo_handler(regs),
-        YIELD_NOW => {
-            // Doesn't matter if it failed to lock, just give task more time
-            TASKMANAGER
-                .try_lock()
-                .and_then(|mut t| Some(t.yield_now(stack_frame, regs)));
-            // Ack interrupt
-            unsafe { *(0xfee000b0 as *mut u32) = 0 }
-            return;
-        }
-        SPAWN_PROCESS => {
-            TASKMANAGER.lock().spawn_process(stack_frame, regs);
-            return;
-        }
-        SPAWN_THREAD => {
-            TASKMANAGER.lock().spawn_thread(stack_frame, regs);
-        }
+        YIELD_NOW => taskmanager::yield_now(stack_frame, regs),
+        SPAWN_PROCESS => taskmanager::spawn_process(stack_frame, regs),
+        SPAWN_THREAD => taskmanager::spawn_thread(stack_frame, regs),
         // SLEEP => task_manager.sleep(stack_frame, regs),
-        EXIT_THREAD => TASKMANAGER.lock().exit_thread(stack_frame, regs),
-        MMAP_PAGE => mmap_page_handler(regs),
+        EXIT_THREAD => taskmanager::exit_thread(stack_frame, regs),
+        MMAP_PAGE => {
+            mmap_page_handler(regs);
+            taskmanager::yield_now(stack_frame, regs);
+        }
         SERVICE => service_handler(regs),
         READ_ARGS => read_args_handler(regs),
         _ => println!("Unknown syscall class: {}", regs.rax),
     }
-    // Maybe give another task time
-    TASKMANAGER
-        .try_lock()
-        .and_then(|mut t| Some(t.switch_task(stack_frame, regs)));
 
     // Ack interrupt
     unsafe { *(0xfee000b0 as *mut u32) = 0 }
@@ -78,8 +64,8 @@ fn echo_handler(regs: &mut Registers) {
 
 fn read_args_handler(regs: &mut Registers) {
     let pid = get_task_mgr_current_pid();
-    let mut t = TASKMANAGER.lock();
-    let proc = t.processes.get_mut(&pid).unwrap();
+    let p = PROCESSES.lock();
+    let proc = p.get(&pid).unwrap();
 
     if regs.r8 == 0 {
         regs.rax = proc.args.len();

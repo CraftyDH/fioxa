@@ -14,9 +14,10 @@ use x86_64::{
 use crate::{
     assembly::registers::Registers,
     cpu_localstorage::{
-        get_current_cpu_id, get_task_mgr_current_ticks, set_task_mgr_current_ticks,
+        get_current_cpu_id, get_task_mgr_current_ticks, is_task_mgr_schedule,
+        set_task_mgr_current_ticks,
     },
-    scheduling::taskmanager::TASKMANAGER,
+    scheduling::taskmanager,
     wrap_function_registers,
 };
 
@@ -56,7 +57,8 @@ impl ProgrammableIntervalTimer {
             PIT_DIVISOR.store(divisor, Ordering::Release);
 
             unsafe {
-                self.cmd.write(0b00_11_011_0);
+                // Rate generator
+                self.cmd.write(0b00_11_010_0);
                 // Write first 8 bits
                 self.data.write((divisor & 0xFF) as u8);
                 // Write upper 8 bits
@@ -98,6 +100,10 @@ pub fn stop_switching_tasks() {
     SWITCH_TASK.store(false, Ordering::Relaxed)
 }
 
+pub fn is_switching_tasks() -> bool {
+    SWITCH_TASK.load(Ordering::Relaxed)
+}
+
 wrap_function_registers!(tick => tick_handler);
 
 extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
@@ -113,9 +119,9 @@ extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
         match get_task_mgr_current_ticks().checked_sub(1) {
             Some(n) => set_task_mgr_current_ticks(n),
             None => {
-                TASKMANAGER
-                    .try_lock()
-                    .and_then(|mut t| Some(t.switch_task(stack_frame, regs)));
+                if is_task_mgr_schedule() {
+                    Some(taskmanager::switch_task(stack_frame, regs));
+                }
             }
         }
     }

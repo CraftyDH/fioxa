@@ -17,7 +17,9 @@ pub struct CPULocalStorage {
     stack_top: u64,
     task_mgr_current_pid: PID,
     task_mgr_current_tid: TID,
-    task_mgr_ticks_left: u8,
+    task_mgr_ticks_left: u32,
+    // If not set the task should stay scheduled
+    task_mgr_schedule: u32,
     // at 0x1000 (1 page down is GDT)
 }
 
@@ -44,6 +46,7 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     ls.task_mgr_current_pid = 0.into();
     ls.task_mgr_current_tid = (core_id as u64).into();
     ls.task_mgr_ticks_left = 0;
+    ls.task_mgr_schedule = 1;
 
     crate::gdt::create_gdt_for_core(unsafe { &mut *((vaddr_base + 0x1000) as *mut CPULocalGDT) });
 
@@ -123,4 +126,16 @@ pub fn get_task_mgr_current_ticks() -> u8 {
 
 pub fn set_task_mgr_current_ticks(ticks: u8) {
     unsafe { core::arch::asm!("mov gs:25, {:e}", in(reg) ticks as u16) };
+}
+
+pub fn is_task_mgr_schedule() -> bool {
+    let ticks: u16;
+    unsafe { core::arch::asm!("mov {:e}, gs:29", lateout(reg) ticks) };
+    // println!("ticks: {ticks}");
+    ticks != 0
+    // true
+}
+
+pub fn set_is_task_mgr_schedule(ticks: bool) {
+    unsafe { core::arch::asm!("mov gs:29, {:e}", in(reg) ticks as u16) };
 }

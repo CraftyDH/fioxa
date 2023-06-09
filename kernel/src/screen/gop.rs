@@ -7,7 +7,6 @@ use kernel_userspace::service::{
 };
 use kernel_userspace::syscall::{service_create, spawn_thread};
 use lazy_static::lazy_static;
-use x86_64::instructions::interrupts::without_interrupts;
 
 #[derive(Clone, Copy)]
 pub struct Pos {
@@ -265,6 +264,7 @@ macro_rules! colour {
 
 use crate::paging::get_uefi_active_mapper;
 use crate::paging::offset_map::map_gop;
+use crate::scheduling::without_context_switch;
 use crate::screen::psf1::PSF1_FONT_NULL;
 use crate::service::PUBLIC_SERVICES;
 use core::fmt::Arguments;
@@ -277,7 +277,7 @@ use super::psf1::PSF1Font;
 pub fn _print(args: Arguments) {
     loop {
         // Prevent task from being scheduled away with mutex
-        if let Some(_) = without_interrupts(|| {
+        if let Some(_) = without_context_switch(|| {
             if let Some(mut w) = WRITER.try_lock() {
                 w.write_fmt(args).unwrap();
                 return Some(());

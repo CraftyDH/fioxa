@@ -3,7 +3,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, VecDeque},
-    string::String,
     sync::Arc,
     vec::Vec,
 };
@@ -30,7 +29,7 @@ use crate::{
 
 const STACK_ADDR: u64 = 0x100_000_000_000;
 
-const STACK_SIZE: u64 = 1024 * 512;
+const STACK_SIZE: u64 = 1024 * 12;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct PID(pub u64);
@@ -148,7 +147,7 @@ impl Process {
     pub unsafe fn new_with_page(
         privilege: ProcessPrivilige,
         page_mapper: PageTable<'static, PageLvl4>,
-        args: String,
+        args: &[u8],
     ) -> Self {
         Self {
             pid: PID::new(),
@@ -156,7 +155,7 @@ impl Process {
             page_mapper,
             privilege,
             thread_next_id: 0,
-            args: Vec::new(),
+            args: args.to_vec(),
             service_msgs: Default::default(),
         }
     }

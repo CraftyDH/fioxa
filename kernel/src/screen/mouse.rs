@@ -2,9 +2,10 @@ use kernel_userspace::{
     service::get_public_service_id,
     syscall::{service_subscribe, yield_now},
 };
-use x86_64::instructions::interrupts::without_interrupts;
 
 use input::mouse::MousePacket;
+
+use crate::scheduling::without_context_switch;
 
 use super::gop::{Pos, WRITER};
 
@@ -71,7 +72,7 @@ pub fn print_cursor(pos: &mut Pos, mouse: MousePacket) {
     pos.x = pos.x.saturating_add_signed(mouse.x_mov as isize);
     pos.y = pos.y.saturating_add_signed(mouse.y_mov as isize);
 
-    without_interrupts(|| {
+    without_context_switch(|| {
         let gop_mutex = &mut WRITER.lock();
         let gop_info = &gop_mutex.gop;
 

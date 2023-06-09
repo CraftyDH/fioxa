@@ -21,7 +21,7 @@ pub fn spin_sleep_ms(time: u64) {
 }
 
 pub fn init_time(acpi_tables: &AcpiTables<FioxaAcpiHandler>) {
-    PIC.lock().set_divisor(65535);
+    PIC.lock().set_divisor(10000);
     if let Ok(hpet_info) = acpi::HpetInfo::new(acpi_tables) {
         let dev = hpet::HPET::new(hpet_info);
         let h = &mut *HPET.lock();
