@@ -6,14 +6,33 @@
     "configurations": [
         {
             "type": "lldb",
-            "request": "custom",
-            "name": "Debug kernel",
-            "targetCreateCommands": [
-                "target create builder/fioxa/fioxa.elf",
-            ],
+            "request": "attach",
+            "name": "Debug Kernel",
+            "program": "builder/fioxa/fioxa.elf",
             "processCreateCommands": [
                 "gdb-remote localhost:1234"
             ],
+            "preLaunchTask": "wait",
+            "sourceLanguages": [
+                "rust"
+            ]
         },
+        {
+            "type": "node-terminal",
+            "name": "Launch",
+            "request": "launch",
+            "cwd": "${workspaceFolder}/builder",
+            "command": "cargo run qemu"
+        },
+    ],
+    "compounds": [
+        {
+            "name": "Build & Launch Kernel",
+            "configurations": [
+                "Debug Kernel",
+                "Launch",
+            ],
+            "stopAll": true
+        }
     ]
 }

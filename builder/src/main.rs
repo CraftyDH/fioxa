@@ -121,7 +121,9 @@ fn qemu() -> Result<()> {
     Command::new("qemu-system-x86_64")
         .args(qemu_args)
         .spawn()
-        .context("Failed to run qemu-system-x86_64")?;
+        .context("Failed to run qemu-system-x86_64")?
+        .wait()
+        .unwrap();
 
     Ok(())
 }
