@@ -9,7 +9,7 @@ use bit_field::{BitArray, BitField};
 use spin::mutex::Mutex;
 use uefi::table::boot::MemoryType;
 
-use crate::memory::MemoryMapIter;
+use crate::{memory::MemoryMapIter, scheduling::without_context_switch};
 
 use super::{virt_addr_for_phys, MemoryLoc};
 
@@ -22,7 +22,9 @@ pub fn frame_alloc_exec<T, F>(closure: F) -> Option<T>
 where
     F: Fn(&mut PageFrameAllocator) -> Option<T>,
 {
-    unsafe { closure(&mut *GLOBAL_FRAME_ALLOCATOR.lock().assume_init_mut()) }
+    without_context_switch(|| unsafe {
+        closure(&mut *GLOBAL_FRAME_ALLOCATOR.lock().assume_init_mut())
+    })
 }
 
 pub unsafe fn init(mmap: MemoryMapIter) {
@@ -94,6 +96,14 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
                 .byte_add(MemoryLoc::PhysMapOffset as usize),
             self.page_bitmap.len(),
         );
+        self.reserved_32bit.allocated = &mut *slice_from_raw_parts_mut(
+            self.reserved_32bit
+                .allocated
+                .as_mut_ptr()
+                .byte_add(MemoryLoc::PhysMapOffset as usize),
+            self.reserved_32bit.allocated.len(),
+        );
+
         self.reserved_32bit = &mut *(self.reserved_32bit as *mut MemoryRegion)
             .byte_add(MemoryLoc::PhysMapOffset as usize);
     }

@@ -132,7 +132,6 @@ pub struct PCNET<'b> {
 
 impl Driver for PCNET<'_> {
     fn new(pci_device: PCIHeaderCommon) -> Option<Self> {
-        let pci_device = pci_device;
         // Ensure device is actually supported
         if !(pci_device.get_vendor_id() == 0x1022 && pci_device.get_device_id() == 0x2000) {
             return None;
@@ -147,8 +146,8 @@ impl Driver for PCNET<'_> {
 
         let mac = port.read_mac_addr();
 
-        let header_mem_size: usize =
-            size_of::<BufferDescriptor>() * (RECV_BUFFER_CNT + SEND_BUFFER_CNT);
+        let header_mem_size: usize = size_of::<InitBlock>()
+            + size_of::<BufferDescriptor>() * (RECV_BUFFER_CNT + SEND_BUFFER_CNT);
 
         assert!(header_mem_size <= 0x1000);
 

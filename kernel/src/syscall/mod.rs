@@ -2,7 +2,7 @@ use core::ptr::slice_from_raw_parts_mut;
 
 use kernel_userspace::{
     service::{ReceiveMessageHeader, SendMessageHeader, SID},
-    syscall::{self, SYSCALL_NUMBER},
+    syscall::{self, yield_now, SYSCALL_NUMBER},
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
@@ -16,7 +16,7 @@ use crate::{
     },
     scheduling::taskmanager::{self, PROCESSES},
     service,
-    time::spin_sleep_ms,
+    time::{pit::get_uptime, spin_sleep_ms},
     wrap_function_registers,
 };
 
@@ -148,8 +148,11 @@ fn mmap_page_handler(regs: &mut Registers) {
 pub fn sleep(ms: usize) {
     // unsafe { syscall1(SLEEP, ms) };
     spin_sleep_ms(ms as u64)
-    // let end = get_uptime() + ms;
-    // while end > get_uptime() {
-    //     unsafe { _mm_pause() };
-    // }
+}
+
+pub fn syssleep(ms: u64) {
+    let end = get_uptime() + ms as u64;
+    while end > get_uptime() {
+        yield_now()
+    }
 }

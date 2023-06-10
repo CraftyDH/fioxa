@@ -16,6 +16,7 @@ use ::acpi::{AcpiError, RsdpError};
 use acpi::sdt::Signature;
 use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
+use kernel::bootfs::TERMINAL_ELF;
 use kernel::cpu_localstorage::init_bsp_task;
 use kernel::fs::{self, FSDRIVES};
 use kernel::interrupts::{self};
@@ -23,7 +24,7 @@ use kernel::interrupts::{self};
 use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::enable_localapic;
 use kernel::memory::MemoryMapIter;
-use kernel::net::ethernet::ethernet_task;
+use kernel::net::ethernet::{ethernet_task, lookup_ip};
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
 use kernel::paging::page_allocator::{frame_alloc_exec, free_page, request_page};
 use kernel::paging::page_table_manager::{page_4kb, Mapper};
@@ -34,12 +35,12 @@ use kernel::pci::enumerate_pci;
 use kernel::scheduling::taskmanager::core_start_multitasking;
 use kernel::screen::gop::{self, WRITER};
 use kernel::screen::psf1::{self, load_psf1_font};
-use kernel::terminal::load_terminal;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
-use kernel::{allocator, gdt, paging, ps2, service, BOOT_INFO};
+use kernel::{allocator, elf, gdt, paging, ps2, service, BOOT_INFO};
 
+use kernel_userspace::service::{send_and_get_response_sync, SpawnProcess, SID};
 use kernel_userspace::syscall::{exit, spawn_process, spawn_thread};
 use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
 use uefi::table::{Runtime, SystemTable};
@@ -274,19 +275,31 @@ fn after_boot() {
     log!("Enumnerating PCI...");
 
     enumerate_pci(acpi_tables);
+    spawn_thread(|| kernel::pci::poll_interrupts());
 
     spawn_thread(ethernet_task);
 
-    FSDRIVES.lock().identify();
+    println!(
+        "{:?}",
+        lookup_ip(kernel::net::ethernet::IPAddr::V4(192, 168, 1, 1))
+    );
 
-    // spawn_thread(|| {
-    //     for i in 0.. {
-    //         println!("Uptime: {i}s");
-    //         sleep(1000);
-    //     }
-    // });
-    // ! IMPORTANT: This must be a new process
-    spawn_process(load_terminal, "", false);
+    spawn_thread(|| FSDRIVES.lock().identify());
+
+    spawn_thread(|| {
+        send_and_get_response_sync(
+            SID(1),
+            kernel_userspace::service::MessageType::Request,
+            0,
+            1,
+            SpawnProcess {
+                elf: TERMINAL_ELF,
+                args: &[],
+            },
+            0,
+        );
+    });
+
     exit();
 }
 

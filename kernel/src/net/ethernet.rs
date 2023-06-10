@@ -14,7 +14,7 @@ use x86_64::instructions::interrupts::without_interrupts;
 use crate::{
     driver::net::{EthernetDriver, SendError},
     net::arp::{ARP, ARP_TABLE},
-    syscall::sleep,
+    syscall::syssleep,
 };
 
 use super::arp::ARPEth;
@@ -179,7 +179,7 @@ pub fn lookup_ip(ip: IPAddr) -> Option<u64> {
             return Some(mac);
         };
         ETHERNET.lock().send_arp(ip.clone());
-        sleep(1000)
+        syssleep(1000)
     }
     None
 }

@@ -1,3 +1,5 @@
+use core::sync::atomic::AtomicBool;
+
 use crate::{
     acpi::FioxaAcpiHandler,
     driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::PCNET},
@@ -8,6 +10,7 @@ use crate::{
 };
 
 use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
+use kernel_userspace::syscall::yield_now;
 use spin::Mutex;
 use x86_64::structures::idt::InterruptStackFrame;
 
@@ -20,18 +23,28 @@ pub type PCIDriver = Arc<Mutex<dyn Driver + Send>>;
 
 lazy_static::lazy_static! {
     pub static ref PCI_INTERRUPT_DEVICES: Mutex<Vec<PCIDriver>> = Mutex::new(Vec::new());
+    static ref INTERRUPTS_WAITING: AtomicBool = AtomicBool::new(false);
 }
 
 interrupt_handler!(interrupt => interrupt_handler);
 
 // TODO: Change functionality depeding on interrupt number
 pub fn interrupt(_: InterruptStackFrame) {
-    // println!("PCI int");
-    // For each device check if it had the interrupt
-    let mut d = PCI_INTERRUPT_DEVICES.lock();
-    for device in d.iter_mut() {
-        let mut d = device.lock();
-        d.interrupt_handler();
+    INTERRUPTS_WAITING.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn poll_interrupts() {
+    loop {
+        if INTERRUPTS_WAITING.swap(false, core::sync::atomic::Ordering::Acquire) {
+            // For each device check if it had the interrupt
+            let mut d = PCI_INTERRUPT_DEVICES.lock();
+            for device in d.iter_mut() {
+                let mut d = device.lock();
+                d.interrupt_handler();
+            }
+        } else {
+            yield_now()
+        }
     }
 }
 

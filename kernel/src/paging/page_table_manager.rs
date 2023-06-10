@@ -6,9 +6,7 @@ pub mod lvl4;
 use core::marker::PhantomData;
 
 use super::{
-    get_uefi_active_mapper,
-    page_allocator::{free_page, request_page},
-    page_directory::PageDirectoryEntry,
+    get_uefi_active_mapper, page_allocator::request_page, page_directory::PageDirectoryEntry,
     virt_addr_for_phys, MemoryLoc,
 };
 

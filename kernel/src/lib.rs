@@ -22,6 +22,7 @@ pub mod acpi;
 pub mod allocator;
 pub mod assembly;
 pub mod boot_aps;
+pub mod bootfs;
 pub mod cpu_localstorage;
 pub mod driver;
 pub mod elf;
@@ -39,7 +40,6 @@ pub mod ps2;
 pub mod scheduling;
 pub mod service;
 pub mod syscall;
-pub mod terminal;
 pub mod time;
 pub mod uefi;
 

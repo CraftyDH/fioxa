@@ -40,8 +40,9 @@ pub fn read_partitions(drive: Arc<Mutex<dyn DiskDevice>>) {
         "MBR Magic number not valid, was given: {:?}",
         { mbr.magic_number }
     );
+
     for part in &mbr.partitions {
-        if part.start_lba > 0 {
+        if part.start_lba > 0 || part.bootable > 0 {
             print!(
                 "Partition id {}: start:{} size:{}mb",
                 part.partition_id,
