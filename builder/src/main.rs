@@ -55,19 +55,26 @@ fn main() -> Result<()> {
 fn qemu() -> Result<()> {
     let mut qemu_args = vec![
         // GDB server
-        "-s".to_string(),
-        "-S".to_string(), // Args
-        "-machine".to_string(),
-        "q35".to_string(), // "-no-shutdown",
-        // "-no-reboot",
-        "-cpu".to_string(),
-        "qemu64".to_string(),
-        "-smp".to_string(), // "cores=12",
-        "cores=4".to_string(),
-        "-m".to_string(),
-        "512M".to_string(),
-        "-serial".to_string(),
-        "stdio".to_string(),
+        "-s".into(),
+        "-S".into(),
+        // Args
+        "-machine".into(),
+        "q35".into(),
+        "-cpu".into(),
+        "qemu64".into(),
+        "-smp".into(),
+        "cores=4".into(),
+        "-m".into(),
+        "512M".into(),
+        "-serial".into(),
+        "stdio".into(),
+        "-netdev".into(),
+        "user,id=mynet0".into(),
+        "-device".into(),
+        "pcnet,netdev=mynet0,mac=00:11:22:33:44:55".into(),
+        // Log network trafic
+        "-object".into(),
+        "filter-dump,id=id,netdev=mynet0,file=fioxa.pcap".into(),
     ];
 
     if has_kvm() {

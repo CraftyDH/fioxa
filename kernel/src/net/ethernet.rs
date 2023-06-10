@@ -131,7 +131,8 @@ impl Ethernet {
         let mac_addr = driver.lock().read_mac_addr();
         self.devices.push(EthernetDevice {
             driver,
-            ip_addr: IPAddr::V4(192, 168, 1, 100),
+            // ip_addr: IPAddr::V4(192, 168, 1, 100),
+            ip_addr: IPAddr::V4(10, 0, 2, 15),
             mac_addr,
             subnet: 0xFF0000,
         })

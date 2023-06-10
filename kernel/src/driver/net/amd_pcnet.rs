@@ -255,11 +255,16 @@ impl Driver for PCNET<'_> {
             println!("AMD am79c973 MEMORY ERROR")
         }
         if tmp & 0x400 > 0 {
-            // println!("AMD am79c973 DATA RECEIVED");
+            println!("AMD am79c973 DATA RECEIVED");
+            self.receive();
+        } else {
+            // TODO: QEMU For some reason doesn't assert the bitflags in csr 0 to saw what caused the interrupts
+            // At least it sends a PCI interrupt so just check the buffers whenever there is an interrupt.
+            println!("AMD am79c973 Checking receive buffers.");
             self.receive();
         }
         if tmp & 0x200 > 0 {
-            // println!("AMD am79c973 DATA SENT")
+            println!("AMD am79c973 DATA SENT")
         }
         if tmp & 0x100 > 0 {
             println!("AMD am79c973 INIT DONE")

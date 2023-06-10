@@ -279,12 +279,16 @@ fn after_boot() {
 
     spawn_thread(ethernet_task);
 
-    println!(
-        "{:?}",
-        lookup_ip(kernel::net::ethernet::IPAddr::V4(192, 168, 1, 1))
-    );
-
     spawn_thread(|| FSDRIVES.lock().identify());
+
+    spawn_thread(|| {
+        for i in 0..5 {
+            println!(
+                "10.0.2.{i} = {:#X?}",
+                lookup_ip(kernel::net::ethernet::IPAddr::V4(10, 0, 2, i))
+            );
+        }
+    });
 
     spawn_thread(|| {
         send_and_get_response_sync(
