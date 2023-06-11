@@ -3,9 +3,16 @@
 #![feature(error_in_core)]
 
 use kernel_userspace::{
-    fs::{add_path, read_file_sector},
+    fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
+    ids::ServiceID,
     proc::PID,
-    syscall::{exit, read_args},
+    service::{
+        generate_tracking_number, get_public_service_id, ServiceMessage, ServiceMessageType,
+    },
+    syscall::{
+        exit, get_pid, send_and_wait_response_service_message, service_subscribe,
+        wait_receive_service_message, CURRENT_PID,
+    },
 };
 use terminal::script::execute;
 
@@ -20,31 +27,14 @@ fn panic(i: &core::panic::PanicInfo) -> ! {
     exit()
 }
 
-use core::mem::transmute;
-
-use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::string::{String, ToString};
 use input::keyboard::{
     virtual_code::{Modifier, VirtualKeyCode},
     KeyboardEvent,
 };
 
-use kernel_userspace::{
-    fs::{
-        get_disks, read_full_file, stat_file, ReadResponse, StatResponse, FS_READ_FULL_FILE,
-        FS_STAT,
-    },
-    service::{
-        generate_tracking_number, get_public_service_id, get_service_messages_sync,
-        send_and_get_response_sync, SpawnProcess, SID,
-    },
-    syscall::{service_subscribe, yield_now},
-};
-
 pub struct KBInputDecoder {
-    service: SID,
+    service: ServiceID,
     lshift: bool,
     rshift: bool,
     caps_lock: bool,
@@ -52,7 +42,7 @@ pub struct KBInputDecoder {
 }
 
 impl KBInputDecoder {
-    pub fn new(service: SID) -> Self {
+    pub fn new(service: ServiceID) -> Self {
         Self {
             service,
             lshift: false,
@@ -67,38 +57,39 @@ impl Iterator for KBInputDecoder {
     type Item = char;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // let stream = self.stream.upgrade()?;
-
         loop {
-            let msg = get_service_messages_sync(self.service);
-            // let scan_code: &KeyboardEvent =
-            //     unsafe { &*(&st_message.data as *const [u8] as *const KeyboardEvent) };
+            let msg = wait_receive_service_message(self.service);
 
-            let scan_code = msg.get_data_as::<KeyboardEvent>().unwrap();
+            let message = msg.get_message().unwrap();
 
-            match scan_code {
-                KeyboardEvent::Up(VirtualKeyCode::Modifier(key)) => match key {
-                    Modifier::LeftShift => self.lshift = false,
-                    Modifier::RightShift => self.rshift = false,
-                    _ => {}
+            match message.message {
+                ServiceMessageType::Input(
+                    kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code),
+                ) => match scan_code {
+                    KeyboardEvent::Up(VirtualKeyCode::Modifier(key)) => match key {
+                        Modifier::LeftShift => self.lshift = false,
+                        Modifier::RightShift => self.rshift = false,
+                        _ => {}
+                    },
+                    KeyboardEvent::Up(_) => {}
+                    KeyboardEvent::Down(VirtualKeyCode::Modifier(key)) => match key {
+                        Modifier::LeftShift => self.lshift = true,
+                        Modifier::RightShift => self.rshift = true,
+                        Modifier::CapsLock => self.caps_lock = !self.caps_lock,
+                        Modifier::NumLock => self.num_lock = !self.num_lock,
+                        _ => {}
+                    },
+                    KeyboardEvent::Down(letter) => {
+                        return Some(input::keyboard::us_keyboard::USKeymap::get_unicode(
+                            letter.clone(),
+                            self.lshift,
+                            self.rshift,
+                            self.caps_lock,
+                            self.num_lock,
+                        ));
+                    }
                 },
-                KeyboardEvent::Up(_) => {}
-                KeyboardEvent::Down(VirtualKeyCode::Modifier(key)) => match key {
-                    Modifier::LeftShift => self.lshift = true,
-                    Modifier::RightShift => self.rshift = true,
-                    Modifier::CapsLock => self.caps_lock = !self.caps_lock,
-                    Modifier::NumLock => self.num_lock = !self.num_lock,
-                    _ => {}
-                },
-                KeyboardEvent::Down(letter) => {
-                    return Some(input::keyboard::us_keyboard::USKeymap::get_unicode(
-                        letter.clone(),
-                        self.lshift,
-                        self.rshift,
-                        self.caps_lock,
-                        self.num_lock,
-                    ));
-                }
+                _ => todo!(),
             }
         }
     }
@@ -111,6 +102,7 @@ pub extern "C" fn main() {
 
     let fs_sid = get_public_service_id("FS").unwrap();
     let keyboard_sid = get_public_service_id("INPUT:KB").unwrap();
+    let elf_loader_sid = get_public_service_id("ELF_LOADER").unwrap();
 
     service_subscribe(keyboard_sid);
 
@@ -145,6 +137,7 @@ pub extern "C" fn main() {
             "pwd" => println!("{}", cwd.to_string()),
             "echo" => {
                 print!("ECHO!");
+                unsafe { core::arch::asm!("cli") }
             }
             "disk" => {
                 let c = rest.trim();
@@ -164,53 +157,46 @@ pub extern "C" fn main() {
             "ls" => {
                 let path = add_path(&cwd, rest);
 
-                let file = stat_file(fs_sid, partiton_id as usize, path.as_str());
+                let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str());
 
-                if file.get_message_header().data_type == FS_STAT {
-                    let stat: StatResponse = file.get_data_as().unwrap();
-
-                    match stat {
-                        StatResponse::File(_) => println!("This is a file"),
-                        StatResponse::Folder(c) => {
-                            for child in c.children {
-                                println!("{child}")
-                            }
+                match stat {
+                    StatResponse::File(_) => println!("This is a file"),
+                    StatResponse::Folder(c) => {
+                        for child in c.children {
+                            println!("{child}")
                         }
-                    };
-                } else {
-                    println!("Invalid path")
-                }
+                    }
+                    StatResponse::NotFound => println!("Invalid Path"),
+                };
             }
             "cd" => cwd = add_path(&cwd, rest),
             "cat" => {
                 for file in rest.split_ascii_whitespace() {
                     let path = add_path(&cwd, file);
 
-                    let file = stat_file(fs_sid, partiton_id as usize, path.as_str());
+                    let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str());
 
-                    if file.get_message_header().data_type == FS_STAT {
-                        let stat: StatResponse = file.get_data_as().unwrap();
-
-                        let file = match stat {
-                            StatResponse::File(f) => f,
-                            StatResponse::Folder(_) => {
-                                println!("Not a file");
-                                continue;
-                            }
-                        };
-
-                        for i in 0..file.file_size / 512 {
-                            let sect = read_file_sector(
-                                fs_sid,
-                                partiton_id as usize,
-                                file.node_id,
-                                i as u32,
-                            );
-                            let d = sect.get_data_as::<ReadResponse>().unwrap().data;
-                            print!("{}", String::from_utf8_lossy(d))
+                    let file = match stat {
+                        StatResponse::File(f) => f,
+                        StatResponse::Folder(_) => {
+                            println!("Not a file");
+                            continue;
                         }
-                    } else {
-                        println!("Error finding file")
+                        StatResponse::NotFound => {
+                            println!("File not found");
+                            continue;
+                        }
+                    };
+
+                    for i in 0..file.file_size / 512 {
+                        let sect =
+                            read_file_sector(fs_sid, partiton_id as usize, file.node_id, i as u32);
+                        if let Some(data) = sect {
+                            print!("{}", String::from_utf8_lossy(data.get_data()))
+                        } else {
+                            print!("Error reading");
+                            break;
+                        }
                     }
                 }
             }
@@ -219,49 +205,40 @@ pub extern "C" fn main() {
 
                 let path = add_path(&cwd, prog);
 
-                let file = stat_file(fs_sid, partiton_id as usize, path.as_str());
+                let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str());
 
-                if file.get_message_header().data_type == FS_STAT {
-                    let stat: StatResponse = file.get_data_as().unwrap();
-
-                    let file = match stat {
-                        StatResponse::File(f) => f,
-                        StatResponse::Folder(_) => {
-                            println!("Not a file");
-                            continue;
-                        }
-                    };
-
-                    let contents = read_full_file(fs_sid, partiton_id as usize, file.node_id);
-
-                    if contents.get_message_header().data_type != FS_READ_FULL_FILE {
-                        println!("Error reading file");
+                let file = match stat {
+                    StatResponse::File(f) => f,
+                    StatResponse::Folder(_) => {
+                        println!("Not a file");
                         continue;
                     }
+                    StatResponse::NotFound => {
+                        println!("File not found");
+                        continue;
+                    }
+                };
+                println!("READING...");
+                let contents = read_full_file(fs_sid, partiton_id as usize, file.node_id).unwrap();
 
-                    let contents_buffer = contents.get_data_as::<ReadResponse>().unwrap();
+                println!("SPAWNING...");
 
-                    let spawn = send_and_get_response_sync(
-                        SID(1),
-                        kernel_userspace::service::MessageType::Request,
-                        generate_tracking_number(),
-                        1,
-                        SpawnProcess {
-                            elf: contents_buffer.data,
-                            args: args.as_bytes(),
-                        },
-                        0,
-                    );
+                let resp = send_and_wait_response_service_message(&ServiceMessage {
+                    service_id: elf_loader_sid,
+                    sender_pid: *CURRENT_PID,
+                    tracking_number: generate_tracking_number(),
+                    destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
+                    message: kernel_userspace::service::ServiceMessageType::ElfLoader(
+                        contents.get_data(),
+                        args.as_bytes(),
+                    ),
+                })
+                .unwrap();
 
-                    let pid = PID(spawn.get_data_as::<u64>().unwrap());
-
-                    // let pid = load_elf(&contents_buffer.data, args.as_bytes());
-                    // while TASKMANAGER.lock().processes.contains_key(&pid) {
-                    //     yield_now();
-                    // }
-                } else {
-                    println!("Error finding file")
-                }
+                // let pid = load_elf(&contents_buffer.data, args.as_bytes());
+                // while TASKMANAGER.lock().processes.contains_key(&pid) {
+                //     yield_now();
+                // }
             }
             // "uptime" => {
             //     let mut uptime = time::uptime() / 1000;

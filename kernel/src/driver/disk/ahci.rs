@@ -3,6 +3,7 @@ pub mod port;
 
 use alloc::{sync::Arc, vec::Vec};
 use bit_field::BitField;
+
 use modular_bitfield::{
     bitfield,
     specifiers::{B128, B22, B4, B5, B9},

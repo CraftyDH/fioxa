@@ -4,6 +4,7 @@ use alloc::collections::BTreeMap;
 
 use conquer_once::noblock::OnceCell;
 use crossbeam_queue::ArrayQueue;
+use kernel_userspace::ids::{ProcessID, ThreadID};
 use spin::Mutex;
 use x86_64::structures::idt::InterruptStackFrame;
 
@@ -20,14 +21,14 @@ use crate::{
     },
 };
 
-use super::process::{Process, Thread, PID, TID};
+use super::process::{Process, Thread};
 
 lazy_static::lazy_static! {
     // pub static ref TASKMANAGER: Mutex<TaskManager> = Mutex::new(TaskManager::uninit());
-    pub static ref PROCESSES: Mutex<BTreeMap<PID, Process>> = Mutex::new(BTreeMap::new());
-    pub static ref TASK_QUEUE: ArrayQueue<(PID, TID)> = ArrayQueue::new(1000);
+    pub static ref PROCESSES: Mutex<BTreeMap<ProcessID, Process>> = Mutex::new(BTreeMap::new());
+    pub static ref TASK_QUEUE: ArrayQueue<(ProcessID, ThreadID)> = ArrayQueue::new(1000);
     // Once task queue is finished reload used_task_queue
-    pub static ref USED_TASK_QUEUE: ArrayQueue<(PID, TID)> = ArrayQueue::new(1000);
+    pub static ref USED_TASK_QUEUE: ArrayQueue<(ProcessID, ThreadID)> = ArrayQueue::new(1000);
 }
 
 pub static CORE_COUNT: OnceCell<u8> = OnceCell::uninit();
@@ -56,20 +57,20 @@ pub fn every_n_handler() {
     }
 }
 
-fn get_next_task(core_id: usize) -> (PID, TID) {
+fn get_next_task(core_id: usize) -> (ProcessID, ThreadID) {
     // Get a new tasks if available
     if let Some(task) = TASK_QUEUE.pop() {
         return task;
     }
 
     // If no tasks send into core mgmt
-    (0.into(), (core_id as u64).into())
+    (ProcessID(0), ThreadID(core_id as u64))
 }
 
 fn get_thread<'a>(
-    pid: PID,
-    tid: TID,
-    processes: &'a BTreeMap<PID, Process>,
+    pid: ProcessID,
+    tid: ThreadID,
+    processes: &'a BTreeMap<ProcessID, Process>,
 ) -> Option<(&'a Process, &'a Thread)> {
     let process = processes.get(&pid)?;
     let thread = process.threads.get(&tid)?;
@@ -77,9 +78,9 @@ fn get_thread<'a>(
 }
 
 fn get_thread_mut<'a>(
-    pid: PID,
-    tid: TID,
-    processes: &'a mut BTreeMap<PID, Process>,
+    pid: ProcessID,
+    tid: ThreadID,
+    processes: &'a mut BTreeMap<ProcessID, Process>,
 ) -> Option<&'a mut Thread> {
     let process = processes.get_mut(&pid)?;
     let thread = process.threads.get_mut(&tid)?;
@@ -93,7 +94,7 @@ pub unsafe fn init(mapper: PageTable<'static, PageLvl4>, core_cnt: u8) {
         mapper,
         &[],
     );
-    assert!(p.pid == 0.into());
+    assert!(p.pid == ProcessID(0));
 
     for _ in 0..core_cnt {
         unsafe { p.new_overide_thread() };
@@ -110,7 +111,7 @@ fn save_current_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers)
         thread.save(stack_frame, reg);
     }
     // Don't save nop task
-    if pid != 0.into() {
+    if pid != ProcessID(0) {
         USED_TASK_QUEUE.push((pid, tid)).unwrap()
     }
     Some(())
@@ -177,7 +178,7 @@ pub fn spawn_process(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers
     PROCESSES.lock().insert(pid, process);
     TASK_QUEUE.push((pid, thread)).unwrap();
     // Return process id as successful result;
-    reg.rax = pid.into();
+    reg.rax = pid.0 as usize;
 }
 
 pub fn spawn_thread(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
@@ -189,7 +190,7 @@ pub fn spawn_thread(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers)
     let thread = process.new_thread(reg.r8);
     TASK_QUEUE.push((pid, thread)).unwrap();
     // Return task id as successful result;
-    reg.rax = thread.into();
+    reg.rax = thread.0 as usize;
 }
 
 pub fn yield_now(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {

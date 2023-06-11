@@ -1,10 +1,13 @@
-use core::mem::MaybeUninit;
-
-use alloc::{boxed::Box, string::String, vec};
+use alloc::{
+    boxed::Box,
+    string::String,
+    vec::{self, Vec},
+};
 
 use crate::{
+    ids::{ProcessID, ServiceID},
     proc::{PID, TID},
-    service::{ReceiveMessageHeader, SendMessageHeader, SID},
+    service::{SendError, ServiceMessage, ServiceMessageContainer, ServiceTrackingNumber},
 };
 
 pub const SYSCALL_NUMBER: usize = 0x80;
@@ -27,10 +30,18 @@ pub const SERVICE: usize = 7;
 pub const SERVICE_CREATE: usize = 0;
 pub const SERVICE_SUBSCRIBE: usize = 1;
 pub const SERVICE_PUSH: usize = 2;
-pub const SERVICE_POP: usize = 3;
-pub const SERVICE_GETDATA: usize = 4;
+pub const SERVICE_FETCH: usize = 3;
+pub const SERVICE_GET: usize = 4;
 
 pub const READ_ARGS: usize = 8;
+
+pub const GET_PID: usize = 9;
+
+lazy_static::lazy_static! {
+    // ! BEWARE, DO NOT USE THIS FROM THE KERNEL
+    // As it is static is won't give the correct answer
+    pub static ref CURRENT_PID: ProcessID = get_pid();
+}
 
 unsafe fn syscall(syscall: usize) -> usize {
     let result: usize;
@@ -115,64 +126,85 @@ pub fn mmap_page(vmem: usize) {
     unsafe { syscall1(MMAP_PAGE, vmem) };
 }
 
-pub fn service_create() -> SID {
+pub fn send_service_message(msg: &ServiceMessage) -> Result<(), SendError> {
+    let data = postcard::to_allocvec(msg).unwrap();
+
+    let error = unsafe { syscall3(SERVICE, SERVICE_PUSH, data.as_ptr() as usize, data.len()) };
+
+    SendError::try_decode(error)?;
+
+    Ok(())
+}
+
+pub fn poll_receive_service_message(id: ServiceID) -> Option<ServiceMessageContainer> {
+    poll_receive_service_message_tracking(id, ServiceTrackingNumber(u64::MAX))
+}
+
+pub fn poll_receive_service_message_tracking(
+    id: ServiceID,
+    tracking_number: ServiceTrackingNumber,
+) -> Option<ServiceMessageContainer> {
+    unsafe {
+        let length = syscall3(
+            SERVICE,
+            SERVICE_FETCH,
+            id.0 as usize,
+            tracking_number.0 as usize,
+        );
+
+        if length == 0 {
+            return None;
+        }
+
+        let mut buf: Vec<u8> = Vec::with_capacity(length);
+
+        let result = syscall3(SERVICE, SERVICE_GET, buf.as_mut_ptr() as usize, length);
+
+        if result != 0 {
+            panic!("Error getting message")
+        }
+
+        buf.set_len(length);
+
+        Some(ServiceMessageContainer { buffer: buf })
+    }
+}
+
+pub fn wait_receive_service_message(id: ServiceID) -> ServiceMessageContainer {
+    wait_receive_service_message_tracking(id, ServiceTrackingNumber(u64::MAX))
+}
+
+pub fn wait_receive_service_message_tracking(
+    id: ServiceID,
+    tracking_number: ServiceTrackingNumber,
+) -> ServiceMessageContainer {
+    loop {
+        if let Some(msg) = poll_receive_service_message_tracking(id, tracking_number) {
+            return msg;
+        }
+        yield_now()
+    }
+}
+
+pub fn send_and_wait_response_service_message(
+    msg: &ServiceMessage,
+) -> Result<ServiceMessageContainer, SendError> {
+    let id = msg.service_id;
+    let tracking = msg.tracking_number;
+    send_service_message(msg)?;
+    Ok(wait_receive_service_message_tracking(id, tracking))
+}
+
+pub fn service_create() -> ServiceID {
     unsafe {
         let sid = syscall1(SERVICE, SERVICE_CREATE);
-        SID(sid.try_into().unwrap())
+        ServiceID(sid.try_into().unwrap())
     }
 }
 
-pub fn service_subscribe(id: SID) {
+pub fn service_subscribe(id: ServiceID) {
     unsafe {
         syscall2(SERVICE, SERVICE_SUBSCRIBE, id.0 as usize);
-    }
-}
-
-pub fn poll_service(id: SID, tracking_number: u64) -> Option<ReceiveMessageHeader> {
-    unsafe {
-        let mut msg: MaybeUninit<ReceiveMessageHeader> = MaybeUninit::uninit();
-        let result = syscall4(
-            SERVICE,
-            SERVICE_POP,
-            msg.as_mut_ptr() as usize,
-            id.0 as usize,
-            tracking_number as usize,
-        );
-        if result == 0 {
-            return Some(msg.assume_init());
-        } else {
-            return None;
-        }
-    }
-}
-
-pub fn service_receive_msg() -> Option<ReceiveMessageHeader> {
-    poll_service(SID(u64::MAX), u64::MAX)
-}
-
-pub fn service_get_data(loc: &mut [u8]) -> Option<()> {
-    unsafe {
-        let result = syscall2(SERVICE, SERVICE_GETDATA, loc.as_ptr() as usize);
-        if result == 0 {
-            Some(())
-        } else {
-            None
-        }
-    }
-}
-
-pub fn service_push_msg(msg: SendMessageHeader) -> Option<()> {
-    unsafe {
-        let result = syscall2(
-            SERVICE,
-            SERVICE_PUSH,
-            &msg as *const SendMessageHeader as usize,
-        );
-        if result == 0 {
-            return Some(());
-        } else {
-            return None;
-        }
     }
 }
 
@@ -207,5 +239,12 @@ pub fn exit() -> ! {
         loop {
             core::arch::asm!("hlt")
         }
+    }
+}
+
+pub fn get_pid() -> ProcessID {
+    unsafe {
+        let pid = syscall(GET_PID);
+        ProcessID(pid as u64)
     }
 }

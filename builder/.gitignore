@@ -3,3 +3,5 @@ ovmf/
 
 # The build directory
 fioxa/
+
+*.pcap

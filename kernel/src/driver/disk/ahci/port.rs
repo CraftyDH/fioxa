@@ -1,7 +1,7 @@
 use core::mem::size_of;
 
 use alloc::{slice, vec::Vec};
-use kernel_userspace::syscall::yield_now;
+use kernel_userspace::{disk::ata::ATADiskIdentify, syscall::yield_now};
 
 use crate::{
     driver::disk::{
@@ -9,7 +9,6 @@ use crate::{
             fis::{FisRegH2D, FISTYPE},
             HBACommandHeader, HBACommandTable,
         },
-        ata::ATADiskIdentify,
         DiskDevice,
     },
     paging::{

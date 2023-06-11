@@ -6,7 +6,11 @@ use alloc::{
     sync::Arc,
     vec::Vec,
 };
-use kernel_userspace::syscall::exit;
+use kernel_userspace::{
+    ids::{ProcessID, ServiceID, ThreadID},
+    service::{ServiceMessageContainer, ServiceTrackingNumber},
+    syscall::exit,
+};
 use x86_64::{
     structures::{
         gdt::SegmentSelector,
@@ -26,66 +30,15 @@ use crate::{
         },
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
-    service::KernelMessageHeader,
 };
 
 const STACK_ADDR: u64 = 0x100_000_000_000;
 
 const STACK_SIZE: u64 = 1024 * 12;
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub struct PID(pub u64);
-
-impl PID {
-    pub fn nop() -> Self {
-        PID(0)
-    }
-}
-
-impl Into<u64> for PID {
-    fn into(self) -> u64 {
-        self.0
-    }
-}
-
-impl Into<usize> for PID {
-    fn into(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl From<u64> for PID {
-    fn from(value: u64) -> Self {
-        PID(value)
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
-pub struct TID(u64);
-
-impl PID {
-    pub fn new() -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        Self(NEXT_ID.fetch_add(1, Ordering::Relaxed))
-    }
-}
-
-impl Into<u64> for TID {
-    fn into(self) -> u64 {
-        self.0
-    }
-}
-
-impl Into<usize> for TID {
-    fn into(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl From<u64> for TID {
-    fn from(value: u64) -> Self {
-        TID(value)
-    }
+fn generate_next_process_id() -> ProcessID {
+    static PID: AtomicU64 = AtomicU64::new(0);
+    ProcessID(PID.fetch_add(1, Ordering::Relaxed))
 }
 
 pub enum ProcessPrivilige {
@@ -110,13 +63,13 @@ impl ProcessPrivilige {
 }
 
 pub struct Process {
-    pub pid: PID,
-    pub threads: BTreeMap<TID, Thread>,
+    pub pid: ProcessID,
+    pub threads: BTreeMap<ThreadID, Thread>,
     pub page_mapper: PageTable<'static, PageLvl4>,
     privilege: ProcessPrivilige,
     thread_next_id: u64,
     pub args: Vec<u8>,
-    pub service_msgs: VecDeque<Arc<KernelMessageHeader>>,
+    pub service_msgs: VecDeque<Arc<(ServiceID, ServiceTrackingNumber, ServiceMessageContainer)>>,
     pub owned_pages: Vec<Page<Size4KB>>,
 }
 
@@ -137,7 +90,7 @@ impl Process {
         }
 
         Self {
-            pid: PID::new(),
+            pid: generate_next_process_id(),
             threads: Default::default(),
             page_mapper,
             privilege,
@@ -154,7 +107,7 @@ impl Process {
         args: &[u8],
     ) -> Self {
         Self {
-            pid: PID::new(),
+            pid: generate_next_process_id(),
             threads: Default::default(),
             page_mapper,
             privilege,
@@ -166,8 +119,8 @@ impl Process {
     }
 
     // A in place thread which data will overriden with the real thread on its context switch out.
-    pub unsafe fn new_overide_thread(&mut self) -> TID {
-        let tid = TID(self.thread_next_id);
+    pub unsafe fn new_overide_thread(&mut self) -> ThreadID {
+        let tid = ThreadID(self.thread_next_id);
         self.thread_next_id += 1;
 
         let pushed_register_state = InterruptStackFrameValue {
@@ -191,8 +144,12 @@ impl Process {
         tid
     }
 
-    pub fn new_thread_direct(&mut self, entry_point: *const u64, register_state: Registers) -> TID {
-        let tid = TID(self.thread_next_id);
+    pub fn new_thread_direct(
+        &mut self,
+        entry_point: *const u64,
+        register_state: Registers,
+    ) -> ThreadID {
+        let tid = ThreadID(self.thread_next_id);
         self.thread_next_id += 1;
 
         // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
@@ -230,7 +187,7 @@ impl Process {
         tid
     }
 
-    pub fn new_thread(&mut self, entry_point: usize) -> TID {
+    pub fn new_thread(&mut self, entry_point: usize) -> ThreadID {
         let mut register_state = Registers::default();
         register_state.rdi = entry_point;
 
@@ -248,12 +205,12 @@ impl Drop for Process {
 }
 
 pub struct Thread {
-    pub tid: TID,
+    pub tid: ThreadID,
     pub register_state: Registers,
     // Rest of the data inclusing rip & rsp
     pub pushed_register_state: InterruptStackFrameValue,
     // Used for storing current msg, so that the popdata can get the data
-    pub current_message: Option<Arc<KernelMessageHeader>>,
+    pub current_message: Option<Arc<(ServiceID, ServiceTrackingNumber, ServiceMessageContainer)>>,
 }
 
 impl Thread {

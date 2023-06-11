@@ -3,9 +3,9 @@ use bootloader::gop::GopInfo;
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
 use kernel_userspace::service::{
-    generate_tracking_number, send_and_get_response_sync, send_service_message, MessageType, SID,
+    generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
 };
-use kernel_userspace::syscall::{service_create, spawn_thread};
+use kernel_userspace::syscall::{get_pid, send_service_message, service_create, spawn_thread};
 use lazy_static::lazy_static;
 
 #[derive(Clone, Copy)]
@@ -289,89 +289,36 @@ pub fn _print(args: Arguments) {
     }
 }
 
-pub struct Writers {}
-
-pub static WRITERS: Mutex<Writers> = Mutex::new(Writers {});
-
-lazy_static::lazy_static! {
-    pub static ref STDOUT: SID = {
-        let sid = service_create();
-        PUBLIC_SERVICES.lock().insert("STDOUT", sid);
-        sid
-    };
-}
-
-impl Writers {
-    pub fn write_byte(&mut self, chr: char) {
-        let write = send_and_get_response_sync(
-            *STDOUT,
-            MessageType::Request,
-            generate_tracking_number(),
-            0,
-            chr,
-            0,
-        );
-        assert!(write.get_data_as::<bool>().unwrap())
-    }
-
-    pub fn write_string(&mut self, s: &str) {
-        let write = send_and_get_response_sync(
-            *STDOUT,
-            MessageType::Request,
-            generate_tracking_number(),
-            0,
-            s,
-            0,
-        );
-        assert!(write.get_data_as::<bool>().unwrap())
-    }
-}
-
-impl core::fmt::Write for Writers {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.write_string(s);
-        Ok(())
-    }
-}
-
-#[macro_export]
-macro_rules! printsln {
-    () => (prints!("\n"));
-    ($($arg:tt)*) => (prints!("{}\n", format_args!($($arg)*)));
-}
-
-#[macro_export]
-macro_rules! prints {
-    ($($arg:tt)*) => ($crate::screen::gop::_prints(format_args!($($arg)*)));
-}
-
-pub fn _prints(args: Arguments) {
-    WRITERS.lock().write_fmt(args).unwrap();
-}
-
 pub fn monitor_stdout_task() {
+    let sid = service_create();
+    let pid = get_pid();
+    PUBLIC_SERVICES.lock().insert("STDOUT", sid);
+
     loop {
-        let message = kernel_userspace::service::get_service_messages_sync(*STDOUT);
+        let message = kernel_userspace::syscall::wait_receive_service_message(sid);
 
-        let header = message.get_message_header();
+        let msg = message.get_message().unwrap();
 
-        let mut result = false;
-        if header.data_type == 0 {
-            let write = message
-                .get_data_as::<kernel_userspace::SOUT_WRITE_LINE>()
-                .unwrap();
-            print!("{write}");
-            result = true;
-        }
+        let m = match msg.message {
+            ServiceMessageType::Stdout(str) => {
+                print!("{str}");
+                ServiceMessageType::Ack
+            }
+            ServiceMessageType::StdoutChar(chr) => {
+                print!("{chr}");
+                ServiceMessageType::Ack
+            }
+            _ => ServiceMessageType::UnknownCommand,
+        };
 
-        send_service_message(
-            *STDOUT,
-            kernel_userspace::service::MessageType::Response,
-            header.tracking_number,
-            0,
-            result,
-            header.sender_pid,
-        )
+        send_service_message(&ServiceMessage {
+            service_id: sid,
+            sender_pid: pid,
+            tracking_number: generate_tracking_number(),
+            destination: SendServiceMessageDest::ToProcess(msg.sender_pid),
+            message: m,
+        })
+        .unwrap()
     }
 }
 

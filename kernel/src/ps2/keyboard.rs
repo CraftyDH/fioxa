@@ -2,8 +2,12 @@ use core::sync::atomic::AtomicBool;
 
 use alloc::boxed::Box;
 use kernel_userspace::{
-    service::{send_service_message, SID},
-    syscall::service_create,
+    ids::{ProcessID, ServiceID},
+    input::InputServiceMessage,
+    service::{
+        generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+    },
+    syscall::{get_pid, send_service_message, service_create},
 };
 
 use x86_64::structures::idt::InterruptStackFrame;
@@ -25,8 +29,9 @@ pub fn interrupt_handler(_: InterruptStackFrame) {
 
 pub struct Keyboard {
     command: PS2Command,
-    keyboard_service: SID,
+    keyboard_service: ServiceID,
     decoder: Box<dyn Scancode>,
+    current_pid: ProcessID,
 }
 
 impl Keyboard {
@@ -37,6 +42,7 @@ impl Keyboard {
             command,
             keyboard_service,
             decoder: Box::new(ScancodeSet2::new()),
+            current_pid: get_pid(),
         }
     }
 
@@ -98,14 +104,14 @@ impl Keyboard {
 
             let res = self.decoder.add_byte(scancode);
             if let Some(key) = res {
-                send_service_message(
-                    self.keyboard_service,
-                    kernel_userspace::service::MessageType::Announcement,
-                    0,
-                    0,
-                    key,
-                    0,
-                )
+                send_service_message(&ServiceMessage {
+                    service_id: self.keyboard_service,
+                    sender_pid: self.current_pid,
+                    tracking_number: generate_tracking_number(),
+                    destination: SendServiceMessageDest::ToSubscribers,
+                    message: ServiceMessageType::Input(InputServiceMessage::KeyboardEvent(key)),
+                })
+                .unwrap()
             }
         }
     }

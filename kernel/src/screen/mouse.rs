@@ -1,5 +1,6 @@
 use kernel_userspace::{
-    service::get_public_service_id,
+    input::InputServiceMessage,
+    service::{get_public_service_id, ServiceMessageType},
     syscall::{service_subscribe, yield_now},
 };
 
@@ -43,13 +44,15 @@ pub fn monitor_cursor_task() {
     let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
 
     loop {
-        let message = kernel_userspace::service::get_service_messages_sync(mouse_id);
+        let message = kernel_userspace::syscall::wait_receive_service_message(mouse_id);
 
-        let header = message.get_message_header();
+        let msg = message.get_message().unwrap();
 
-        if header.data_type == 0 {
-            let mouse = message.get_data_as::<MousePacket>().unwrap();
-            print_cursor(&mut mouse_pos, mouse)
+        match msg.message {
+            ServiceMessageType::Input(InputServiceMessage::MouseEvent(packet)) => {
+                print_cursor(&mut mouse_pos, packet)
+            }
+            _ => println!("Mouse got non mouse packet"),
         }
     }
 }

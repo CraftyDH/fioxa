@@ -1,5 +1,11 @@
 use core::cmp::{max, min};
 
+use kernel_userspace::{
+    ids::ProcessID,
+    service::{SendServiceMessageDest, ServiceMessage, ServiceMessageType},
+    syscall::{get_pid, send_service_message, service_create, wait_receive_service_message},
+};
+
 use crate::{
     assembly::registers::Registers,
     paging::{
@@ -8,10 +14,11 @@ use crate::{
         virt_addr_for_phys,
     },
     scheduling::{
-        process::{Process, PID},
+        process::Process,
         taskmanager::{PROCESSES, TASK_QUEUE},
         without_context_switch,
     },
+    service::PUBLIC_SERVICES,
 };
 
 #[repr(C)]
@@ -56,7 +63,11 @@ const EM_X86_64: u16 = 62; // AMD x86-64 architecture
 // For the ELF Program Header https://refspecs.linuxbase.org/elf/gabi4+/ch5.pheader.html
 const PT_LOAD: u32 = 1; // A loadable segment
 
-pub fn load_elf(data: &[u8], args: &[u8]) -> PID {
+pub fn load_elf(data: &[u8], args: &[u8]) -> ProcessID {
+    // TODO: FIX
+    // This is a really bad fix to an aligned start address for the buffer
+    let data = data.to_vec();
+    println!("LOADING...");
     // Transpose the header as an elf header
     let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
@@ -85,6 +96,7 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> PID {
     let mut base = u64::MAX;
     let mut size = u64::MIN;
 
+    println!("LOADING HEADERS...");
     for program_header_ptr in headers.clone() {
         let program_header =
             unsafe { *(data.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr) };
@@ -104,9 +116,10 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> PID {
 
     let mut proc: Process = Process::new(crate::scheduling::process::ProcessPrivilige::USER, args);
     let map = &mut proc.page_mapper;
-
+    println!("ALLOCING MEM...");
     let start = frame_alloc_exec(|c| c.request_cont_pages(pages as usize)).unwrap();
 
+    println!("MAPPING MEM...");
     for page in 0..pages {
         let p = page * 0x1000;
         let page = page_4kb(start + p);
@@ -118,6 +131,7 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> PID {
             .flush();
     }
 
+    println!("COPYING MEM...");
     // Iterate over each header
     for program_header_ptr in headers {
         // Transpose the program header as an elf header
@@ -134,7 +148,7 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> PID {
             }
         }
     }
-
+    println!("STARTING PROC...");
     let tid = proc.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
 
     let pid = proc.pid;
@@ -143,4 +157,33 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> PID {
     });
     TASK_QUEUE.push((pid, tid)).unwrap();
     pid
+}
+
+pub fn elf_new_process_loader() {
+    let sid = service_create();
+    let pid = get_pid();
+    PUBLIC_SERVICES.lock().insert("ELF_LOADER", sid);
+
+    loop {
+        let m = wait_receive_service_message(sid);
+
+        let query = m.get_message().unwrap();
+
+        let resp = match query.message {
+            ServiceMessageType::ElfLoader(elf, args) => {
+                let pid = load_elf(elf, args);
+                ServiceMessageType::ElfLoaderResp(ProcessID(pid.0))
+            }
+            _ => ServiceMessageType::UnknownCommand,
+        };
+
+        send_service_message(&ServiceMessage {
+            service_id: sid,
+            sender_pid: pid,
+            tracking_number: query.tracking_number,
+            destination: SendServiceMessageDest::ToProcess(query.sender_pid),
+            message: resp,
+        })
+        .unwrap();
+    }
 }

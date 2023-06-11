@@ -3,8 +3,12 @@ use core::sync::atomic::AtomicBool;
 use crossbeam_queue::ArrayQueue;
 use input::mouse::MousePacket;
 use kernel_userspace::{
-    service::{send_service_message, SID},
-    syscall::service_create,
+    ids::{ProcessID, ServiceID},
+    input::InputServiceMessage,
+    service::{
+        generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+    },
+    syscall::{get_pid, send_service_message, service_create},
 };
 use lazy_static::lazy_static;
 use x86_64::structures::idt::InterruptStackFrame;
@@ -46,7 +50,8 @@ pub struct Mouse {
     command: PS2Command,
     mouse_type: MouseTypeId,
     packet_state: PS2MousePackets,
-    mouse_service: SID,
+    mouse_service: ServiceID,
+    current_pid: ProcessID,
 }
 
 impl Mouse {
@@ -59,6 +64,7 @@ impl Mouse {
             mouse_type: MouseTypeId::Standard,
             packet_state: PS2MousePackets::None,
             mouse_service,
+            current_pid: get_pid(),
         }
     }
 
@@ -225,13 +231,13 @@ impl Mouse {
             y_mov: y as i8,
         };
 
-        send_service_message(
-            self.mouse_service,
-            kernel_userspace::service::MessageType::Announcement,
-            0,
-            0,
-            packet,
-            0,
-        )
+        send_service_message(&ServiceMessage {
+            service_id: self.mouse_service,
+            sender_pid: self.current_pid,
+            tracking_number: generate_tracking_number(),
+            destination: SendServiceMessageDest::ToSubscribers,
+            message: ServiceMessageType::Input(InputServiceMessage::MouseEvent(packet)),
+        })
+        .unwrap()
     }
 }

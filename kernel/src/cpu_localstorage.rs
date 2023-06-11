@@ -1,5 +1,7 @@
 use core::mem::size_of;
 
+use kernel_userspace::ids::{ProcessID, ThreadID};
+
 use crate::{
     gdt::CPULocalGDT,
     paging::{
@@ -8,15 +10,14 @@ use crate::{
         page_table_manager::{page_4kb, Mapper},
         virt_addr_for_phys, MemoryLoc,
     },
-    scheduling::process::{PID, TID},
 };
 
 #[repr(C, packed)]
 pub struct CPULocalStorage {
     core_id: u8,
     stack_top: u64,
-    task_mgr_current_pid: PID,
-    task_mgr_current_tid: TID,
+    task_mgr_current_pid: ProcessID,
+    task_mgr_current_tid: ThreadID,
     task_mgr_ticks_left: u32,
     // If not set the task should stay scheduled
     task_mgr_schedule: u32,
@@ -43,8 +44,8 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
 
     let ls = unsafe { &mut *(vaddr_base as *mut CPULocalStorage) };
     ls.core_id = core_id;
-    ls.task_mgr_current_pid = 0.into();
-    ls.task_mgr_current_tid = (core_id as u64).into();
+    ls.task_mgr_current_pid = ProcessID(0);
+    ls.task_mgr_current_tid = ThreadID(core_id as u64);
     ls.task_mgr_ticks_left = 0;
     ls.task_mgr_schedule = 1;
 
@@ -96,26 +97,24 @@ pub fn get_current_cpu_id() -> u8 {
     cid as u8
 }
 
-pub fn get_task_mgr_current_pid() -> PID {
+pub fn get_task_mgr_current_pid() -> ProcessID {
     let pid: u64;
     unsafe { core::arch::asm!("mov {}, gs:9", lateout(reg) pid) };
-    pid.into()
+    ProcessID(pid)
 }
 
-pub fn set_task_mgr_current_pid(pid: PID) {
-    let pid: u64 = pid.into();
-    unsafe { core::arch::asm!("mov gs:9, {}", in(reg) pid) };
+pub fn set_task_mgr_current_pid(pid: ProcessID) {
+    unsafe { core::arch::asm!("mov gs:9, {}", in(reg) pid.0) };
 }
 
-pub fn get_task_mgr_current_tid() -> TID {
-    let pid: u64;
-    unsafe { core::arch::asm!("mov {}, gs:17", lateout(reg) pid) };
-    pid.into()
+pub fn get_task_mgr_current_tid() -> ThreadID {
+    let tid: u64;
+    unsafe { core::arch::asm!("mov {}, gs:17", lateout(reg) tid) };
+    ThreadID(tid)
 }
 
-pub fn set_task_mgr_current_tid(tid: TID) {
-    let tid: u64 = tid.into();
-    unsafe { core::arch::asm!("mov gs:17, {}", in(reg) tid) };
+pub fn set_task_mgr_current_tid(tid: ThreadID) {
+    unsafe { core::arch::asm!("mov gs:17, {}", in(reg) tid.0) };
 }
 
 pub fn get_task_mgr_current_ticks() -> u8 {

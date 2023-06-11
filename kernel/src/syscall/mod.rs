@@ -1,7 +1,8 @@
 use core::ptr::slice_from_raw_parts_mut;
 
 use kernel_userspace::{
-    service::{ReceiveMessageHeader, SendMessageHeader, SID},
+    ids::ServiceID,
+    service::{ServiceMessageContainer, ServiceTrackingNumber},
     syscall::{self, yield_now, SYSCALL_NUMBER},
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
@@ -48,6 +49,7 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
         }
         SERVICE => service_handler(regs),
         READ_ARGS => read_args_handler(regs),
+        GET_PID => regs.rax = get_task_mgr_current_pid().0 as usize,
         _ => println!("Unknown syscall class: {}", regs.rax),
     }
 
@@ -83,41 +85,46 @@ fn service_handler(regs: &mut Registers) {
         }
         syscall::SERVICE_SUBSCRIBE => {
             let pid = get_task_mgr_current_pid();
-            service::subscribe(pid, SID(regs.r9 as u64));
-        }
-        syscall::SERVICE_POP => {
-            let pid = get_task_mgr_current_pid();
-            let tid = get_task_mgr_current_tid();
-
-            match service::pop(pid, tid, SID(regs.r10 as u64), regs.r11 as u64) {
-                Some(msg) => {
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            &msg as *const ReceiveMessageHeader,
-                            regs.r9 as *mut ReceiveMessageHeader,
-                            1,
-                        )
-                    }
-                    regs.rax = 0
-                }
-                None => regs.rax = 1,
-            }
-        }
-        syscall::SERVICE_GETDATA => {
-            let pid = get_task_mgr_current_pid();
-            let tid = get_task_mgr_current_tid();
-
-            match service::get_data(pid, tid, regs.r9 as *mut u8) {
-                Some(_) => regs.rax = 0,
-                None => regs.rax = 1,
-            }
+            service::subscribe(pid, ServiceID(regs.r9 as u64));
         }
         syscall::SERVICE_PUSH => {
             let pid = get_task_mgr_current_pid();
 
-            let message: &SendMessageHeader = unsafe { &*(regs.r9 as *const SendMessageHeader) };
+            let buf = unsafe { core::slice::from_raw_parts(regs.r9 as *const u8, regs.r10) };
+            let message = ServiceMessageContainer {
+                buffer: buf.to_vec(),
+            };
 
             match service::push(pid, message) {
+                Ok(_) => {
+                    regs.rax = 0;
+                }
+                Err(e) => {
+                    regs.rax = e.to_usize();
+                }
+            }
+        }
+
+        syscall::SERVICE_FETCH => {
+            let pid = get_task_mgr_current_pid();
+            let tid = get_task_mgr_current_tid();
+
+            match service::find_message(
+                pid,
+                tid,
+                ServiceID(regs.r9 as u64),
+                ServiceTrackingNumber(regs.r10 as u64),
+            ) {
+                Some(len) => regs.rax = len,
+                None => regs.rax = 0,
+            }
+        }
+        syscall::SERVICE_GET => {
+            let pid = get_task_mgr_current_pid();
+            let tid = get_task_mgr_current_tid();
+
+            let buf = unsafe { core::slice::from_raw_parts_mut(regs.r9 as *mut u8, regs.r10) };
+            match service::get_message(pid, tid, buf) {
                 Some(_) => regs.rax = 0,
                 None => regs.rax = 1,
             }

@@ -1,10 +1,8 @@
 pub mod ahci;
-pub mod ata;
 
 use alloc::{sync::Arc, vec::Vec};
+use kernel_userspace::disk::ata::ATADiskIdentify;
 use spin::Mutex;
-
-use self::ata::ATADiskIdentify;
 
 use super::driver::Driver;
 
