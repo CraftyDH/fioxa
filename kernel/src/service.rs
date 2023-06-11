@@ -1,125 +1,94 @@
 use core::sync::atomic::AtomicU64;
 
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use kernel_userspace::service::{
-    get_service_messages_sync, send_service_message, MessageType, ReceiveMessageHeader,
-    SendMessageHeader, ServiceRequestServiceID, ServiceRequestServiceIDResponse, SpawnProcessVec,
-    SID,
+use kernel_userspace::{
+    ids::{ProcessID, ServiceID, ThreadID},
+    service::{
+        PublicServiceMessage, SendError, SendServiceMessageDest, ServiceMessage,
+        ServiceMessageContainer, ServiceMessageType, ServiceTrackingNumber,
+    },
+    syscall::{send_service_message, wait_receive_service_message},
 };
 use spin::Mutex;
 
-use crate::{
-    cpu_localstorage::get_task_mgr_current_pid,
-    elf,
-    scheduling::{
-        process::{PID, TID},
-        taskmanager::PROCESSES,
-    },
-};
+use crate::{cpu_localstorage::get_task_mgr_current_pid, scheduling::taskmanager::PROCESSES};
 
-pub static SERVICES: Mutex<BTreeMap<SID, ServiceInfo>> = Mutex::new(BTreeMap::new());
+pub static SERVICES: Mutex<BTreeMap<ServiceID, ServiceInfo>> = Mutex::new(BTreeMap::new());
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ServiceInfo {
-    pub owner: PID,
-    pub clients: Vec<PID>,
+    pub owner: ProcessID,
+    pub subscribers: Vec<ProcessID>,
 }
 
-pub struct KernelMessageHeader {
-    pub service_id: SID,
-    pub message_type: MessageType,
-    pub tracking_number: u64,
-    pub sender_pid: PID,
-    pub data_type: usize,
-    pub data: Vec<u8>,
-}
-
-impl Default for KernelMessageHeader {
-    fn default() -> Self {
-        Self {
-            service_id: SID(0),
-            message_type: MessageType::Announcement,
-            tracking_number: Default::default(),
-            sender_pid: 0.into(),
-            data: Default::default(),
-            data_type: Default::default(),
-        }
-    }
-}
-
-pub fn new(owner: PID) -> SID {
+pub fn new(owner: ProcessID) -> ServiceID {
     static IDS: AtomicU64 = AtomicU64::new(2);
 
-    let id = SID(IDS.fetch_add(1, core::sync::atomic::Ordering::Relaxed));
+    let id = ServiceID(IDS.fetch_add(1, core::sync::atomic::Ordering::Relaxed));
     SERVICES.lock().insert(
         id,
         ServiceInfo {
             owner: owner,
-            clients: Vec::new(),
+            subscribers: Vec::new(),
         },
     );
     id.clone()
 }
 
-pub fn subscribe(pid: PID, id: SID) {
+pub fn subscribe(pid: ProcessID, id: ServiceID) {
     SERVICES
         .lock()
         .get_mut(&id)
-        .and_then(|v| Some(v.clients.push(pid)));
+        .and_then(|v| Some(v.subscribers.push(pid)));
 }
 
-pub fn push(current_pid: PID, msg: &SendMessageHeader) -> Option<()> {
-    let data = unsafe { core::slice::from_raw_parts(msg.data_ptr, msg.data_length) }.to_vec();
+pub fn push(current_pid: ProcessID, msg: ServiceMessageContainer) -> Result<(), SendError> {
+    let message = msg.get_message().map_err(|_| SendError::ParseError)?;
 
-    let m = Arc::new(KernelMessageHeader {
-        service_id: msg.service_id,
-        message_type: msg.message_type,
-        tracking_number: msg.tracking_number,
-        sender_pid: current_pid,
-        data_type: msg.data_type,
-        data,
-    });
     let mut s = SERVICES.lock();
 
-    let service = s.get_mut(&{ msg.service_id }).unwrap();
+    let service = s
+        .get_mut(&message.service_id)
+        .ok_or(SendError::NoSuchService)?;
 
-    match msg.message_type {
-        MessageType::Announcement => {
-            if service.owner != current_pid {
-                return None;
-            }
-            let mut processes = PROCESSES.lock();
-            for client in &service.clients {
-                processes
-                    .get_mut(client)
-                    .unwrap()
-                    .service_msgs
-                    .push_back(m.clone());
-            }
-        }
-        MessageType::Request => {
+    if message.sender_pid != current_pid {
+        return Err(SendError::NotYourPID);
+    }
+
+    let dest = message.destination;
+
+    let m = Arc::new((message.service_id, message.tracking_number, msg));
+
+    match dest {
+        SendServiceMessageDest::ToProvider => {
             let mut p = PROCESSES.lock();
             p.get_mut(&service.owner).unwrap().service_msgs.push_back(m);
         }
-        MessageType::Response => {
-            if service.owner != current_pid {
-                return None;
-            }
-            let mut processes = PROCESSES.lock();
-            processes
-                .get_mut(&msg.receiver_pid.into())
+        SendServiceMessageDest::ToProcess(pid) => {
+            let mut p = PROCESSES.lock();
+            p.get_mut(&pid)
                 .and_then(|p| Some(p.service_msgs.push_back(m)));
         }
+        SendServiceMessageDest::ToSubscribers => {
+            let mut processes = PROCESSES.lock();
+            for pid in &service.subscribers {
+                // TODO: Remove dead subscriber from list
+                processes
+                    .get_mut(pid)
+                    .and_then(|p| Some(p.service_msgs.push_back(m.clone())));
+            }
+        }
     }
-    Some(())
+
+    Ok(())
 }
 
-pub fn pop(
-    current_pid: PID,
-    current_thread: TID,
-    narrow_by_sid: SID,
-    narrow_by_tracking: u64,
-) -> Option<ReceiveMessageHeader> {
+pub fn find_message(
+    current_pid: ProcessID,
+    current_thread: ThreadID,
+    narrow_by_sid: ServiceID,
+    narrow_by_tracking: ServiceTrackingNumber,
+) -> Option<usize> {
     let mut processes = PROCESSES.lock();
     let proc = processes.get_mut(&current_pid).unwrap();
     let msg;
@@ -128,99 +97,79 @@ pub fn pop(
         msg = proc.service_msgs.pop_front()?;
     } else {
         let mut iter = proc.service_msgs.iter();
-        let index = if narrow_by_tracking == u64::MAX {
-            iter.position(|x| x.service_id == narrow_by_sid)?
+        let index = if narrow_by_tracking.0 == u64::MAX {
+            iter.position(|x| x.0 == narrow_by_sid)?
         } else {
-            iter.position(|x| {
-                x.service_id == narrow_by_sid && x.tracking_number == narrow_by_tracking
-            })?
+            iter.position(|x| x.0 == narrow_by_sid && x.1 == narrow_by_tracking)?
         };
         msg = proc.service_msgs.remove(index)?;
     }
 
-    // Store
+    let length = msg.2.buffer.len();
+
     proc.threads
         .get_mut(&current_thread)
-        .and_then(|t| Some(t.current_message = Some(msg.clone())));
+        .unwrap()
+        .current_message = Some(msg);
 
-    Some(ReceiveMessageHeader {
-        service_id: msg.service_id,
-        message_type: msg.message_type,
-        tracking_number: msg.tracking_number,
-        data_length: msg.data.len(),
-        data_type: msg.data_type,
-        sender_pid: msg.sender_pid.into(),
-    })
+    Some(length)
 }
 
-pub fn get_data(current_pid: PID, current_thread: TID, ptr: *mut u8) -> Option<()> {
-    let mut p = PROCESSES.lock();
-    let proc = p.get_mut(&current_pid)?;
-    let thread = proc.threads.get_mut(&current_thread)?;
+pub fn get_message(
+    current_pid: ProcessID,
+    current_thread: ThreadID,
+    buffer: &mut [u8],
+) -> Option<()> {
+    let mut processes = PROCESSES.lock();
+    let proc = processes.get_mut(&current_pid).unwrap();
+    let msg = proc
+        .threads
+        .get_mut(&current_thread)?
+        .current_message
+        .take()?;
 
-    let msg = thread.current_message.take()?;
-
-    unsafe {
-        let loc = core::slice::from_raw_parts_mut(ptr, msg.data.len());
-        loc.copy_from_slice(&msg.data);
-    }
+    buffer.copy_from_slice(&msg.2.buffer);
     Some(())
 }
 
-pub static PUBLIC_SERVICES: Mutex<BTreeMap<&str, SID>> = Mutex::new(BTreeMap::new());
+pub static PUBLIC_SERVICES: Mutex<BTreeMap<&str, ServiceID>> = Mutex::new(BTreeMap::new());
 
 pub fn start_mgmt() {
+    let pid = get_task_mgr_current_pid();
+    let sid = ServiceID(1);
     SERVICES.lock().insert(
-        SID(1),
+        sid,
         ServiceInfo {
-            owner: get_task_mgr_current_pid(),
-            clients: Vec::new(),
+            owner: pid,
+            subscribers: Vec::new(),
         },
     );
 
+    let pid = ProcessID(pid.0);
+
     loop {
-        let query = get_service_messages_sync(SID(1));
+        let query = wait_receive_service_message(sid);
 
-        let header = query.get_message_header();
+        let message = query.get_message().unwrap();
 
-        if header.data_type == 0 {
-            if let Ok(msg) = query.get_data_as::<ServiceRequestServiceID>() {
+        let resp = match message.message {
+            ServiceMessageType::PublicService(PublicServiceMessage::Request(name)) => {
                 let s = PUBLIC_SERVICES.lock();
 
-                let sid = s.get(msg.name);
+                let sid = s.get(name);
 
-                if let Some(sid) = sid {
-                    send_service_message(
-                        SID(1),
-                        MessageType::Response,
-                        header.tracking_number,
-                        0,
-                        ServiceRequestServiceIDResponse { sid: *sid },
-                        header.sender_pid,
-                    )
-                } else {
-                    send_service_message(
-                        SID(1),
-                        MessageType::Response,
-                        header.tracking_number,
-                        1,
-                        (),
-                        header.sender_pid,
-                    )
-                }
+                ServiceMessageType::PublicService(PublicServiceMessage::Response(sid.copied()))
             }
-        } else if header.data_type == 1 {
-            if let Ok(msg) = query.get_data_as::<SpawnProcessVec>() {
-                let pid = elf::load_elf(&msg.elf, msg.args);
-                send_service_message(
-                    SID(1),
-                    MessageType::Response,
-                    header.tracking_number,
-                    0,
-                    pid.0,
-                    header.sender_pid,
-                )
-            }
-        }
+            _ => ServiceMessageType::UnknownCommand,
+        };
+
+        send_service_message(&ServiceMessage {
+            service_id: sid,
+            sender_pid: pid,
+            tracking_number: message.tracking_number,
+            destination: SendServiceMessageDest::ToProcess(message.sender_pid),
+            message: resp,
+        })
+        .unwrap();
     }
 }

@@ -5,118 +5,59 @@ use alloc::{
     vec::Vec,
 };
 
-use crate::service::{
-    generate_tracking_number, send_and_get_response_sync, MessageType, ServiceResponse, SID,
+use crate::{
+    ids::ServiceID,
+    service::{generate_tracking_number, ServiceMessage, ServiceMessageContainer},
+    syscall::{send_and_wait_response_service_message, CURRENT_PID},
 };
 
-pub const FS_STAT: usize = 0;
-pub const FS_READ: usize = 1;
-pub const FS_READ_FULL_FILE: usize = 2;
-pub const FS_GETDISKS: usize = 3;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FSServiceMessage<'a> {
+    // DiskID | Path
+    RunStat(usize, &'a str),
 
-pub fn stat_file(fs_sid: SID, disk: usize, path: &str) -> ServiceResponse {
-    let file = StatRequest { disk, path };
+    StatResponse(StatResponse),
+    ReadRequest(ReadRequest),
+    ReadFullFileRequest(ReadFullFileRequest),
 
-    let tracking = generate_tracking_number();
+    #[serde(borrow)]
+    ReadResponse(Option<&'a [u8]>),
 
-    let resp = send_and_get_response_sync(fs_sid, MessageType::Request, tracking, FS_STAT, file, 0);
-
-    resp
+    GetDisksRequest,
+    GetDisksResponse(Vec<u64>),
 }
 
-pub fn read_file_sector<'a>(fs_sid: SID, disk: usize, node: usize, sector: u32) -> ServiceResponse {
-    let file = ReadRequest {
-        disk_id: disk,
-        node_id: node,
-        sector,
-    };
-
-    let tracking = generate_tracking_number();
-
-    let resp = send_and_get_response_sync(fs_sid, MessageType::Request, tracking, FS_READ, file, 0);
-
-    assert!(resp.get_message_header().data_type == FS_READ);
-
-    resp
-}
-
-pub fn read_full_file<'a>(fs_sid: SID, disk: usize, node: usize) -> ServiceResponse {
-    let file = ReadFullFileRequest {
-        disk_id: disk,
-        node_id: node,
-    };
-
-    let tracking = generate_tracking_number();
-
-    let resp = send_and_get_response_sync(
-        fs_sid,
-        MessageType::Request,
-        tracking,
-        FS_READ_FULL_FILE,
-        file,
-        0,
-    );
-
-    resp
-}
-
-pub fn get_disks(fs_sid: SID) -> Vec<u64> {
-    let tracking = generate_tracking_number();
-
-    let resp =
-        send_and_get_response_sync(fs_sid, MessageType::Request, tracking, FS_GETDISKS, (), 0);
-
-    assert_eq!({ resp.get_message_header().data_type }, FS_GETDISKS);
-    resp.get_data_as::<Vec<u64>>().unwrap()
-}
-
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct StatRequest<'a> {
-    pub disk: usize,
-    pub path: &'a str,
-}
-
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StatResponse {
     File(StatResponseFile),
     Folder(StatResponseFolder),
+    NotFound,
 }
 
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct StatResponseFile {
     pub node_id: usize,
     pub file_size: usize,
 }
 
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatResponseFolder {
     pub node_id: usize,
+
     pub children: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ReadRequest {
     pub disk_id: usize,
     pub node_id: usize,
     pub sector: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ReadFullFileRequest {
     pub disk_id: usize,
     pub node_id: usize,
-}
-
-// ReadResponse just bytes
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct ReadResponse<'a> {
-    pub data: &'a [u8],
-}
-
-// ReadResponse just bytes
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct ReadResponseVec {
-    pub data: Vec<u8>,
 }
 
 pub fn add_path(folder: &str, file: &str) -> String {
@@ -137,4 +78,121 @@ pub fn add_path(folder: &str, file: &str) -> String {
     }
 
     String::from("/") + path.join("/").as_str()
+}
+
+pub fn stat(fs_sid: ServiceID, disk: usize, file: &str) -> StatResponse {
+    let resp = send_and_wait_response_service_message(&ServiceMessage {
+        service_id: fs_sid,
+        sender_pid: *CURRENT_PID,
+        tracking_number: generate_tracking_number(),
+        destination: crate::service::SendServiceMessageDest::ToProvider,
+        message: crate::service::ServiceMessageType::FS(FSServiceMessage::RunStat(disk, file)),
+    })
+    .unwrap();
+
+    let msg = resp.get_message().unwrap();
+
+    match msg.message {
+        crate::service::ServiceMessageType::FS(FSServiceMessage::StatResponse(resp)) => {
+            return resp
+        }
+        _ => todo!(),
+    }
+}
+
+pub fn read_file_sector(
+    fs_sid: ServiceID,
+    disk: usize,
+    node: usize,
+    sector: u32,
+) -> Option<ReadRequestShim> {
+    let resp = send_and_wait_response_service_message(&ServiceMessage {
+        service_id: fs_sid,
+        sender_pid: *CURRENT_PID,
+        tracking_number: generate_tracking_number(),
+        destination: crate::service::SendServiceMessageDest::ToProvider,
+        message: crate::service::ServiceMessageType::FS(FSServiceMessage::ReadRequest(
+            ReadRequest {
+                disk_id: disk,
+                node_id: node,
+                sector: sector,
+            },
+        )),
+    })
+    .unwrap();
+
+    let msg = resp.get_message().unwrap();
+
+    match msg.message {
+        crate::service::ServiceMessageType::FS(FSServiceMessage::ReadResponse(data)) => {
+            if data.is_none() {
+                return None;
+            }
+            Some(ReadRequestShim { message: resp })
+        }
+        _ => todo!(),
+    }
+}
+
+pub fn read_full_file(fs_sid: ServiceID, disk: usize, node: usize) -> Option<ReadRequestShim> {
+    let resp = send_and_wait_response_service_message(&ServiceMessage {
+        service_id: fs_sid,
+        sender_pid: *CURRENT_PID,
+        tracking_number: generate_tracking_number(),
+        destination: crate::service::SendServiceMessageDest::ToProvider,
+        message: crate::service::ServiceMessageType::FS(FSServiceMessage::ReadFullFileRequest(
+            ReadFullFileRequest {
+                disk_id: disk,
+                node_id: node,
+            },
+        )),
+    })
+    .unwrap();
+
+    let msg = resp.get_message().unwrap();
+
+    match msg.message {
+        crate::service::ServiceMessageType::FS(FSServiceMessage::ReadResponse(data)) => {
+            if data.is_none() {
+                return None;
+            }
+            Some(ReadRequestShim { message: resp })
+        }
+        _ => todo!(),
+    }
+}
+
+pub struct ReadRequestShim {
+    message: ServiceMessageContainer,
+}
+
+impl ReadRequestShim {
+    pub fn get_data(&self) -> &[u8] {
+        let m = self.message.get_message().unwrap();
+        if let crate::service::ServiceMessageType::FS(FSServiceMessage::ReadResponse(Some(data))) =
+            m.message
+        {
+            data
+        } else {
+            unreachable!()
+        }
+    }
+}
+
+pub fn get_disks(fs_sid: ServiceID) -> Vec<u64> {
+    let resp = send_and_wait_response_service_message(&ServiceMessage {
+        service_id: fs_sid,
+        sender_pid: *CURRENT_PID,
+        tracking_number: generate_tracking_number(),
+        destination: crate::service::SendServiceMessageDest::ToProvider,
+        message: crate::service::ServiceMessageType::FS(FSServiceMessage::GetDisksRequest),
+    })
+    .unwrap();
+
+    let msg = resp.get_message().unwrap();
+
+    match msg.message {
+        crate::service::ServiceMessageType::FS(FSServiceMessage::GetDisksResponse(d)) => d,
+        _ => todo!(),
+    }
 }

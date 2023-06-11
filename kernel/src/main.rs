@@ -40,8 +40,11 @@ use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
 use kernel::{allocator, elf, gdt, paging, ps2, service, BOOT_INFO};
 
-use kernel_userspace::service::{send_and_get_response_sync, SpawnProcess, SID};
-use kernel_userspace::syscall::{exit, spawn_process, spawn_thread};
+use kernel_userspace::service::{
+    generate_tracking_number, get_public_service_id, SendServiceMessageDest, ServiceMessage,
+    ServiceMessageType,
+};
+use kernel_userspace::syscall::{exit, get_pid, send_service_message, spawn_process, spawn_thread};
 use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
 use uefi::table::{Runtime, SystemTable};
 
@@ -267,6 +270,7 @@ fn after_boot() {
     let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
 
     spawn_process(service::start_mgmt, "", true);
+    spawn_process(elf::elf_new_process_loader, "", true);
 
     spawn_process(ps2::main, "", true);
     spawn_process(gop::gop_entry, "", true);
@@ -291,17 +295,17 @@ fn after_boot() {
     });
 
     spawn_thread(|| {
-        send_and_get_response_sync(
-            SID(1),
-            kernel_userspace::service::MessageType::Request,
-            0,
-            1,
-            SpawnProcess {
-                elf: TERMINAL_ELF,
-                args: &[],
-            },
-            0,
-        );
+        let elf = get_public_service_id("ELF_LOADER").unwrap();
+        let pid = get_pid();
+
+        send_service_message(&ServiceMessage {
+            service_id: elf,
+            sender_pid: pid,
+            tracking_number: generate_tracking_number(),
+            destination: SendServiceMessageDest::ToProvider,
+            message: ServiceMessageType::ElfLoader(TERMINAL_ELF, &[]),
+        })
+        .unwrap();
     });
 
     exit();
