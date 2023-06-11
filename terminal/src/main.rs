@@ -1,11 +1,13 @@
 #![no_std]
 #![no_main]
+#![feature(error_in_core)]
 
 use kernel_userspace::{
     fs::{add_path, read_file_sector},
     proc::PID,
     syscall::{exit, read_args},
 };
+use terminal::script::execute;
 
 extern crate alloc;
 #[macro_use]
@@ -270,6 +272,7 @@ pub extern "C" fn main() {
             //     println!("Up: {:02}:{:02}:{:02}", uptime, minutes, seconds)
             // }
             _ => {
+                execute(&curr_line).unwrap();
                 println!("{command}: command not found")
             }
         }
