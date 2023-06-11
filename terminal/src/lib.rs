@@ -1,5 +1,6 @@
 #![no_std]
 #![feature(error_in_core)]
+#![feature(let_chains)]
 
-mod error;
+pub mod error;
 pub mod script;

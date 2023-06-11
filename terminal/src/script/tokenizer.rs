@@ -7,7 +7,6 @@ use alloc::{
     vec::Vec,
 };
 use thiserror::Error;
-use userspace::{print, println};
 
 use crate::error::{Context, Result};
 
@@ -54,7 +53,6 @@ impl<'a> Tokenizer<'a> {
     fn chomp(&mut self, num_bytes: usize) {
         self.remaining_text = &self.remaining_text[num_bytes..];
         self.current_index += num_bytes;
-        println!("{} {}", self.current_index, self.remaining_text);
     }
 }
 
@@ -160,11 +158,12 @@ pub fn tokenize_single_token(data: &str) -> TokResult<(TokenKind, usize)> {
 }
 
 fn tokenize_ident(data: &str) -> TokResult<(TokenKind, usize)> {
-    match data.chars().next() {
-        Some(ch) if ch.is_digit(10) => Err(LexerError::StartWithNum)?,
-        None => Err(LexerError::UnexpectedEOF)?,
-        _ => {}
-    }
+    // TODO: Reintroduce this once I have number types
+    // match data.chars().next() {
+    //     Some(ch) if ch.is_digit(10) => Err(LexerError::StartWithNum)?,
+    //     None => Err(LexerError::UnexpectedEOF)?,
+    //     _ => {}
+    // }
 
     let (got, bytes_read) = take_while(data, |ch| ch == '-' || ch.is_alphanumeric() || ch == '.')?;
 

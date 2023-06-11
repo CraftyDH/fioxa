@@ -12,6 +12,8 @@ kernel_userspace = { path = "../kernel_userspace" }
 input = { path = "../input" }
 
 thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
+hashbrown = "0.14"
 
 [profile.dev]
 strip = true
+opt-level = 1

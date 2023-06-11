@@ -2,7 +2,6 @@ extern crate alloc;
 
 use alloc::{format, string::String, vec::Vec};
 use thiserror::Error;
-use userspace::{print, println};
 
 use super::tokenizer::{
     Token,
@@ -15,24 +14,8 @@ pub fn parse(tokens: Vec<Token>) -> Result<Vec<Stmt>> {
     let mut stmts = Vec::new();
 
     while !parser.is_at_end() {
-        println!(
-            "{} {} {:?} {}",
-            parser.tokens.len(),
-            parser.index,
-            parser.tokens,
-            parser.is_at_end()
-        );
-
         stmts.push(parse_exec(&mut parser)?);
     }
-
-    println!(
-        "{} {} {:?} {}",
-        parser.tokens.len(),
-        parser.index,
-        parser.tokens,
-        parser.is_at_end()
-    );
 
     Ok(stmts)
 }
@@ -56,6 +39,10 @@ fn parse_positional_arguments(p: &mut Parser) -> Result<Vec<Expr>> {
 }
 
 fn parse_possible_strings(p: &mut Parser) -> Result<String> {
+    if p.is_at_end() {
+        return Ok(String::new());
+    }
+
     Ok(match p.peek()? {
         Dot => {
             p.expect(Dot)?;

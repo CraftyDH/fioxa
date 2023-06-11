@@ -1,22 +1,21 @@
-use userspace::{print, println};
-
+pub use self::execute::Environment;
 use self::parser::parse;
 use self::tokenizer::tokenize;
 use crate::error::Result;
 
-mod execute;
-mod parser;
+pub mod execute;
+pub mod parser;
 mod tokenizer;
 
 #[cfg(test)]
 mod tests;
 
-pub fn execute(line: &str) -> Result<()> {
+pub fn execute<'a>(line: &str, env: &mut Environment<'a>) -> Result<()> {
     let tokens = tokenize(line)?;
-    println!("{:?}", tokens);
 
     let stmts = parse(tokens)?;
-    println!("{:?}", stmts);
+
+    execute::execute(stmts, env)?;
 
     Ok(())
 }

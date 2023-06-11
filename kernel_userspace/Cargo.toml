@@ -9,4 +9,6 @@ edition = "2021"
 postcard = { version = "1.0.4", features = ["alloc"] }
 serde = { version = "1.0.*", default-features = false }
 input = { path = "../input" }
-lazy_static = {version = "1.4", features = ["spin_no_std"]}
+lazy_static = { version = "1.4", features = ["spin_no_std"] }
+
+thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
