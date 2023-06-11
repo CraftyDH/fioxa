@@ -35,6 +35,7 @@ use kernel::pci::enumerate_pci;
 use kernel::scheduling::taskmanager::core_start_multitasking;
 use kernel::screen::gop::{self, WRITER};
 use kernel::screen::psf1::{self, load_psf1_font};
+use kernel::service::PUBLIC_SERVICES;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
@@ -44,7 +45,10 @@ use kernel_userspace::service::{
     generate_tracking_number, get_public_service_id, SendServiceMessageDest, ServiceMessage,
     ServiceMessageType,
 };
-use kernel_userspace::syscall::{exit, get_pid, send_service_message, spawn_process, spawn_thread};
+use kernel_userspace::syscall::{
+    exit, get_pid, receive_service_message_blocking, send_service_message, service_create,
+    spawn_process, spawn_thread,
+};
 use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
 use uefi::table::{Runtime, SystemTable};
 
@@ -307,6 +311,20 @@ fn after_boot() {
         })
         .unwrap();
     });
+
+    // For testing, accepts all inputs
+    spawn_process(
+        || {
+            let sid = service_create();
+            PUBLIC_SERVICES.lock().insert("ACCEPTER", sid);
+
+            loop {
+                receive_service_message_blocking(sid);
+            }
+        },
+        "",
+        false,
+    );
 
     exit();
 }

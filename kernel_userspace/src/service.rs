@@ -7,7 +7,7 @@ use crate::{
     fs::FSServiceMessage,
     ids::{ProcessID, ServiceID},
     input::InputServiceMessage,
-    syscall::{get_pid, send_and_wait_response_service_message},
+    syscall::{get_pid, send_and_get_response_service_message},
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -56,6 +56,7 @@ pub enum SendError {
     ParseError,
     NoSuchService,
     NotYourPID,
+    TargetNotExists,
     FailedToDecodeResponse,
 }
 
@@ -66,6 +67,7 @@ impl SendError {
             1 => Err(Self::ParseError),
             2 => Err(Self::NoSuchService),
             3 => Err(Self::NotYourPID),
+            4 => Err(Self::TargetNotExists),
             _ => Err(Self::FailedToDecodeResponse),
         }
     }
@@ -103,7 +105,7 @@ pub enum PublicServiceMessage<'a> {
 }
 
 pub fn get_public_service_id(name: &str) -> Option<ServiceID> {
-    let resp = send_and_wait_response_service_message(&ServiceMessage {
+    let resp = send_and_get_response_service_message(&ServiceMessage {
         service_id: ServiceID(1),
         sender_pid: get_pid(),
         tracking_number: generate_tracking_number(),

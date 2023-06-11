@@ -117,7 +117,7 @@ fn save_current_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers)
     Some(())
 }
 
-fn load_new_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
+pub fn load_new_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
     let current_cpu = get_current_cpu_id() as usize;
     // Loop becuase we don't delete tasks from queue when they exit
     loop {

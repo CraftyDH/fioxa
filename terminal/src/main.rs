@@ -4,13 +4,12 @@
 use kernel_userspace::{
     fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
     ids::ServiceID,
-    proc::PID,
     service::{
         generate_tracking_number, get_public_service_id, ServiceMessage, ServiceMessageType,
     },
     syscall::{
-        exit, get_pid, send_and_wait_response_service_message, service_subscribe,
-        wait_receive_service_message, CURRENT_PID,
+        exit, receive_service_message_blocking, send_and_get_response_service_message,
+        service_subscribe, CURRENT_PID,
     },
 };
 
@@ -56,7 +55,7 @@ impl Iterator for KBInputDecoder {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let msg = wait_receive_service_message(self.service);
+            let msg = receive_service_message_blocking(self.service);
 
             let message = msg.get_message().unwrap();
 
@@ -135,7 +134,6 @@ pub extern "C" fn main() {
             "pwd" => println!("{}", cwd.to_string()),
             "echo" => {
                 print!("ECHO!");
-                unsafe { core::arch::asm!("cli") }
             }
             "disk" => {
                 let c = rest.trim();
@@ -221,7 +219,7 @@ pub extern "C" fn main() {
 
                 println!("SPAWNING...");
 
-                let resp = send_and_wait_response_service_message(&ServiceMessage {
+                let resp = send_and_get_response_service_message(&ServiceMessage {
                     service_id: elf_loader_sid,
                     sender_pid: *CURRENT_PID,
                     tracking_number: generate_tracking_number(),

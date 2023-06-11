@@ -3,7 +3,7 @@ use bootloader::gop::GopInfo;
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
 use kernel_userspace::service::{
-    generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+    generate_tracking_number, SendError, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
 };
 use kernel_userspace::syscall::{get_pid, send_service_message, service_create, spawn_thread};
 use lazy_static::lazy_static;
@@ -295,7 +295,7 @@ pub fn monitor_stdout_task() {
     PUBLIC_SERVICES.lock().insert("STDOUT", sid);
 
     loop {
-        let message = kernel_userspace::syscall::wait_receive_service_message(sid);
+        let message = kernel_userspace::syscall::receive_service_message_blocking(sid);
 
         let msg = message.get_message().unwrap();
 
@@ -311,14 +311,16 @@ pub fn monitor_stdout_task() {
             _ => ServiceMessageType::UnknownCommand,
         };
 
-        send_service_message(&ServiceMessage {
+        match send_service_message(&ServiceMessage {
             service_id: sid,
             sender_pid: pid,
             tracking_number: generate_tracking_number(),
             destination: SendServiceMessageDest::ToProcess(msg.sender_pid),
             message: m,
-        })
-        .unwrap()
+        }) {
+            Ok(_) | Err(SendError::TargetNotExists) => (),
+            Err(e) => Err(e).unwrap(),
+        }
     }
 }
 

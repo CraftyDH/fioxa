@@ -9,3 +9,6 @@ edition = "2021"
 userspace_bumpalloc = { path = "../userspace_bumpalloc" }
 userspace = { path = "../userspace" }
 kernel_userspace = { path = "../kernel_userspace" }
+
+[profile.dev]
+strip = true
