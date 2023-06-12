@@ -9,13 +9,13 @@ edition = "2021"
 bootloader = {path = "../bootloader"}
 kernel_userspace = {path = "../kernel_userspace"}
 input = {path = "../input"}
-uefi = "0.17"
+uefi = "0.19"
 
 x86_64 = "0.14"
 lazy_static = {version = "1.4", features = ["spin_no_std"]}
 spin = "0.9"
 bit_field = "0.10"
-conquer-once = {version = "0.3", default-features = false}
+conquer-once = {version = "0.4", default-features = false}
 crossbeam-queue = {version = "0.3", default-features = false, features = ["alloc"]}
 linked_list_allocator = "0.9.0"
 acpi = "4.1"
