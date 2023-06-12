@@ -1,4 +1,9 @@
-use kernel_userspace::syscall::yield_now;
+use alloc::sync::Arc;
+use kernel_userspace::{
+    service::get_public_service_id,
+    syscall::{receive_service_message_blocking, service_subscribe, spawn_thread},
+};
+use spin::Mutex;
 use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
 
 use crate::log;
@@ -18,9 +23,38 @@ pub fn main() {
         log!("PS2 Controller failed to init because: {}", e);
     }
 
+    let kb_event = get_public_service_id("INTERRUPTS:KB").unwrap();
+    let mouse_event = get_public_service_id("INTERRUPTS:MOUSE").unwrap();
+
+    service_subscribe(kb_event);
+    service_subscribe(mouse_event);
+
+    // TODO: Once some form of multi wait is implemented use 1 thread.
+
+    let controller = Arc::new(Mutex::new(ps2_controller));
+
+    spawn_thread(|| loop {
+        loop {
+            let m = receive_service_message_blocking(mouse_event);
+            let message = m.get_message().unwrap();
+            match message.message {
+                kernel_userspace::service::ServiceMessageType::InterruptEvent => {
+                    controller.lock().mouse.check_interrupts()
+                }
+                _ => unimplemented!(),
+            }
+        }
+    });
+
     loop {
-        ps2_controller.check_interrupts();
-        yield_now()
+        let m = receive_service_message_blocking(kb_event);
+        let message = m.get_message().unwrap();
+        match message.message {
+            kernel_userspace::service::ServiceMessageType::InterruptEvent => {
+                controller.lock().keyboard.check_interrupts()
+            }
+            _ => unimplemented!(),
+        }
     }
 }
 pub struct PS2Command {
@@ -85,6 +119,7 @@ impl PS2Controller {
         let command = PS2Command::new();
         let keyboard = Keyboard::new(PS2Command::new());
         let mouse = Mouse::new(PS2Command::new());
+
         Self {
             command,
             keyboard,
@@ -167,10 +202,5 @@ impl PS2Controller {
         // Even if there was an error with the keyboard or mouse we can still continue
         // And use the working one
         Ok(())
-    }
-
-    pub fn check_interrupts(&mut self) {
-        self.keyboard.check_interrupts();
-        self.mouse.check_interrupts();
     }
 }

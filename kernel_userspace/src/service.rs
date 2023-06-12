@@ -96,6 +96,8 @@ pub enum ServiceMessageType<'a> {
     // ELF BINARY | ARGS
     ElfLoader(&'a [u8], &'a [u8]),
     ElfLoaderResp(ProcessID),
+
+    InterruptEvent,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

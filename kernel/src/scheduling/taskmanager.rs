@@ -15,6 +15,7 @@ use crate::{
         set_is_task_mgr_schedule, set_task_mgr_current_pid, set_task_mgr_current_ticks,
         set_task_mgr_current_tid,
     },
+    interrupts::check_interrupts,
     paging::{
         page_table_manager::{PageLvl4, PageTable},
         virt_addr_for_phys,
@@ -42,6 +43,10 @@ pub unsafe fn core_start_multitasking() -> ! {
     set_is_task_mgr_schedule(true);
     core::arch::asm!("sti");
     loop {
+        if check_interrupts() {
+            // If we got an interrupt sched the tasks
+            kernel_userspace::syscall::yield_now();
+        };
         // Move the tasks back to the queue
         while let Some(task) = USED_TASK_QUEUE.pop() {
             TASK_QUEUE.push(task).unwrap();
