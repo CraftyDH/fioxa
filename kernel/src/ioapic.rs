@@ -9,13 +9,14 @@ use bit_field::BitField;
 use conquer_once::noblock::OnceCell;
 
 use crate::{
-    interrupts::set_irq_handler,
+    interrupts::{
+        keyboard_int_handler, mouse_int_handler, pci_int_handler, set_irq_handler,
+        INTERRUPT_HANDLERS,
+    },
     paging::{
         get_uefi_active_mapper,
         page_table_manager::{page_4kb, Mapper, Page, PageLvl4, PageTable, Size4KB},
     },
-    pci,
-    ps2::{keyboard, mouse},
 };
 
 static IOAPIC: OnceCell<IOApic> = OnceCell::uninit();
@@ -37,18 +38,21 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
         println!("Int override: {:?}", i);
     }
 
+    // Init handlers
+    core::hint::black_box(*INTERRUPT_HANDLERS);
+
     // Timer is usually overridden to irq 2
     // TODO: Parse overides and use those
     // 0xFF all cores
     set_redirect_entry(apic.apic_addr, 0xFF, 2, 49, true);
 
-    set_irq_handler(50, keyboard::keyboard_int_handler);
+    set_irq_handler(50, keyboard_int_handler);
     set_redirect_entry(apic.apic_addr, 0, 1, 50, false);
 
-    set_irq_handler(51, mouse::mouse_int_handler);
+    set_irq_handler(51, mouse_int_handler);
     set_redirect_entry(apic.apic_addr, 0, 12, 51, false);
 
-    set_irq_handler(52, pci::interrupt_handler);
+    set_irq_handler(52, pci_int_handler);
     set_redirect_entry(apic.apic_addr, 0, 10, 52, true);
     set_redirect_entry(apic.apic_addr, 0, 11, 52, true);
 }

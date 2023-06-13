@@ -71,6 +71,7 @@ pub struct Process {
     pub args: Vec<u8>,
     pub service_msgs: VecDeque<Arc<(ServiceID, ServiceTrackingNumber, ServiceMessageContainer)>>,
     pub owned_pages: Vec<Page<Size4KB>>,
+    pub waiting_services: BTreeMap<(ServiceID, ServiceTrackingNumber), Vec<ThreadID>>,
 }
 
 impl Process {
@@ -98,6 +99,7 @@ impl Process {
             args: args.to_vec(),
             service_msgs: Default::default(),
             owned_pages: Vec::new(),
+            waiting_services: Default::default(),
         }
     }
 
@@ -115,6 +117,7 @@ impl Process {
             args: args.to_vec(),
             service_msgs: Default::default(),
             owned_pages: Vec::new(),
+            waiting_services: Default::default(),
         }
     }
 
@@ -138,6 +141,7 @@ impl Process {
             register_state,
             pushed_register_state,
             current_message: Default::default(),
+            schedule_status: ScheduleStatus::Scheduled,
         };
 
         self.threads.insert(tid, thread);
@@ -181,6 +185,7 @@ impl Process {
             register_state,
             pushed_register_state,
             current_message: Default::default(),
+            schedule_status: ScheduleStatus::Scheduled,
         };
 
         self.threads.insert(tid, thread);
@@ -211,6 +216,14 @@ pub struct Thread {
     pub pushed_register_state: InterruptStackFrameValue,
     // Used for storing current msg, so that the popdata can get the data
     pub current_message: Option<Arc<(ServiceID, ServiceTrackingNumber, ServiceMessageContainer)>>,
+    // Is the thread scheduled or waiting
+    pub schedule_status: ScheduleStatus,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScheduleStatus {
+    Scheduled,
+    WaitingOn(ServiceID),
 }
 
 impl Thread {

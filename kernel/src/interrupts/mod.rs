@@ -1,3 +1,12 @@
+use core::sync::atomic::AtomicBool;
+
+use kernel_userspace::{
+    ids::{ProcessID, ServiceID},
+    service::{
+        generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+    },
+    syscall::send_service_message,
+};
 use spin::mutex::Mutex;
 use x86_64::{
     instructions::interrupts::without_interrupts,
@@ -10,7 +19,12 @@ pub mod pic;
 
 use lazy_static::lazy_static;
 
-use crate::{gdt::TASK_SWITCH_INDEX, syscall, time::pit::tick_handler};
+use crate::{
+    gdt::TASK_SWITCH_INDEX,
+    service::{self, PUBLIC_SERVICES},
+    syscall,
+    time::pit::tick_handler,
+};
 
 use self::pic::disable_pic;
 
@@ -127,3 +141,64 @@ pub fn spurious(s: InterruptStackFrame) {
 //         unsafe { core::ptr::write_volatile(0xfee000B0 as *mut u32, 0) }
 //     })
 // }
+
+static KB_INT: AtomicBool = AtomicBool::new(false);
+static MOUSE_INT: AtomicBool = AtomicBool::new(false);
+static PCI_INT: AtomicBool = AtomicBool::new(false);
+
+interrupt_handler!(kb_interrupt_handler => keyboard_int_handler);
+fn kb_interrupt_handler(_: InterruptStackFrame) {
+    KB_INT.store(true, core::sync::atomic::Ordering::Relaxed)
+}
+
+interrupt_handler!(mouse_interrupt_handler => mouse_int_handler);
+fn mouse_interrupt_handler(_: InterruptStackFrame) {
+    MOUSE_INT.store(true, core::sync::atomic::Ordering::Relaxed)
+}
+
+interrupt_handler!(pci_interrupt_handler => pci_int_handler);
+fn pci_interrupt_handler(_: InterruptStackFrame) {
+    PCI_INT.store(true, core::sync::atomic::Ordering::Relaxed)
+}
+
+lazy_static! {
+    pub static ref INTERRUPT_HANDLERS: [ServiceID; 3] = {
+        let kb = service::new(ProcessID(0));
+        let mouse = service::new(ProcessID(0));
+        let pci = service::new(ProcessID(0));
+
+        PUBLIC_SERVICES.lock().insert("INTERRUPTS:KB", kb);
+        PUBLIC_SERVICES.lock().insert("INTERRUPTS:MOUSE", mouse);
+        PUBLIC_SERVICES.lock().insert("INTERRUPTS:PCI", pci);
+
+        [kb, mouse, pci]
+    };
+}
+
+pub fn check_interrupts() -> bool {
+    let mut res = false;
+    if KB_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        send_int_message(INTERRUPT_HANDLERS[0]);
+        res = true;
+    }
+    if MOUSE_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        send_int_message(INTERRUPT_HANDLERS[1]);
+        res = true;
+    }
+    if PCI_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        send_int_message(INTERRUPT_HANDLERS[2]);
+        res = true;
+    }
+    res
+}
+
+fn send_int_message(service: ServiceID) {
+    send_service_message(&ServiceMessage {
+        service_id: service,
+        sender_pid: ProcessID(0),
+        tracking_number: generate_tracking_number(),
+        destination: SendServiceMessageDest::ToSubscribers,
+        message: ServiceMessageType::InterruptEvent,
+    })
+    .unwrap()
+}

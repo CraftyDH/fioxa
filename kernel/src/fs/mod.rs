@@ -9,7 +9,7 @@ use alloc::{
 use kernel_userspace::{
     fs::{FSServiceMessage, StatResponse, StatResponseFile, StatResponseFolder},
     service::{SendServiceMessageDest, ServiceMessage, ServiceMessageType},
-    syscall::{get_pid, send_service_message, service_create, wait_receive_service_message},
+    syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
 };
 use spin::Mutex;
 
@@ -192,7 +192,7 @@ pub fn file_handler() {
     // A bit of a hack to extend the lifetime
     let mut file_vec;
     loop {
-        let m = wait_receive_service_message(sid);
+        let m = receive_service_message_blocking(sid);
 
         let query = m.get_message().unwrap();
 

@@ -6,7 +6,7 @@ use kernel_userspace::{
         generate_tracking_number, get_public_service_id, SendServiceMessageDest, ServiceMessage,
         ServiceMessageType,
     },
-    syscall::{poll_receive_service_message, send_service_message, yield_now, CURRENT_PID},
+    syscall::{send_service_message, try_receive_service_message, yield_now, CURRENT_PID},
 };
 
 use spin::Mutex;
@@ -27,7 +27,7 @@ impl Writer {
     // Poll writes results later so that we can send multiple packets and not require as many round trips to send
     pub fn poll_errors(&mut self) {
         loop {
-            while let Some(msg) = poll_receive_service_message(*STDOUT) {
+            while let Some(msg) = try_receive_service_message(*STDOUT) {
                 let message = msg.get_message().unwrap();
                 match message.message {
                     ServiceMessageType::Ack => {

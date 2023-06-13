@@ -3,7 +3,7 @@ use core::cmp::{max, min};
 use kernel_userspace::{
     ids::ProcessID,
     service::{SendServiceMessageDest, ServiceMessage, ServiceMessageType},
-    syscall::{get_pid, send_service_message, service_create, wait_receive_service_message},
+    syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
 };
 
 use crate::{
@@ -165,7 +165,7 @@ pub fn elf_new_process_loader() {
     PUBLIC_SERVICES.lock().insert("ELF_LOADER", sid);
 
     loop {
-        let m = wait_receive_service_message(sid);
+        let m = receive_service_message_blocking(sid);
 
         let query = m.get_message().unwrap();
 

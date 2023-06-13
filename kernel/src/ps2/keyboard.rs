@@ -1,5 +1,3 @@
-use core::sync::atomic::AtomicBool;
-
 use alloc::boxed::Box;
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
@@ -10,22 +8,12 @@ use kernel_userspace::{
     syscall::{get_pid, send_service_message, service_create},
 };
 
-use x86_64::structures::idt::InterruptStackFrame;
-
-use crate::{interrupt_handler, ioapic::mask_entry, service::PUBLIC_SERVICES};
+use crate::{ioapic::mask_entry, service::PUBLIC_SERVICES};
 
 use super::{
     scancode::{set2::ScancodeSet2, Scancode},
     PS2Command,
 };
-
-static INT_WAITING: AtomicBool = AtomicBool::new(false);
-
-interrupt_handler!(interrupt_handler => keyboard_int_handler);
-
-pub fn interrupt_handler(_: InterruptStackFrame) {
-    INT_WAITING.store(true, core::sync::atomic::Ordering::SeqCst)
-}
 
 pub struct Keyboard {
     command: PS2Command,
@@ -38,6 +26,7 @@ impl Keyboard {
     pub fn new(command: PS2Command) -> Self {
         let keyboard_service = service_create();
         PUBLIC_SERVICES.lock().insert("INPUT:KB", keyboard_service);
+
         Self {
             command,
             keyboard_service,
@@ -93,26 +82,18 @@ impl Keyboard {
     }
 
     pub fn check_interrupts(&mut self) {
-        loop {
-            let waiting = INT_WAITING.swap(false, core::sync::atomic::Ordering::SeqCst);
+        let scancode: u8 = unsafe { self.command.data_port.read() };
 
-            if !waiting {
-                return;
-            }
-
-            let scancode: u8 = unsafe { self.command.data_port.read() };
-
-            let res = self.decoder.add_byte(scancode);
-            if let Some(key) = res {
-                send_service_message(&ServiceMessage {
-                    service_id: self.keyboard_service,
-                    sender_pid: self.current_pid,
-                    tracking_number: generate_tracking_number(),
-                    destination: SendServiceMessageDest::ToSubscribers,
-                    message: ServiceMessageType::Input(InputServiceMessage::KeyboardEvent(key)),
-                })
-                .unwrap()
-            }
+        let res = self.decoder.add_byte(scancode);
+        if let Some(key) = res {
+            send_service_message(&ServiceMessage {
+                service_id: self.keyboard_service,
+                sender_pid: self.current_pid,
+                tracking_number: generate_tracking_number(),
+                destination: SendServiceMessageDest::ToSubscribers,
+                message: ServiceMessageType::Input(InputServiceMessage::KeyboardEvent(key)),
+            })
+            .unwrap()
         }
     }
 

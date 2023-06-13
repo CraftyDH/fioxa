@@ -31,7 +31,8 @@ pub const SERVICE_CREATE: usize = 0;
 pub const SERVICE_SUBSCRIBE: usize = 1;
 pub const SERVICE_PUSH: usize = 2;
 pub const SERVICE_FETCH: usize = 3;
-pub const SERVICE_GET: usize = 4;
+pub const SERVICE_FETCH_WAIT: usize = 4;
+pub const SERVICE_GET: usize = 5;
 
 pub const READ_ARGS: usize = 8;
 
@@ -136,14 +137,34 @@ pub fn send_service_message(msg: &ServiceMessage) -> Result<(), SendError> {
     Ok(())
 }
 
-pub fn poll_receive_service_message(id: ServiceID) -> Option<ServiceMessageContainer> {
-    poll_receive_service_message_tracking(id, ServiceTrackingNumber(u64::MAX))
-}
-
-pub fn poll_receive_service_message_tracking(
+pub fn try_receive_service_message_tracking(
     id: ServiceID,
     tracking_number: ServiceTrackingNumber,
 ) -> Option<ServiceMessageContainer> {
+    let size = fetch_service_message(id, tracking_number)?;
+    Some(get_service_message(size))
+}
+
+pub fn try_receive_service_message(id: ServiceID) -> Option<ServiceMessageContainer> {
+    try_receive_service_message_tracking(id, ServiceTrackingNumber(u64::MAX))
+}
+
+pub fn receive_service_message_blocking_tracking(
+    id: ServiceID,
+    tracking_number: ServiceTrackingNumber,
+) -> ServiceMessageContainer {
+    let size = fetch_service_message_blocking(id, tracking_number);
+    get_service_message(size)
+}
+
+pub fn receive_service_message_blocking(id: ServiceID) -> ServiceMessageContainer {
+    receive_service_message_blocking_tracking(id, ServiceTrackingNumber(u64::MAX))
+}
+
+pub fn fetch_service_message(
+    id: ServiceID,
+    tracking_number: ServiceTrackingNumber,
+) -> Option<usize> {
     unsafe {
         let length = syscall3(
             SERVICE,
@@ -154,45 +175,54 @@ pub fn poll_receive_service_message_tracking(
 
         if length == 0 {
             return None;
+        } else {
+            Some(length)
         }
+    }
+}
 
-        let mut buf: Vec<u8> = Vec::with_capacity(length);
+pub fn fetch_service_message_blocking(
+    id: ServiceID,
+    tracking_number: ServiceTrackingNumber,
+) -> usize {
+    unsafe {
+        let length = syscall3(
+            SERVICE,
+            SERVICE_FETCH_WAIT,
+            id.0 as usize,
+            tracking_number.0 as usize,
+        );
 
-        let result = syscall3(SERVICE, SERVICE_GET, buf.as_mut_ptr() as usize, length);
+        if length == 0 {
+            unreachable!("KERNEL DID BAD");
+        }
+        length
+    }
+}
+
+pub fn get_service_message(size: usize) -> ServiceMessageContainer {
+    let mut buf: Vec<u8> = Vec::with_capacity(size);
+
+    unsafe {
+        let result = syscall3(SERVICE, SERVICE_GET, buf.as_mut_ptr() as usize, size);
 
         if result != 0 {
             panic!("Error getting message")
         }
 
-        buf.set_len(length);
+        buf.set_len(size);
 
-        Some(ServiceMessageContainer { buffer: buf })
+        ServiceMessageContainer { buffer: buf }
     }
 }
 
-pub fn wait_receive_service_message(id: ServiceID) -> ServiceMessageContainer {
-    wait_receive_service_message_tracking(id, ServiceTrackingNumber(u64::MAX))
-}
-
-pub fn wait_receive_service_message_tracking(
-    id: ServiceID,
-    tracking_number: ServiceTrackingNumber,
-) -> ServiceMessageContainer {
-    loop {
-        if let Some(msg) = poll_receive_service_message_tracking(id, tracking_number) {
-            return msg;
-        }
-        yield_now()
-    }
-}
-
-pub fn send_and_wait_response_service_message(
+pub fn send_and_get_response_service_message(
     msg: &ServiceMessage,
 ) -> Result<ServiceMessageContainer, SendError> {
     let id = msg.service_id;
     let tracking = msg.tracking_number;
     send_service_message(msg)?;
-    Ok(wait_receive_service_message_tracking(id, tracking))
+    Ok(receive_service_message_blocking_tracking(id, tracking))
 }
 
 pub fn service_create() -> ServiceID {

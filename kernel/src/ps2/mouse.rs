@@ -1,5 +1,3 @@
-use core::sync::atomic::AtomicBool;
-
 use crossbeam_queue::ArrayQueue;
 use input::mouse::MousePacket;
 use kernel_userspace::{
@@ -11,9 +9,8 @@ use kernel_userspace::{
     syscall::{get_pid, send_service_message, service_create},
 };
 use lazy_static::lazy_static;
-use x86_64::structures::idt::InterruptStackFrame;
 
-use crate::{interrupt_handler, ioapic::mask_entry, service::PUBLIC_SERVICES};
+use crate::{ioapic::mask_entry, service::PUBLIC_SERVICES};
 
 use super::PS2Command;
 
@@ -29,14 +26,6 @@ enum MouseTypeId {
 
 lazy_static! {
     static ref MOUSEPACKET_QUEUE: ArrayQueue<MousePacket> = ArrayQueue::new(250);
-}
-
-interrupt_handler!(interrupt_handler => mouse_int_handler);
-
-static INT_WAITING: AtomicBool = AtomicBool::new(false);
-
-pub fn interrupt_handler(_: InterruptStackFrame) {
-    INT_WAITING.store(true, core::sync::atomic::Ordering::SeqCst)
 }
 
 enum PS2MousePackets {
@@ -175,33 +164,26 @@ impl Mouse {
     }
 
     pub fn check_interrupts(&mut self) {
-        loop {
-            let waiting = INT_WAITING.swap(false, core::sync::atomic::Ordering::SeqCst);
+        let data: u8 = unsafe { self.command.data_port.read() };
 
-            if !waiting {
-                return;
+        self.packet_state = match (&self.packet_state, &self.mouse_type) {
+            (PS2MousePackets::None, _) => PS2MousePackets::One(data),
+            (PS2MousePackets::One(a), _) => PS2MousePackets::Two(*a, data),
+            (PS2MousePackets::Two(a, b), MouseTypeId::Standard) => {
+                self.send_packet(*a, *b, data);
+                PS2MousePackets::None
             }
-            let data: u8 = unsafe { self.command.data_port.read() };
-
-            self.packet_state = match (&self.packet_state, &self.mouse_type) {
-                (PS2MousePackets::None, _) => PS2MousePackets::One(data),
-                (PS2MousePackets::One(a), _) => PS2MousePackets::Two(*a, data),
-                (PS2MousePackets::Two(a, b), MouseTypeId::Standard) => {
-                    self.send_packet(*a, *b, data);
-                    PS2MousePackets::None
-                }
-                (_, MouseTypeId::Standard) => unreachable!(),
-                (PS2MousePackets::Two(a, b), _) => PS2MousePackets::Three(*a, *b, data),
-                (
-                    PS2MousePackets::Three(a, b, c),
-                    MouseTypeId::WithExtraButtons | MouseTypeId::WithScrollWheel,
-                ) => {
-                    // Discard scroll wheel for now
-                    self.send_packet(*a, *b, *c);
-                    PS2MousePackets::None
-                }
-            };
-        }
+            (_, MouseTypeId::Standard) => unreachable!(),
+            (PS2MousePackets::Two(a, b), _) => PS2MousePackets::Three(*a, *b, data),
+            (
+                PS2MousePackets::Three(a, b, c),
+                MouseTypeId::WithExtraButtons | MouseTypeId::WithScrollWheel,
+            ) => {
+                // Discard scroll wheel for now
+                self.send_packet(*a, *b, *c);
+                PS2MousePackets::None
+            }
+        };
     }
 
     pub fn send_packet(&mut self, p1: u8, p2: u8, p3: u8) {

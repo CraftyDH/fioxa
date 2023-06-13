@@ -5,7 +5,7 @@
 use kernel_userspace::{
     ids::ServiceID,
     service::{get_public_service_id, ServiceMessageType},
-    syscall::{exit, service_subscribe, wait_receive_service_message},
+    syscall::{exit, receive_service_message_blocking, service_subscribe},
 };
 use terminal::script::{execute, Environment};
 
@@ -53,7 +53,7 @@ impl Iterator for KBInputDecoder {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let msg = wait_receive_service_message(self.service);
+            let msg = receive_service_message_blocking(self.service);
 
             let message = msg.get_message().unwrap();
 

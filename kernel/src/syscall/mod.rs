@@ -47,7 +47,7 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
             mmap_page_handler(regs);
             taskmanager::yield_now(stack_frame, regs);
         }
-        SERVICE => service_handler(regs),
+        SERVICE => service_handler(stack_frame, regs),
         READ_ARGS => read_args_handler(regs),
         GET_PID => regs.rax = get_task_mgr_current_pid().0 as usize,
         _ => println!("Unknown syscall class: {}", regs.rax),
@@ -77,7 +77,7 @@ fn read_args_handler(regs: &mut Registers) {
     }
 }
 
-fn service_handler(regs: &mut Registers) {
+fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
     match regs.r8 {
         syscall::SERVICE_CREATE => {
             let pid = get_task_mgr_current_pid();
@@ -104,7 +104,6 @@ fn service_handler(regs: &mut Registers) {
                 }
             }
         }
-
         syscall::SERVICE_FETCH => {
             let pid = get_task_mgr_current_pid();
             let tid = get_task_mgr_current_tid();
@@ -119,6 +118,14 @@ fn service_handler(regs: &mut Registers) {
                 None => regs.rax = 0,
             }
         }
+        syscall::SERVICE_FETCH_WAIT => service::find_or_wait_message(
+            stack_frame,
+            regs,
+            get_task_mgr_current_pid(),
+            get_task_mgr_current_tid(),
+            ServiceID(regs.r9 as u64),
+            ServiceTrackingNumber(regs.r10 as u64),
+        ),
         syscall::SERVICE_GET => {
             let pid = get_task_mgr_current_pid();
             let tid = get_task_mgr_current_tid();

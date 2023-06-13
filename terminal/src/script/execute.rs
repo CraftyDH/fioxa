@@ -10,7 +10,7 @@ use hashbrown::HashMap;
 use kernel_userspace::{
     fs::{self, add_path, read_full_file, StatResponse},
     service::{generate_tracking_number, get_public_service_id, ServiceMessage},
-    syscall::{send_and_wait_response_service_message, CURRENT_PID},
+    syscall::{send_and_get_response_service_message, CURRENT_PID},
 };
 use thiserror::Error;
 use userspace::{print, println};
@@ -64,7 +64,7 @@ fn execute_binary<'a>(path: String, pos_args: Vec<Expr>, env: &Environment<'a>) 
         .ok_or(ExecutionErrors::ReadError)?;
 
     println!("SPAWNING...");
-    send_and_wait_response_service_message(&ServiceMessage {
+    send_and_get_response_service_message(&ServiceMessage {
         service_id: elf_loader_sid,
         sender_pid: *CURRENT_PID,
         tracking_number: generate_tracking_number(),

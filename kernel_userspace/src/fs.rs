@@ -8,7 +8,7 @@ use alloc::{
 use crate::{
     ids::ServiceID,
     service::{generate_tracking_number, ServiceMessage, ServiceMessageContainer},
-    syscall::{send_and_wait_response_service_message, CURRENT_PID},
+    syscall::{send_and_get_response_service_message, CURRENT_PID},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,7 +81,7 @@ pub fn add_path(folder: &str, file: &str) -> String {
 }
 
 pub fn stat(fs_sid: ServiceID, disk: usize, file: &str) -> StatResponse {
-    let resp = send_and_wait_response_service_message(&ServiceMessage {
+    let resp = send_and_get_response_service_message(&ServiceMessage {
         service_id: fs_sid,
         sender_pid: *CURRENT_PID,
         tracking_number: generate_tracking_number(),
@@ -106,7 +106,7 @@ pub fn read_file_sector(
     node: usize,
     sector: u32,
 ) -> Option<ReadRequestShim> {
-    let resp = send_and_wait_response_service_message(&ServiceMessage {
+    let resp = send_and_get_response_service_message(&ServiceMessage {
         service_id: fs_sid,
         sender_pid: *CURRENT_PID,
         tracking_number: generate_tracking_number(),
@@ -135,7 +135,7 @@ pub fn read_file_sector(
 }
 
 pub fn read_full_file(fs_sid: ServiceID, disk: usize, node: usize) -> Option<ReadRequestShim> {
-    let resp = send_and_wait_response_service_message(&ServiceMessage {
+    let resp = send_and_get_response_service_message(&ServiceMessage {
         service_id: fs_sid,
         sender_pid: *CURRENT_PID,
         tracking_number: generate_tracking_number(),
@@ -180,7 +180,7 @@ impl ReadRequestShim {
 }
 
 pub fn get_disks(fs_sid: ServiceID) -> Vec<u64> {
-    let resp = send_and_wait_response_service_message(&ServiceMessage {
+    let resp = send_and_get_response_service_message(&ServiceMessage {
         service_id: fs_sid,
         sender_pid: *CURRENT_PID,
         tracking_number: generate_tracking_number(),

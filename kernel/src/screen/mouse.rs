@@ -44,7 +44,7 @@ pub fn monitor_cursor_task() {
     let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
 
     loop {
-        let message = kernel_userspace::syscall::wait_receive_service_message(mouse_id);
+        let message = kernel_userspace::syscall::receive_service_message_blocking(mouse_id);
 
         let msg = message.get_message().unwrap();
 
