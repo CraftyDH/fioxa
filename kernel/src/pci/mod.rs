@@ -24,12 +24,12 @@ lazy_static::lazy_static! {
 }
 
 pub fn poll_interrupts() {
-    let pci_event = get_public_service_id("INTERRUPTS:PCI").unwrap();
+    let mut buffer = Vec::new();
+    let pci_event = get_public_service_id("INTERRUPTS:PCI", &mut buffer).unwrap();
     service_subscribe(pci_event);
 
     loop {
-        let m = receive_service_message_blocking(pci_event);
-        let message = m.get_message().unwrap();
+        let message = receive_service_message_blocking(pci_event, &mut buffer).unwrap();
         match message.message {
             kernel_userspace::service::ServiceMessageType::InterruptEvent => {
                 // For each device check if it had the interrupt

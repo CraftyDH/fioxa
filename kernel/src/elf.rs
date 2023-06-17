@@ -1,5 +1,6 @@
 use core::cmp::{max, min};
 
+use alloc::vec::Vec;
 use kernel_userspace::{
     ids::ProcessID,
     service::{SendServiceMessageDest, ServiceMessage, ServiceMessageType},
@@ -64,10 +65,6 @@ const EM_X86_64: u16 = 62; // AMD x86-64 architecture
 const PT_LOAD: u32 = 1; // A loadable segment
 
 pub fn load_elf(data: &[u8], args: &[u8]) -> ProcessID {
-    // TODO: FIX
-    // This is a really bad fix to an aligned start address for the buffer
-    let data = data.to_vec();
-    println!("LOADING...");
     // Transpose the header as an elf header
     let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
@@ -164,14 +161,24 @@ pub fn elf_new_process_loader() {
     let pid = get_pid();
     PUBLIC_SERVICES.lock().insert("ELF_LOADER", sid);
 
+    let mut message_buffer = Vec::new();
+    let mut tmp_prog_buffer = Vec::new();
     loop {
-        let m = receive_service_message_blocking(sid);
-
-        let query = m.get_message().unwrap();
+        let query = receive_service_message_blocking(sid, &mut message_buffer).unwrap();
 
         let resp = match query.message {
             ServiceMessageType::ElfLoader(elf, args) => {
-                let pid = load_elf(elf, args);
+                // TODO: FIX
+                // This is a really bad fix to an aligned start address for the buffer
+                // let data = data.to_vec();
+                tmp_prog_buffer.reserve(elf.len());
+                unsafe {
+                    tmp_prog_buffer.set_len(elf.len());
+                }
+                tmp_prog_buffer.copy_from_slice(elf);
+                println!("LOADING...");
+
+                let pid = load_elf(&tmp_prog_buffer, args);
                 ServiceMessageType::ElfLoaderResp(ProcessID(pid.0))
             }
             _ => ServiceMessageType::UnknownCommand,
@@ -183,7 +190,7 @@ pub fn elf_new_process_loader() {
             tracking_number: query.tracking_number,
             destination: SendServiceMessageDest::ToProcess(query.sender_pid),
             message: resp,
-        })
+        }, &mut message_buffer)
         .unwrap();
     }
 }

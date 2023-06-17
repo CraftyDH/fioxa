@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
     service::get_public_service_id,
     syscall::{receive_service_message_blocking, service_subscribe, spawn_thread},
@@ -23,8 +23,10 @@ pub fn main() {
         log!("PS2 Controller failed to init because: {}", e);
     }
 
-    let kb_event = get_public_service_id("INTERRUPTS:KB").unwrap();
-    let mouse_event = get_public_service_id("INTERRUPTS:MOUSE").unwrap();
+    let mut buffer = Vec::new();
+
+    let kb_event = get_public_service_id("INTERRUPTS:KB", &mut buffer).unwrap();
+    let mouse_event = get_public_service_id("INTERRUPTS:MOUSE", &mut buffer).unwrap();
 
     service_subscribe(kb_event);
     service_subscribe(mouse_event);
@@ -34,9 +36,9 @@ pub fn main() {
     let controller = Arc::new(Mutex::new(ps2_controller));
 
     spawn_thread(|| loop {
+        let mut buffer = Vec::new();
         loop {
-            let m = receive_service_message_blocking(mouse_event);
-            let message = m.get_message().unwrap();
+            let message = receive_service_message_blocking(mouse_event, &mut buffer).unwrap();
             match message.message {
                 kernel_userspace::service::ServiceMessageType::InterruptEvent => {
                     controller.lock().mouse.check_interrupts()
@@ -47,8 +49,7 @@ pub fn main() {
     });
 
     loop {
-        let m = receive_service_message_blocking(kb_event);
-        let message = m.get_message().unwrap();
+        let message = receive_service_message_blocking(kb_event, &mut buffer).unwrap();
         match message.message {
             kernel_userspace::service::ServiceMessageType::InterruptEvent => {
                 controller.lock().keyboard.check_interrupts()

@@ -420,7 +420,7 @@ impl FileSystemDev for FAT {
         res
     }
 
-    fn read_file(&mut self, file_id: usize) -> Vec<u8> {
+    fn read_file<'a>(&mut self, file_id: usize, buffer: &'a mut Vec<u8>) -> &'a [u8] {
         let fat_file = self.file_id_lookup.get(&file_id).unwrap();
 
         let length = match fat_file.entry_type {
@@ -428,11 +428,14 @@ impl FileSystemDev for FAT {
             FATFileType::File(f) => f,
         };
 
-        let mut filebuffer = vec![0u8; (length as usize + 511) & !511];
-
+        let buffer_size = (length as usize + 511) & !511;
         let mut sectors_to_read = (length + 511) / 512;
         let mut buffer_offset = 0;
         let mut cluster = fat_file.cluster;
+
+        buffer.resize(buffer_size, 0);
+
+        println!("READING FROM DISK");
 
         while sectors_to_read > 0 {
             let read_amount = core::cmp::min(
@@ -445,17 +448,15 @@ impl FileSystemDev for FAT {
             self.disk.read(
                 file_sector as usize,
                 read_amount as u32,
-                &mut filebuffer[buffer_offset..],
+                &mut buffer[buffer_offset..],
             );
             sectors_to_read -= read_amount;
             buffer_offset += read_amount as usize * 512;
 
             cluster = self.get_next_cluster(cluster);
         }
-
-        filebuffer.truncate(length as usize);
-
-        filebuffer
+        println!("FIN READING FROM DISK");
+        &buffer[..length as usize]
     }
 
     fn read_file_sector(

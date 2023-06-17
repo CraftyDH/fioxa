@@ -1,6 +1,6 @@
 use core::ptr::slice_from_raw_parts;
 
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, vec::Vec};
 
 use conquer_once::noblock::OnceCell;
 use crossbeam_queue::ArrayQueue;
@@ -42,8 +42,9 @@ pub unsafe fn core_start_multitasking() -> ! {
     // Performs work to keep core working & is preemptible
     set_is_task_mgr_schedule(true);
     core::arch::asm!("sti");
+    let mut send_buffer = Vec::new();
     loop {
-        if check_interrupts() {
+        if check_interrupts(&mut send_buffer) {
             // If we got an interrupt sched the tasks
             kernel_userspace::syscall::yield_now();
         };

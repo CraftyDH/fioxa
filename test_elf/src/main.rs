@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use alloc::vec::Vec;
 use kernel_userspace::{
     service::{generate_tracking_number, get_public_service_id, ServiceMessage},
     syscall::{send_service_message, CURRENT_PID},
@@ -15,7 +16,8 @@ extern crate userspace_bumpalloc;
 pub extern "C" fn main() {
     print!("Hi");
 
-    let sid = get_public_service_id("ACCEPTER").unwrap();
+    let mut buffer = Vec::new();
+    let sid = get_public_service_id("ACCEPTER", &mut buffer).unwrap();
 
     for i in 0.. {
         send_service_message(&ServiceMessage {
@@ -24,11 +26,11 @@ pub extern "C" fn main() {
             tracking_number: generate_tracking_number(),
             destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
             message: kernel_userspace::service::ServiceMessageType::Ack,
-        })
+        }, &mut buffer)
         .unwrap();
-        if i % 10000 == 0 {
-            println!("{i}|")
-        }
+        // if i % 10000 == 0 {
+        //     println!("SENDER {i}")
+        // }
     }
 }
 

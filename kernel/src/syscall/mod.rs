@@ -2,7 +2,7 @@ use core::ptr::slice_from_raw_parts_mut;
 
 use kernel_userspace::{
     ids::ServiceID,
-    service::{ServiceMessageContainer, ServiceTrackingNumber},
+    service::{ServiceTrackingNumber},
     syscall::{self, yield_now, SYSCALL_NUMBER},
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
@@ -91,11 +91,8 @@ fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
             let pid = get_task_mgr_current_pid();
 
             let buf = unsafe { core::slice::from_raw_parts(regs.r9 as *const u8, regs.r10) };
-            let message = ServiceMessageContainer {
-                buffer: buf.to_vec(),
-            };
 
-            match service::push(pid, message) {
+            match service::push(pid, buf.into()) {
                 Ok(_) => {
                     regs.rax = 0;
                 }

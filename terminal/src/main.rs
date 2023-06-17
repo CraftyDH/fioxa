@@ -24,7 +24,7 @@ fn panic(i: &core::panic::PanicInfo) -> ! {
     exit()
 }
 
-use alloc::string::{String, ToString};
+use alloc::{string::{String, ToString}, vec::Vec};
 use input::keyboard::{
     virtual_code::{Modifier, VirtualKeyCode},
     KeyboardEvent,
@@ -36,6 +36,7 @@ pub struct KBInputDecoder {
     rshift: bool,
     caps_lock: bool,
     num_lock: bool,
+    receive_buffer: Vec<u8>,
 }
 
 impl KBInputDecoder {
@@ -46,6 +47,7 @@ impl KBInputDecoder {
             rshift: false,
             caps_lock: false,
             num_lock: false,
+            receive_buffer: Default::default(),
         }
     }
 }
@@ -55,11 +57,9 @@ impl Iterator for KBInputDecoder {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let msg = receive_service_message_blocking(self.service);
+            let msg = receive_service_message_blocking(self.service, &mut self.receive_buffer).unwrap();
 
-            let message = msg.get_message().unwrap();
-
-            match message.message {
+            match msg.message {
                 ServiceMessageType::Input(
                     kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code),
                 ) => match scan_code {
@@ -97,9 +97,12 @@ pub extern "C" fn main() {
     let mut cwd: String = String::from("/");
     let mut partiton_id = 0u64;
 
-    let fs_sid = get_public_service_id("FS").unwrap();
-    let keyboard_sid = get_public_service_id("INPUT:KB").unwrap();
-    let elf_loader_sid = get_public_service_id("ELF_LOADER").unwrap();
+    let mut buffer = Vec::new();
+    let mut file_buffer = Vec::new();
+
+    let fs_sid = get_public_service_id("FS", &mut buffer).unwrap();
+    let keyboard_sid = get_public_service_id("INPUT:KB", &mut buffer).unwrap();
+    let elf_loader_sid = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
 
     service_subscribe(keyboard_sid);
 
@@ -146,14 +149,14 @@ pub extern "C" fn main() {
                 }
 
                 println!("Drives:");
-                for part in get_disks(fs_sid) {
+                for part in get_disks(fs_sid, &mut buffer).into_iter() {
                     println!("{}:", part)
                 }
             }
             "ls" => {
                 let path = add_path(&cwd, rest);
 
-                let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str());
+                let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer);
 
                 match stat {
                     StatResponse::File(_) => println!("This is a file"),
@@ -170,7 +173,7 @@ pub extern "C" fn main() {
                 for file in rest.split_ascii_whitespace() {
                     let path = add_path(&cwd, file);
 
-                    let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str());
+                    let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer);
 
                     let file = match stat {
                         StatResponse::File(f) => f,
@@ -186,9 +189,9 @@ pub extern "C" fn main() {
 
                     for i in 0..file.file_size / 512 {
                         let sect =
-                            read_file_sector(fs_sid, partiton_id as usize, file.node_id, i as u32);
+                            read_file_sector(fs_sid, partiton_id as usize, file.node_id, i as u32, &mut file_buffer);
                         if let Some(data) = sect {
-                            print!("{}", String::from_utf8_lossy(data.get_data()))
+                            print!("{}", String::from_utf8_lossy(data))
                         } else {
                             print!("Error reading");
                             break;
@@ -201,7 +204,7 @@ pub extern "C" fn main() {
 
                 let path = add_path(&cwd, prog);
 
-                let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str());
+                let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer);
 
                 let file = match stat {
                     StatResponse::File(f) => f,
@@ -215,7 +218,7 @@ pub extern "C" fn main() {
                     }
                 };
                 println!("READING...");
-                let contents = read_full_file(fs_sid, partiton_id as usize, file.node_id).unwrap();
+                let contents = read_full_file(fs_sid, partiton_id as usize, file.node_id, &mut file_buffer).unwrap();
 
                 println!("SPAWNING...");
 
@@ -225,10 +228,10 @@ pub extern "C" fn main() {
                     tracking_number: generate_tracking_number(),
                     destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
                     message: kernel_userspace::service::ServiceMessageType::ElfLoader(
-                        contents.get_data(),
+                        contents,
                         args.as_bytes(),
                     ),
-                })
+                }, &mut buffer)
                 .unwrap();
 
                 // let pid = load_elf(&contents_buffer.data, args.as_bytes());

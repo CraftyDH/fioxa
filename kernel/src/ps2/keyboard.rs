@@ -1,4 +1,4 @@
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     input::InputServiceMessage,
@@ -20,6 +20,7 @@ pub struct Keyboard {
     keyboard_service: ServiceID,
     decoder: Box<dyn Scancode>,
     current_pid: ProcessID,
+    send_buffer: Vec<u8>,
 }
 
 impl Keyboard {
@@ -32,6 +33,7 @@ impl Keyboard {
             keyboard_service,
             decoder: Box::new(ScancodeSet2::new()),
             current_pid: get_pid(),
+            send_buffer: Default::default(),
         }
     }
 
@@ -92,7 +94,7 @@ impl Keyboard {
                 tracking_number: generate_tracking_number(),
                 destination: SendServiceMessageDest::ToSubscribers,
                 message: ServiceMessageType::Input(InputServiceMessage::KeyboardEvent(key)),
-            })
+            }, &mut self.send_buffer)
             .unwrap()
         }
     }
