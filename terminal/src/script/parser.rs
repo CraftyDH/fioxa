@@ -7,35 +7,67 @@ use super::tokenizer::{
     Token,
     TokenKind::{self, *},
 };
-use crate::error::Result;
+use crate::error::{Context, Result};
 
 pub fn parse(tokens: Vec<Token>) -> Result<Vec<Stmt>> {
     let mut parser = Parser::new(tokens);
     let mut stmts = Vec::new();
 
     while !parser.is_at_end() {
-        stmts.push(parse_exec(&mut parser)?);
+        let stmt = match parser.peek().context("Inside parse")? {
+            Eq => Err(ParserError::UnexpectedToken(
+                parser.peek().context("Inside parse Eq")?,
+            ))?,
+            Dot | Slash | Str(_) => parse_exec(&mut parser)?,
+            Var(_) => parse_var(&mut parser)?,
+            StmtEnd => {
+                parser.consume()?;
+                Stmt::Noop
+            }
+        };
+
+        stmts.push(stmt);
     }
 
     Ok(stmts)
 }
 
-fn parse_exec(p: &mut Parser) -> Result<Stmt> {
-    let path = parse_possible_strings(p)?;
-    let pos_args = parse_positional_arguments(p)?;
+fn parse_var(p: &mut Parser) -> Result<Stmt> {
+    let id = p.expect_var()?;
+    p.expect(Eq)?;
+    let expr = parse_expr(p)?;
+    p.expect(StmtEnd)?;
 
-    Ok(Stmt::Execution { path, pos_args })
+    Ok(Stmt::VarDec { id, expr })
 }
 
-fn parse_positional_arguments(p: &mut Parser) -> Result<Vec<Expr>> {
-    let mut exprs = Vec::new();
+fn parse_exec(p: &mut Parser) -> Result<Stmt> {
+    let path = parse_possible_strings(p)?;
+    let mut pos_args = Vec::new();
 
-    while !p.is_at_end() {
-        let param = parse_possible_strings(p)?;
-        exprs.push(Expr::String(param));
+    while !p.is_at_end()
+        && match p.peek().context("Inside parse_exec")? {
+            Eq | StmtEnd => false,
+            _ => true,
+        }
+    {
+        pos_args.push(parse_expr(p)?);
     }
 
-    Ok(exprs)
+    Ok(Stmt::Execution(Expr::Exec { path, pos_args }))
+}
+
+fn parse_expr(p: &mut Parser) -> Result<Expr> {
+    Ok(match p.peek().context("Inside parse_expr")? {
+        Dot | Slash | Str(_) => Expr::String(parse_possible_strings(p)?),
+        Var(name) => {
+            p.consume()?;
+            Expr::Var(name)
+        }
+        Eq | StmtEnd => Err(ParserError::UnexpectedToken(
+            p.peek().context("Inside parse_expr::Eq|StmtEnd")?,
+        ))?,
+    })
 }
 
 fn parse_possible_strings(p: &mut Parser) -> Result<String> {
@@ -43,7 +75,7 @@ fn parse_possible_strings(p: &mut Parser) -> Result<String> {
         return Ok(String::new());
     }
 
-    Ok(match p.peek()? {
+    Ok(match p.peek().context("Inside parse_possible_strings")? {
         Dot => {
             p.expect(Dot)?;
             format!(".{}", parse_possible_strings(p)?)
@@ -56,9 +88,14 @@ fn parse_possible_strings(p: &mut Parser) -> Result<String> {
             p.consume()?;
             str
         }
+        Eq | Var(_) | StmtEnd => Err(ParserError::UnexpectedToken(
+            p.peek()
+                .context("Inside parse_possible_strings::Eq|Var|StmtEnd")?,
+        ))?,
     })
 }
 
+#[derive(Debug)]
 pub struct Parser {
     pub index: usize,
     pub tokens: Vec<Token>,
@@ -71,6 +108,18 @@ impl Parser {
 
     pub fn is_at_end(&self) -> bool {
         self.index >= self.tokens.len()
+    }
+
+    pub fn is(&self, tokens: &[TokenKind]) -> Result<bool> {
+        let peek = self.peek().context("Inside is")?;
+
+        for token in tokens {
+            if peek == *token {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     fn ensure_current(&self) -> Result<()> {
@@ -90,20 +139,21 @@ impl Parser {
     }
 
     pub fn peek(&self) -> Result<TokenKind> {
-        self.ensure_current()?;
+        self.ensure_current().context("Inside peek")?;
         Ok(self.tokens[self.index].kind.clone())
     }
 
     pub fn consume(&mut self) -> Result<TokenKind> {
-        self.ensure_next()?;
-        let current = self.peek()?;
+        self.ensure_next().context("Inside consume")?;
+        let current = self.peek().context("Inside consume")?;
 
         self.index += 1;
         Ok(current)
     }
 
     pub fn expect(&mut self, token: TokenKind) -> Result<TokenKind> {
-        self.ensure_current()?;
+        self.ensure_current()
+            .with_context(|| format!("Expected: {}", token))?;
 
         if self.tokens[self.index].kind != token {
             Err(ParserError::ExpectedToken(
@@ -119,7 +169,7 @@ impl Parser {
     }
 
     pub fn expect_id(&mut self) -> Result<String> {
-        self.ensure_next()?;
+        self.ensure_next().context("Inside expect_id")?;
 
         let id = match &self.tokens[self.index].kind {
             Str(val) => val.clone(),
@@ -131,21 +181,42 @@ impl Parser {
 
         Ok(id)
     }
+
+    pub fn expect_var(&mut self) -> Result<String> {
+        self.ensure_next().context("Inside expect_var")?;
+
+        let id = match &self.tokens[self.index].kind {
+            Var(val) => val.clone(),
+            _ => Err(ParserError::ExpectedIdentifier(
+                self.tokens[self.index].kind.clone(),
+            ))?,
+        };
+        self.index += 1;
+
+        Ok(id)
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Stmt {
-    Execution { path: String, pos_args: Vec<Expr> },
+    Noop,
+    VarDec { id: String, expr: Expr },
+    Execution(Expr),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Expr {
+    Exec { path: String, pos_args: Vec<Expr> },
+    Var(String),
     String(String),
 }
 
 #[derive(Debug, Error)]
 pub enum ParserError {
-    #[error("Expected token '{0}', found '{0}'")]
+    #[error("Unexpected token '{0}'")]
+    UnexpectedToken(TokenKind),
+
+    #[error("Expected token '{0}', found '{1}'")]
     ExpectedToken(TokenKind, TokenKind),
 
     #[error("Expected identifier, found '{0}'")]

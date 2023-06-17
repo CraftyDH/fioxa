@@ -20,32 +20,28 @@ use crate::error::Result;
 
 pub fn execute<'a>(stmts: Vec<Stmt>, env: &mut Environment<'a>) -> Result<()> {
     for stmt in stmts {
-        execute_single(stmt, env)?;
+        execute_stmt(stmt, env)?;
     }
 
     Ok(())
 }
 
-fn execute_single<'a>(stmt: Stmt, env: &mut Environment<'a>) -> Result<()> {
+fn execute_stmt<'a>(stmt: Stmt, env: &mut Environment<'a>) -> Result<()> {
     match stmt {
-        Stmt::Execution { path, pos_args } => {
-            // TODO: Function resolution
-
-            if path.starts_with("./") {
-                return execute_binary(path, pos_args, env);
-            }
-
-            if env.has_function(&path) {
-                env.call_function(&path, pos_args)?;
-                return Ok(());
-            }
-
-            Err(ExecutionErrors::UnresolvedCall(path))?
+        Stmt::Noop => Ok(()),
+        Stmt::Execution(expr) => {
+            execute_expr(&expr, env)?;
+            Ok(())
+        }
+        Stmt::VarDec { id, expr } => {
+            let val = execute_expr(&expr, env)?;
+            env.set_var(id, val);
+            Ok(())
         }
     }
 }
 
-fn execute_binary<'a>(path: String, pos_args: Vec<Expr>, env: &Environment<'a>) -> Result<()> {
+fn execute_binary<'a>(path: String, pos_args: Vec<Expr>, env: &mut Environment<'a>) -> Result<()> {
     let fs_sid = get_public_service_id("FS").ok_or(ExecutionErrors::CouldNotFindFSSID)?;
     let elf_loader_sid =
         get_public_service_id("ELF_LOADER").ok_or(ExecutionErrors::CouldNotFindELFSID)?;
@@ -71,25 +67,38 @@ fn execute_binary<'a>(path: String, pos_args: Vec<Expr>, env: &Environment<'a>) 
         destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
         message: kernel_userspace::service::ServiceMessageType::ElfLoader(
             contents.get_data(),
-            args_to_string(pos_args)?.as_bytes(),
+            args_to_string(pos_args, env)?.as_bytes(),
         ),
     })?;
 
     Ok(())
 }
 
-pub fn args_to_string(pos_args: Vec<Expr>) -> Result<String> {
+pub fn args_to_string<'a>(pos_args: Vec<Expr>, env: &mut Environment<'a>) -> Result<String> {
     Ok(pos_args
         .iter()
         // TODO: Proper error handling / not unwrapping
-        .map(|arg| execute_expr(arg).unwrap().to_string())
+        .map(|arg| execute_expr(arg, env).unwrap().to_string())
         .collect::<Vec<String>>()
         .join(" "))
 }
 
-pub fn execute_expr(expr: &Expr) -> Result<Value> {
+pub fn execute_expr<'a>(expr: &Expr, env: &mut Environment<'a>) -> Result<Value> {
     Ok(match expr {
         Expr::String(str) => Value::String(str.clone()),
+        Expr::Exec { path, pos_args } => {
+            if path.starts_with("./") {
+                execute_binary(path.to_string(), pos_args.clone(), env)?;
+                return Ok(Value::Null);
+            }
+
+            if env.has_function(&path) {
+                return env.call_function(&path, pos_args.clone());
+            }
+
+            Err(ExecutionErrors::UnresolvedCall(path.clone()))?
+        }
+        Expr::Var(key) => env.get_var(key),
     })
 }
 
@@ -98,6 +107,7 @@ pub struct Environment<'a> {
     pub partition_id: u64,
 
     parent: Option<&'a mut Environment<'a>>,
+    variables: HashMap<String, Value>,
     functions: HashMap<String, Value>,
 }
 
@@ -107,6 +117,7 @@ impl<'a> Environment<'a> {
             cwd,
             partition_id,
             parent: None,
+            variables: HashMap::new(),
             functions: HashMap::new(),
         }
     }
@@ -116,6 +127,7 @@ impl<'a> Environment<'a> {
             cwd: env.cwd.clone(),
             partition_id: env.partition_id,
             parent: Some(env),
+            variables: HashMap::new(),
             functions: HashMap::new(),
         }
     }
@@ -152,6 +164,14 @@ impl<'a> Environment<'a> {
     pub fn add_internal_fn(&mut self, name: &str, func: InternalFunctionType) {
         self.functions
             .insert(name.to_string(), Value::InternalFunction(func));
+    }
+
+    pub fn get_var(&self, key: &str) -> Value {
+        self.variables.get(key).map_or(Value::Null, |v| v.clone())
+    }
+
+    pub fn set_var(&mut self, key: String, val: Value) {
+        self.variables.insert(key, val);
     }
 }
 

@@ -3,7 +3,7 @@
 
 use core::{
     error::Error,
-    fmt::{Debug, Display, Write},
+    fmt::{Debug, Display},
 };
 
 extern crate alloc;

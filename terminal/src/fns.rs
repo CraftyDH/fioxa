@@ -5,6 +5,7 @@ use kernel_userspace::service::get_public_service_id;
 use terminal::error::Result;
 use terminal::script::execute::{args_to_string, execute_expr};
 use terminal::script::{execute::Value, parser::Expr, Environment};
+use userspace::{print, println};
 
 pub fn pwd<'a>(env: &mut Environment<'a>, _args: Vec<Expr>) -> Result<Value> {
     println!("{}", env.cwd);
@@ -15,7 +16,7 @@ pub fn echo<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
     if args.len() == 0 {
         println!("ECHO!");
     } else {
-        // TODO: Variable echo
+        println!("{}", execute_expr(&args[0], env)?);
     }
 
     Ok(Value::Null)
@@ -23,7 +24,7 @@ pub fn echo<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
 
 pub fn disk<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
     if args.len() == 1 {
-        if let Some(new_id) = execute_expr(&args[0])?
+        if let Some(new_id) = execute_expr(&args[0], env)?
             .to_string()
             .chars()
             .next()
@@ -47,7 +48,7 @@ pub fn disk<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
 pub fn ls<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
     let fs_sid = get_public_service_id("FS").unwrap();
 
-    let path = add_path(&env.cwd, &args_to_string(args)?);
+    let path = add_path(&env.cwd.clone(), &args_to_string(args, env)?);
 
     let stat = fs::stat(fs_sid, env.partition_id as usize, path.as_str());
 
@@ -65,7 +66,7 @@ pub fn ls<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
 }
 
 pub fn cd<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
-    env.cwd = add_path(&env.cwd, &args_to_string(args)?);
+    env.cwd = add_path(&env.cwd.clone(), &args_to_string(args, env)?);
     Ok(Value::Null)
 }
 
@@ -73,7 +74,7 @@ pub fn cat<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
     let fs_sid = get_public_service_id("FS").unwrap();
 
     for file in args {
-        let file = execute_expr(&file)?.to_string();
+        let file = execute_expr(&file, env)?.to_string();
 
         let path = add_path(&env.cwd, &file);
 

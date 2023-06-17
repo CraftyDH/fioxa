@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use core::fmt::{Display, Write};
+use userspace::{print, println};
 
 use alloc::{
     string::{String, ToString},
@@ -11,28 +12,41 @@ use thiserror::Error;
 use crate::error::{Context, Result};
 
 pub fn tiny_tokenizer(mut tokens: Vec<Token>, src: &str, start: usize) -> Result<Vec<Token>> {
-    if src.is_empty() {
+    let next = src.chars().next();
+    if let None = next {
         return Ok(tokens);
     }
 
-    let next = src.chars().next().ok_or(LexerError::UnexpectedEOF)?;
+    let next = next.ok_or(LexerError::UnexpectedEOF)?;
+    if next == ' ' {
+        return tiny_tokenizer(tokens, &src[1..], start + 1);
+    }
 
     let (token, size) = match next {
         '.' => (TokenKind::Dot, 1),
         '/' => (TokenKind::Slash, 1),
-        c if c.is_alphanumeric() || c == '-' || c == '.' => {
-            tokenize_ident(src).with_context(|| LexerError::IdentifierFailed)?
+        '=' => (TokenKind::Eq, 1),
+        '\n' => (TokenKind::StmtEnd, 1),
+        ';' => (TokenKind::StmtEnd, 1),
+        '$' => {
+            let (str, length) =
+                tokenize_str(&src[1..]).with_context(|| LexerError::IdentifierFailed)?;
+            (TokenKind::Var(str), length + 1)
         }
-        _ => Err(LexerError::UnknownChar(next))?,
+        c if c.is_alphanumeric() || c == '-' || c == '.' => {
+            let (str, length) = tokenize_str(src).with_context(|| LexerError::IdentifierFailed)?;
+            (TokenKind::Str(str), length)
+        }
+        _ => Err(LexerError::UnknownChar(start + 1, next))?,
     };
 
     let end = start + size;
     tokens.push(Token::new(token, start, end));
 
-    Ok(tiny_tokenizer(tokens, &src[size..], end)?)
+    tiny_tokenizer(tokens, &src[size..], end)
 }
 
-fn tokenize_ident(data: &str) -> TokResult<(TokenKind, usize)> {
+fn tokenize_str(data: &str) -> TokResult<(String, usize)> {
     // TODO: Reintroduce this once I have number types
     // match data.chars().next() {
     //     Some(ch) if ch.is_digit(10) => Err(LexerError::StartWithNum)?,
@@ -41,9 +55,7 @@ fn tokenize_ident(data: &str) -> TokResult<(TokenKind, usize)> {
     // }
 
     let (got, bytes_read) = take_while(data, |ch| ch == '-' || ch.is_alphanumeric() || ch == '.')?;
-
-    let tok = TokenKind::Str(got.to_string());
-    Ok((tok, bytes_read))
+    Ok((got.to_string(), bytes_read))
 }
 
 fn take_while<F>(data: &str, mut pred: F) -> TokResult<(&str, usize)>
@@ -71,9 +83,12 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenKind {
+    Eq,
     Dot,
     Slash,
+    StmtEnd,
     Str(String),
+    Var(String),
 }
 
 impl Display for TokenKind {
@@ -88,11 +103,17 @@ impl Display for TokenKind {
                 f.write_str(str)?;
                 f.write_char('"')
             }
+            Eq => f.write_char('='),
+            Var(str) => {
+                f.write_char('$')?;
+                f.write_str(str)
+            }
+            StmtEnd => f.write_str("\\n"),
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Token {
     pub kind: TokenKind,
     /// The location inside of the initial tokenizing string
@@ -119,6 +140,6 @@ pub enum LexerError {
     #[error("No matches")]
     NoMatches,
 
-    #[error("Unknown chars '{0}'")]
-    UnknownChar(char),
+    #[error("{0}: Unknown chars '{1}'")]
+    UnknownChar(usize, char),
 }

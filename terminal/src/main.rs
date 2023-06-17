@@ -127,6 +127,7 @@ pub extern "C" fn main() {
             }
         }
 
+        curr_line.push('\n');
         match execute(&curr_line, &mut env) {
             Ok(_) => {}
             Err(error) => println!("{}", error.to_string()),
