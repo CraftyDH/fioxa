@@ -16,7 +16,7 @@ use kernel_userspace::{
 extern crate alloc;
 #[macro_use]
 extern crate userspace;
-extern crate userspace_bumpalloc;
+extern crate userspace_slaballoc;
 
 #[panic_handler]
 fn panic(i: &core::panic::PanicInfo) -> ! {
@@ -24,7 +24,10 @@ fn panic(i: &core::panic::PanicInfo) -> ! {
     exit()
 }
 
-use alloc::{string::{String, ToString}, vec::Vec};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use input::keyboard::{
     virtual_code::{Modifier, VirtualKeyCode},
     KeyboardEvent,
@@ -57,7 +60,8 @@ impl Iterator for KBInputDecoder {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let msg = receive_service_message_blocking(self.service, &mut self.receive_buffer).unwrap();
+            let msg =
+                receive_service_message_blocking(self.service, &mut self.receive_buffer).unwrap();
 
             match msg.message {
                 ServiceMessageType::Input(
@@ -188,8 +192,13 @@ pub extern "C" fn main() {
                     };
 
                     for i in 0..file.file_size / 512 {
-                        let sect =
-                            read_file_sector(fs_sid, partiton_id as usize, file.node_id, i as u32, &mut file_buffer);
+                        let sect = read_file_sector(
+                            fs_sid,
+                            partiton_id as usize,
+                            file.node_id,
+                            i as u32,
+                            &mut file_buffer,
+                        );
                         if let Some(data) = sect {
                             print!("{}", String::from_utf8_lossy(data))
                         } else {
@@ -218,20 +227,25 @@ pub extern "C" fn main() {
                     }
                 };
                 println!("READING...");
-                let contents = read_full_file(fs_sid, partiton_id as usize, file.node_id, &mut file_buffer).unwrap();
+                let contents =
+                    read_full_file(fs_sid, partiton_id as usize, file.node_id, &mut file_buffer)
+                        .unwrap();
 
                 println!("SPAWNING...");
 
-                let resp = send_and_get_response_service_message(&ServiceMessage {
-                    service_id: elf_loader_sid,
-                    sender_pid: *CURRENT_PID,
-                    tracking_number: generate_tracking_number(),
-                    destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-                    message: kernel_userspace::service::ServiceMessageType::ElfLoader(
-                        contents,
-                        args.as_bytes(),
-                    ),
-                }, &mut buffer)
+                let resp = send_and_get_response_service_message(
+                    &ServiceMessage {
+                        service_id: elf_loader_sid,
+                        sender_pid: *CURRENT_PID,
+                        tracking_number: generate_tracking_number(),
+                        destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
+                        message: kernel_userspace::service::ServiceMessageType::ElfLoader(
+                            contents,
+                            args.as_bytes(),
+                        ),
+                    },
+                    &mut buffer,
+                )
                 .unwrap();
 
                 // let pid = load_elf(&contents_buffer.data, args.as_bytes());

@@ -2,7 +2,7 @@ use core::ptr::slice_from_raw_parts_mut;
 
 use kernel_userspace::{
     ids::ServiceID,
-    service::{ServiceTrackingNumber},
+    service::ServiceTrackingNumber,
     syscall::{self, yield_now, SYSCALL_NUMBER},
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
@@ -12,7 +12,7 @@ use crate::{
     cpu_localstorage::{get_task_mgr_current_pid, get_task_mgr_current_tid},
     gdt::TASK_SWITCH_INDEX,
     paging::{
-        page_allocator::request_page,
+        page_allocator::{free_page, request_page},
         page_table_manager::{Mapper, Page, Size4KB},
     },
     scheduling::taskmanager::{self, PROCESSES},
@@ -45,6 +45,12 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
         EXIT_THREAD => taskmanager::exit_thread(stack_frame, regs),
         MMAP_PAGE => {
             mmap_page_handler(regs);
+            taskmanager::yield_now(stack_frame, regs);
+        }
+        UNMMAP_PAGE => {
+            // ! TODO: THIS IS VERY BAD
+            // Another thread can still write to the memory
+            unmmap_page_handler(regs);
             taskmanager::yield_now(stack_frame, regs);
         }
         SERVICE => service_handler(stack_frame, regs),
@@ -154,6 +160,30 @@ fn mmap_page_handler(regs: &mut Registers) {
         .map_memory(Page::<Size4KB>::new(regs.r8 as u64), page)
         .unwrap()
         .flush();
+}
+
+fn unmmap_page_handler(regs: &mut Registers) {
+    assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
+
+    let pid = get_task_mgr_current_pid();
+    let mut processes = PROCESSES.lock();
+
+    let process = processes.get_mut(&pid).unwrap();
+
+    let page = Page::<Size4KB>::new(regs.r8 as u64);
+
+    let phys_page = process.page_mapper.get_phys_addr(page).unwrap();
+    process.page_mapper.unmap_memory(page).unwrap().flush();
+
+    process.owned_pages.swap_remove(
+        process
+            .owned_pages
+            .iter()
+            .position(|e| e.get_address() == phys_page)
+            .unwrap(),
+    );
+
+    free_page(phys_page);
 }
 
 pub fn sleep(ms: usize) {

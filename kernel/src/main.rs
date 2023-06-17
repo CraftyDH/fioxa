@@ -174,8 +174,8 @@ pub fn main(info: *const BootInfo) -> ! {
         free_page(frame);
     }
 
-    log!("Initializing HEAP...");
-    allocator::init_heap(&mut KERNEL_MAP.lock()).expect("Heap initialization failed");
+    // log!("Initializing HEAP...");
+    // allocator::init_heap(&mut KERNEL_MAP.lock()).expect("Heap initialization failed");
 
     log!("Updating font...");
     // Set unicode mapping buffer (for more chacters than ascii)

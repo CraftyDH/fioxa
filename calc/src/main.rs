@@ -6,7 +6,7 @@ use kernel_userspace::syscall::{exit, read_args};
 extern crate alloc;
 #[macro_use]
 extern crate userspace;
-extern crate userspace_bumpalloc;
+extern crate userspace_slaballoc;
 
 #[export_name = "_start"]
 pub extern "C" fn main() {
