@@ -1,5 +1,6 @@
 use core::sync::atomic::AtomicBool;
 
+use alloc::vec::Vec;
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     service::{
@@ -175,30 +176,30 @@ lazy_static! {
     };
 }
 
-pub fn check_interrupts() -> bool {
+pub fn check_interrupts(send_buffer: &mut Vec<u8>) -> bool {
     let mut res = false;
     if KB_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
-        send_int_message(INTERRUPT_HANDLERS[0]);
+        send_int_message(INTERRUPT_HANDLERS[0], send_buffer);
         res = true;
     }
     if MOUSE_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
-        send_int_message(INTERRUPT_HANDLERS[1]);
+        send_int_message(INTERRUPT_HANDLERS[1], send_buffer);
         res = true;
     }
     if PCI_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
-        send_int_message(INTERRUPT_HANDLERS[2]);
+        send_int_message(INTERRUPT_HANDLERS[2], send_buffer);
         res = true;
     }
     res
 }
 
-fn send_int_message(service: ServiceID) {
+fn send_int_message(service: ServiceID, send_buffer: &mut Vec<u8>) {
     send_service_message(&ServiceMessage {
         service_id: service,
         sender_pid: ProcessID(0),
         tracking_number: generate_tracking_number(),
         destination: SendServiceMessageDest::ToSubscribers,
         message: ServiceMessageType::InterruptEvent,
-    })
+    }, send_buffer)
     .unwrap()
 }

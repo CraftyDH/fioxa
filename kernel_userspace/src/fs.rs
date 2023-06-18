@@ -2,12 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use alloc::{
     string::{String, ToString},
-    vec::Vec,
+    vec::Vec, boxed::Box,
 };
 
 use crate::{
     ids::ServiceID,
-    service::{generate_tracking_number, ServiceMessage, ServiceMessageContainer},
+    service::{generate_tracking_number, ServiceMessage},
     syscall::{send_and_get_response_service_message, CURRENT_PID},
 };
 
@@ -16,7 +16,7 @@ pub enum FSServiceMessage<'a> {
     // DiskID | Path
     RunStat(usize, &'a str),
 
-    StatResponse(StatResponse),
+    StatResponse(StatResponse<'a>),
     ReadRequest(ReadRequest),
     ReadFullFileRequest(ReadFullFileRequest),
 
@@ -24,37 +24,39 @@ pub enum FSServiceMessage<'a> {
     ReadResponse(Option<&'a [u8]>),
 
     GetDisksRequest,
-    GetDisksResponse(Vec<u64>),
+    GetDisksResponse(Box<[u64]>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum StatResponse {
+pub enum StatResponse<'a> {
     File(StatResponseFile),
-    Folder(StatResponseFolder),
+    #[serde(borrow)]
+    Folder(StatResponseFolder<'a>),
     NotFound,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatResponseFile {
     pub node_id: usize,
     pub file_size: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatResponseFolder {
+pub struct StatResponseFolder<'a> {
     pub node_id: usize,
 
-    pub children: Vec<String>,
+    #[serde(borrow)]
+    pub children: Vec<&'a str>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadRequest {
     pub disk_id: usize,
     pub node_id: usize,
     pub sector: u32,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadFullFileRequest {
     pub disk_id: usize,
     pub node_id: usize,
@@ -80,19 +82,17 @@ pub fn add_path(folder: &str, file: &str) -> String {
     String::from("/") + path.join("/").as_str()
 }
 
-pub fn stat(fs_sid: ServiceID, disk: usize, file: &str) -> StatResponse {
+pub fn stat<'a>(fs_sid: ServiceID, disk: usize, file: &str, buffer: &'a mut Vec<u8>) -> StatResponse<'a> {
     let resp = send_and_get_response_service_message(&ServiceMessage {
         service_id: fs_sid,
         sender_pid: *CURRENT_PID,
         tracking_number: generate_tracking_number(),
         destination: crate::service::SendServiceMessageDest::ToProvider,
         message: crate::service::ServiceMessageType::FS(FSServiceMessage::RunStat(disk, file)),
-    })
+    }, buffer)
     .unwrap();
 
-    let msg = resp.get_message().unwrap();
-
-    match msg.message {
+    match resp.message {
         crate::service::ServiceMessageType::FS(FSServiceMessage::StatResponse(resp)) => {
             return resp
         }
@@ -100,12 +100,13 @@ pub fn stat(fs_sid: ServiceID, disk: usize, file: &str) -> StatResponse {
     }
 }
 
-pub fn read_file_sector(
+pub fn read_file_sector<'a>(
     fs_sid: ServiceID,
     disk: usize,
     node: usize,
     sector: u32,
-) -> Option<ReadRequestShim> {
+    buffer: &mut Vec<u8>
+) -> Option<&[u8]> {
     let resp = send_and_get_response_service_message(&ServiceMessage {
         service_id: fs_sid,
         sender_pid: *CURRENT_PID,
@@ -118,23 +119,18 @@ pub fn read_file_sector(
                 sector: sector,
             },
         )),
-    })
+    }, buffer)
     .unwrap();
 
-    let msg = resp.get_message().unwrap();
-
-    match msg.message {
+    match resp.message {
         crate::service::ServiceMessageType::FS(FSServiceMessage::ReadResponse(data)) => {
-            if data.is_none() {
-                return None;
-            }
-            Some(ReadRequestShim { message: resp })
+            data
         }
         _ => todo!(),
     }
 }
 
-pub fn read_full_file(fs_sid: ServiceID, disk: usize, node: usize) -> Option<ReadRequestShim> {
+pub fn read_full_file(fs_sid: ServiceID, disk: usize, node: usize, buffer: &mut Vec<u8>) -> Option<&[u8]> {
     let resp = send_and_get_response_service_message(&ServiceMessage {
         service_id: fs_sid,
         sender_pid: *CURRENT_PID,
@@ -146,52 +142,28 @@ pub fn read_full_file(fs_sid: ServiceID, disk: usize, node: usize) -> Option<Rea
                 node_id: node,
             },
         )),
-    })
+    }, buffer)
     .unwrap();
 
-    let msg = resp.get_message().unwrap();
-
-    match msg.message {
+    match resp.message {
         crate::service::ServiceMessageType::FS(FSServiceMessage::ReadResponse(data)) => {
-            if data.is_none() {
-                return None;
-            }
-            Some(ReadRequestShim { message: resp })
+            data
         }
         _ => todo!(),
     }
 }
 
-pub struct ReadRequestShim {
-    message: ServiceMessageContainer,
-}
-
-impl ReadRequestShim {
-    pub fn get_data(&self) -> &[u8] {
-        let m = self.message.get_message().unwrap();
-        if let crate::service::ServiceMessageType::FS(FSServiceMessage::ReadResponse(Some(data))) =
-            m.message
-        {
-            data
-        } else {
-            unreachable!()
-        }
-    }
-}
-
-pub fn get_disks(fs_sid: ServiceID) -> Vec<u64> {
+pub fn get_disks(fs_sid: ServiceID, buffer: &mut Vec<u8>) -> Box<[u64]> {
     let resp = send_and_get_response_service_message(&ServiceMessage {
         service_id: fs_sid,
         sender_pid: *CURRENT_PID,
         tracking_number: generate_tracking_number(),
         destination: crate::service::SendServiceMessageDest::ToProvider,
         message: crate::service::ServiceMessageType::FS(FSServiceMessage::GetDisksRequest),
-    })
+    }, buffer)
     .unwrap();
 
-    let msg = resp.get_message().unwrap();
-
-    match msg.message {
+    match resp.message {
         crate::service::ServiceMessageType::FS(FSServiceMessage::GetDisksResponse(d)) => d,
         _ => todo!(),
     }

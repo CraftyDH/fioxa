@@ -4,7 +4,7 @@ pub mod mbr;
 use core::{fmt::Debug, sync::atomic::AtomicU64};
 
 use alloc::{
-    borrow::ToOwned, boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec,
+    boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec,
 };
 use kernel_userspace::{
     fs::{FSServiceMessage, StatResponse, StatResponseFile, StatResponseFolder},
@@ -89,10 +89,10 @@ pub fn get_file_by_id(id: VFileID) -> VFile {
     p.get_file_by_id(id.1)
 }
 
-pub fn read_file(id: VFileID) -> Vec<u8> {
+pub fn read_file(id: VFileID, buffer: &mut Vec<u8>) -> &[u8] {
     let mut p = PARTITION.lock();
     let p = p.get_mut(&id.0).unwrap();
-    p.read_file(id.1)
+    p.read_file(id.1, buffer)
 }
 
 pub fn read_file_sector(id: VFileID, sector: usize, buf: &mut [u8; 512]) -> Option<usize> {
@@ -104,7 +104,7 @@ pub fn read_file_sector(id: VFileID, sector: usize, buf: &mut [u8; 512]) -> Opti
 pub trait FileSystemDev: Send + Sync {
     fn get_file_by_id(&mut self, file_id: usize) -> VFile;
 
-    fn read_file(&mut self, file_id: usize) -> Vec<u8>;
+    fn read_file<'a>(&mut self, file_id: usize, buffer: &'a mut Vec<u8>) -> &'a [u8];
 
     fn read_file_sector(
         &mut self,
@@ -187,14 +187,15 @@ pub fn file_handler() {
     let pid = get_pid();
     PUBLIC_SERVICES.lock().insert("FS", sid);
 
+    let mut message_buffer = Vec::new();
+    let mut read_buffer = Vec::new();
     let mut buffer = [0u8; 512];
 
     // A bit of a hack to extend the lifetime
     let mut file_vec;
+    let mut c;
     loop {
-        let m = receive_service_message_blocking(sid);
-
-        let query = m.get_message().unwrap();
+        let query = receive_service_message_blocking(sid, &mut message_buffer).unwrap();
 
         let resp = match query.message {
             ServiceMessageType::FS(fs) => match fs {
@@ -202,9 +203,11 @@ pub fn file_handler() {
                     if let Some(file) = get_file_from_path(PartitionId(disk as u64), path) {
                         let stat = match file.specialized {
                             VFileSpecialized::Folder(children) => {
+                                c = children;
+                                let keys = c.keys();
                                 StatResponse::Folder(StatResponseFolder {
                                     node_id: file.location.1,
-                                    children: children.keys().map(|c| c.to_owned()).collect(),
+                                    children: keys.map(|c| c.as_str()).collect(),
                                 })
                             }
                             VFileSpecialized::File(size) => StatResponse::File(StatResponseFile {
@@ -234,7 +237,7 @@ pub fn file_handler() {
                     }
                 }
                 FSServiceMessage::ReadFullFileRequest(req) => {
-                    file_vec = read_file((PartitionId(req.disk_id as u64), req.node_id as usize));
+                    file_vec = read_file((PartitionId(req.disk_id as u64), req.node_id as usize), &mut read_buffer);
                     ServiceMessageType::FS(FSServiceMessage::ReadResponse(Some(&file_vec)))
                 }
                 FSServiceMessage::GetDisksRequest => {
@@ -251,7 +254,7 @@ pub fn file_handler() {
             tracking_number: query.tracking_number,
             destination: SendServiceMessageDest::ToProcess(query.sender_pid),
             message: resp,
-        })
+        }, &mut message_buffer)
         .unwrap();
     }
 }

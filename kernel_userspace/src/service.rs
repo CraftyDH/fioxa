@@ -20,16 +20,6 @@ pub fn generate_tracking_number() -> ServiceTrackingNumber {
     ServiceTrackingNumber(n)
 }
 
-pub struct ServiceMessageContainer {
-    pub buffer: Vec<u8>,
-}
-
-impl ServiceMessageContainer {
-    pub fn get_message<'a>(&'a self) -> Result<ServiceMessage<'a>, postcard::Error> {
-        postcard::from_bytes(&self.buffer)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceMessage<'a> {
     pub service_id: ServiceID,
@@ -113,20 +103,22 @@ pub enum PublicServiceMessage<'a> {
     Response(Option<ServiceID>),
 }
 
-pub fn get_public_service_id(name: &str) -> Option<ServiceID> {
+pub fn get_public_service_id(name: &str, buffer: &mut Vec<u8>) -> Option<ServiceID> {
     let resp = send_and_get_response_service_message(&ServiceMessage {
         service_id: ServiceID(1),
         sender_pid: get_pid(),
         tracking_number: generate_tracking_number(),
         destination: SendServiceMessageDest::ToProvider,
         message: ServiceMessageType::PublicService(PublicServiceMessage::Request(name)),
-    })
+    }, buffer)
     .unwrap();
 
-    let msg = resp.get_message().unwrap();
-
-    match msg.message {
+    match resp.message {
         ServiceMessageType::PublicService(PublicServiceMessage::Response(sid)) => sid,
         _ => panic!("Didn't get valid response"),
     }
+}
+
+pub fn parse_message(buffer: &[u8]) -> Result<ServiceMessage, postcard::Error> {
+    postcard::from_bytes(buffer)
 }

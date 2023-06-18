@@ -1,4 +1,5 @@
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use bootloader::gop::GopInfo;
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
@@ -294,10 +295,9 @@ pub fn monitor_stdout_task() {
     let pid = get_pid();
     PUBLIC_SERVICES.lock().insert("STDOUT", sid);
 
+    let mut buffer = Vec::new();
     loop {
-        let message = kernel_userspace::syscall::receive_service_message_blocking(sid);
-
-        let msg = message.get_message().unwrap();
+        let msg = kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buffer).unwrap();
 
         let m = match msg.message {
             ServiceMessageType::Stdout(str) => {
@@ -317,7 +317,7 @@ pub fn monitor_stdout_task() {
             tracking_number: generate_tracking_number(),
             destination: SendServiceMessageDest::ToProcess(msg.sender_pid),
             message: m,
-        }) {
+        }, &mut buffer) {
             Ok(_) | Err(SendError::TargetNotExists) => (),
             Err(e) => Err(e).unwrap(),
         }

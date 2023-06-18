@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use kernel_userspace::{
     input::InputServiceMessage,
     service::{get_public_service_id, ServiceMessageType},
@@ -30,10 +31,11 @@ const MOUSE_POINTER: &[u16; 16] = &[
 ];
 
 pub fn monitor_cursor_task() {
+    let mut buffer = Vec::new();
     let mouse_id;
     // Poll the mouse until the service exists
     loop {
-        if let Some(m) = get_public_service_id("INPUT:MOUSE") {
+        if let Some(m) = get_public_service_id("INPUT:MOUSE", &mut buffer) {
             mouse_id = m;
             break;
         }
@@ -44,9 +46,7 @@ pub fn monitor_cursor_task() {
     let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
 
     loop {
-        let message = kernel_userspace::syscall::receive_service_message_blocking(mouse_id);
-
-        let msg = message.get_message().unwrap();
+        let msg = kernel_userspace::syscall::receive_service_message_blocking(mouse_id, &mut buffer).unwrap();
 
         match msg.message {
             ServiceMessageType::Input(InputServiceMessage::MouseEvent(packet)) => {

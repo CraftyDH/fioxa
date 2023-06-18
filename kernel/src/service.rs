@@ -1,11 +1,11 @@
 use core::sync::atomic::AtomicU64;
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec, boxed::Box};
 use kernel_userspace::{
     ids::{ProcessID, ServiceID, ThreadID},
     service::{
         PublicServiceMessage, SendError, SendServiceMessageDest, ServiceMessage,
-        ServiceMessageContainer, ServiceMessageType, ServiceTrackingNumber,
+        ServiceMessageType, ServiceTrackingNumber, self,
     },
     syscall::{receive_service_message_blocking, send_service_message},
 };
@@ -50,8 +50,8 @@ pub fn subscribe(pid: ProcessID, id: ServiceID) {
         .and_then(|v| Some(v.subscribers.push(pid)));
 }
 
-pub fn push(current_pid: ProcessID, msg: ServiceMessageContainer) -> Result<(), SendError> {
-    let message = msg.get_message().map_err(|_| SendError::ParseError)?;
+pub fn push(current_pid: ProcessID, msg: Box<[u8]>) -> Result<(), SendError> {
+    let message = service::parse_message(&msg).map_err(|_| SendError::ParseError)?;
 
     let mut s = SERVICES.lock();
 
@@ -81,7 +81,7 @@ pub fn push(current_pid: ProcessID, msg: ServiceMessageContainer) -> Result<(), 
 
 fn send_message(
     pid: ProcessID,
-    message: Arc<(ServiceID, ServiceTrackingNumber, ServiceMessageContainer)>,
+    message: Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>,
 ) -> Result<(), SendError> {
     let mut p = PROCESSES.lock();
     let proc = p.get_mut(&pid).ok_or(SendError::TargetNotExists)?;
@@ -110,7 +110,7 @@ fn send_message(
             );
             assert!(t.current_message.is_none());
 
-            t.register_state.rax = message.2.buffer.len();
+            t.register_state.rax = message.2.len();
             t.current_message = Some(message);
             t.schedule_status = ScheduleStatus::Scheduled;
             TASK_QUEUE.push((proc.pid, tid)).unwrap();
@@ -143,7 +143,7 @@ pub fn try_find_message(
         msg = proc.service_msgs.remove(index)?;
     }
 
-    let length = msg.2.buffer.len();
+    let length = msg.2.len();
 
     proc.threads
         .get_mut(&current_thread)
@@ -208,7 +208,7 @@ pub fn get_message(
         .current_message
         .take()?;
 
-    buffer.copy_from_slice(&msg.2.buffer);
+    buffer.copy_from_slice(&msg.2);
     Some(())
 }
 
@@ -227,12 +227,12 @@ pub fn start_mgmt() {
 
     let pid = ProcessID(pid.0);
 
+    let mut buffer = Vec::new();
+
     loop {
-        let query = receive_service_message_blocking(sid);
+        let query = receive_service_message_blocking(sid, &mut buffer).unwrap();
 
-        let message = query.get_message().unwrap();
-
-        let resp = match message.message {
+        let resp = match query.message {
             ServiceMessageType::PublicService(PublicServiceMessage::Request(name)) => {
                 let s = PUBLIC_SERVICES.lock();
 
@@ -246,10 +246,10 @@ pub fn start_mgmt() {
         send_service_message(&ServiceMessage {
             service_id: sid,
             sender_pid: pid,
-            tracking_number: message.tracking_number,
-            destination: SendServiceMessageDest::ToProcess(message.sender_pid),
+            tracking_number: query.tracking_number,
+            destination: SendServiceMessageDest::ToProcess(query.sender_pid),
             message: resp,
-        })
+        }, &mut buffer)
         .unwrap();
     }
 }

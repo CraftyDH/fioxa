@@ -14,6 +14,7 @@ use core::ptr::slice_from_raw_parts_mut;
 
 use ::acpi::{AcpiError, RsdpError};
 use acpi::sdt::Signature;
+use alloc::vec::Vec;
 use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
 use kernel::bootfs::TERMINAL_ELF;
@@ -173,8 +174,8 @@ pub fn main(info: *const BootInfo) -> ! {
         free_page(frame);
     }
 
-    log!("Initializing HEAP...");
-    allocator::init_heap(&mut KERNEL_MAP.lock()).expect("Heap initialization failed");
+    // log!("Initializing HEAP...");
+    // allocator::init_heap(&mut KERNEL_MAP.lock()).expect("Heap initialization failed");
 
     log!("Updating font...");
     // Set unicode mapping buffer (for more chacters than ascii)
@@ -299,7 +300,8 @@ fn after_boot() {
     });
 
     spawn_thread(|| {
-        let elf = get_public_service_id("ELF_LOADER").unwrap();
+        let mut buffer = Vec::new();
+        let elf = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
         let pid = get_pid();
 
         send_service_message(&ServiceMessage {
@@ -308,7 +310,7 @@ fn after_boot() {
             tracking_number: generate_tracking_number(),
             destination: SendServiceMessageDest::ToProvider,
             message: ServiceMessageType::ElfLoader(TERMINAL_ELF, &[]),
-        })
+        }, &mut buffer)
         .unwrap();
     });
 
@@ -317,9 +319,13 @@ fn after_boot() {
         || {
             let sid = service_create();
             PUBLIC_SERVICES.lock().insert("ACCEPTER", sid);
+            let mut buffer = Vec::new();
 
-            loop {
-                receive_service_message_blocking(sid);
+            for i in 0.. {
+                receive_service_message_blocking(sid, &mut buffer).unwrap();
+                if i % 10000 == 0 {
+                    println!("ACCEPTER: {i}")
+                }
             }
         },
         "",

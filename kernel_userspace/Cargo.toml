@@ -12,3 +12,4 @@ input = { path = "../input" }
 lazy_static = { version = "1.4", features = ["spin_no_std"] }
 
 thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
+conquer-once = { version = "0.4", default-features = false }

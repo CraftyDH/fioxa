@@ -3,12 +3,14 @@ extern crate alloc;
 use core::fmt::Display;
 
 use alloc::{
+    borrow::ToOwned,
     string::{String, ToString},
     vec::Vec,
 };
 use hashbrown::HashMap;
 use kernel_userspace::{
     fs::{self, add_path, read_full_file, StatResponse},
+    ids::ServiceID,
     service::{generate_tracking_number, get_public_service_id, ServiceMessage},
     syscall::{send_and_get_response_service_message, CURRENT_PID},
 };
@@ -42,34 +44,54 @@ fn execute_stmt<'a>(stmt: Stmt, env: &mut Environment<'a>) -> Result<()> {
 }
 
 fn execute_binary<'a>(path: String, pos_args: Vec<Expr>, env: &mut Environment<'a>) -> Result<()> {
-    let fs_sid = get_public_service_id("FS").ok_or(ExecutionErrors::CouldNotFindFSSID)?;
-    let elf_loader_sid =
-        get_public_service_id("ELF_LOADER").ok_or(ExecutionErrors::CouldNotFindELFSID)?;
+    let fs_sid = env.services.ok_or(ExecutionErrors::UninitedService)?.fs;
+    let elf_loader_sid = env
+        .services
+        .ok_or(ExecutionErrors::UninitedService)?
+        .elf_loader;
 
     let path = add_path(&env.cwd, &path);
-    let stat = fs::stat(fs_sid, env.partition_id as usize, &path);
+    let stat = fs::stat(
+        fs_sid,
+        env.partition_id as usize,
+        &path,
+        env.services_buffer()?,
+    );
 
     let file = match stat {
-        StatResponse::File(f) => f,
+        StatResponse::File(ref f) => f.clone(),
         StatResponse::Folder(_) => Err(ExecutionErrors::ExecNotAFile)?,
         StatResponse::NotFound => Err(ExecutionErrors::ExecCouldNotFind)?,
     };
 
+    drop(stat);
+
     println!("READING...");
-    let contents = read_full_file(fs_sid, env.partition_id as usize, file.node_id)
-        .ok_or(ExecutionErrors::ReadError)?;
+    let contents = read_full_file(
+        fs_sid,
+        env.partition_id as usize,
+        file.node_id,
+        env.services_buffer()?,
+    )
+    .ok_or(ExecutionErrors::ReadError)?
+    .to_owned();
 
     println!("SPAWNING...");
-    send_and_get_response_service_message(&ServiceMessage {
-        service_id: elf_loader_sid,
-        sender_pid: *CURRENT_PID,
-        tracking_number: generate_tracking_number(),
-        destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-        message: kernel_userspace::service::ServiceMessageType::ElfLoader(
-            contents.get_data(),
-            args_to_string(pos_args, env)?.as_bytes(),
-        ),
-    })?;
+    let args = args_to_string(pos_args, env)?;
+
+    send_and_get_response_service_message(
+        &ServiceMessage {
+            service_id: elf_loader_sid,
+            sender_pid: *CURRENT_PID,
+            tracking_number: generate_tracking_number(),
+            destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
+            message: kernel_userspace::service::ServiceMessageType::ElfLoader(
+                &contents,
+                args.as_bytes(),
+            ),
+        },
+        env.services_buffer()?,
+    )?;
 
     Ok(())
 }
@@ -106,6 +128,9 @@ pub struct Environment<'a> {
     pub cwd: String,
     pub partition_id: u64,
 
+    services_buffer_internal: Option<Vec<u8>>,
+    pub services: Option<Services>,
+
     parent: Option<&'a mut Environment<'a>>,
     variables: HashMap<String, Value>,
     functions: HashMap<String, Value>,
@@ -116,6 +141,8 @@ impl<'a> Environment<'a> {
         Environment {
             cwd,
             partition_id,
+            services_buffer_internal: Some(Vec::new()),
+            services: None,
             parent: None,
             variables: HashMap::new(),
             functions: HashMap::new(),
@@ -126,6 +153,8 @@ impl<'a> Environment<'a> {
         Environment {
             cwd: env.cwd.clone(),
             partition_id: env.partition_id,
+            services_buffer_internal: None,
+            services: env.services.clone(),
             parent: Some(env),
             variables: HashMap::new(),
             functions: HashMap::new(),
@@ -173,6 +202,28 @@ impl<'a> Environment<'a> {
     pub fn set_var(&mut self, key: String, val: Value) {
         self.variables.insert(key, val);
     }
+
+    pub fn add_service(&mut self, name: &str) -> Result<ServiceID> {
+        Ok(get_public_service_id(name, self.services_buffer()?)
+            .ok_or_else(|| ExecutionErrors::NoService(name.to_string()))?)
+    }
+
+    pub fn services_buffer<'b>(&'b mut self) -> Result<&'b mut Vec<u8>> {
+        if let Some(services_buff) = &mut self.services_buffer_internal {
+            Ok(services_buff)
+        } else if let Some(parent) = &mut self.parent {
+            parent.services_buffer()
+        } else {
+            Err(ExecutionErrors::NoParentServiceBuffer)?
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Services {
+    pub fs: ServiceID,
+    pub keyboard: ServiceID,
+    pub elf_loader: ServiceID,
 }
 
 type InternalFunctionType =
@@ -227,6 +278,15 @@ pub enum ExecutionErrors {
 
     #[error("Could not execute something that is not a function: {0}")]
     NotAFunction(String),
+
+    #[error("Could obtain service '{0}'")]
+    NoService(String),
+
+    #[error("Service was not initialized")]
+    UninitedService,
+
+    #[error("The parent does not have a services buffer")]
+    NoParentServiceBuffer,
 
     #[error("Could not find function: {0}")]
     CouldNotFindFunction(String),

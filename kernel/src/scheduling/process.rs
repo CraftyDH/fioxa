@@ -8,7 +8,7 @@ use alloc::{
 };
 use kernel_userspace::{
     ids::{ProcessID, ServiceID, ThreadID},
-    service::{ServiceMessageContainer, ServiceTrackingNumber},
+    service::{ServiceTrackingNumber},
     syscall::exit,
 };
 use x86_64::{
@@ -69,7 +69,7 @@ pub struct Process {
     privilege: ProcessPrivilige,
     thread_next_id: u64,
     pub args: Vec<u8>,
-    pub service_msgs: VecDeque<Arc<(ServiceID, ServiceTrackingNumber, ServiceMessageContainer)>>,
+    pub service_msgs: VecDeque<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>,
     pub owned_pages: Vec<Page<Size4KB>>,
     pub waiting_services: BTreeMap<(ServiceID, ServiceTrackingNumber), Vec<ThreadID>>,
 }
@@ -215,7 +215,7 @@ pub struct Thread {
     // Rest of the data inclusing rip & rsp
     pub pushed_register_state: InterruptStackFrameValue,
     // Used for storing current msg, so that the popdata can get the data
-    pub current_message: Option<Arc<(ServiceID, ServiceTrackingNumber, ServiceMessageContainer)>>,
+    pub current_message: Option<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>,
     // Is the thread scheduled or waiting
     pub schedule_status: ScheduleStatus,
 }

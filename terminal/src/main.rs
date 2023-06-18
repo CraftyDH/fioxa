@@ -14,7 +14,7 @@ mod fns;
 extern crate alloc;
 #[macro_use]
 extern crate userspace;
-extern crate userspace_bumpalloc;
+extern crate userspace_slaballoc;
 
 #[panic_handler]
 fn panic(i: &core::panic::PanicInfo) -> ! {
@@ -22,7 +22,10 @@ fn panic(i: &core::panic::PanicInfo) -> ! {
     exit()
 }
 
-use alloc::string::{String, ToString};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use input::keyboard::{
     virtual_code::{Modifier, VirtualKeyCode},
     KeyboardEvent,
@@ -34,6 +37,7 @@ pub struct KBInputDecoder {
     rshift: bool,
     caps_lock: bool,
     num_lock: bool,
+    receive_buffer: Vec<u8>,
 }
 
 impl KBInputDecoder {
@@ -44,6 +48,7 @@ impl KBInputDecoder {
             rshift: false,
             caps_lock: false,
             num_lock: false,
+            receive_buffer: Default::default(),
         }
     }
 }
@@ -53,11 +58,10 @@ impl Iterator for KBInputDecoder {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let msg = receive_service_message_blocking(self.service);
+            let msg =
+                receive_service_message_blocking(self.service, &mut self.receive_buffer).unwrap();
 
-            let message = msg.get_message().unwrap();
-
-            match message.message {
+            match msg.message {
                 ServiceMessageType::Input(
                     kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code),
                 ) => match scan_code {
@@ -92,13 +96,17 @@ impl Iterator for KBInputDecoder {
 
 #[export_name = "_start"]
 pub extern "C" fn main() {
-    let keyboard_sid = get_public_service_id("INPUT:KB").unwrap();
-
-    service_subscribe(keyboard_sid);
-
-    let mut input: KBInputDecoder = KBInputDecoder::new(keyboard_sid);
-
     let mut env = Environment::new(String::from("/"), 0);
+
+    let fs_sid = env.add_service("FS").unwrap();
+    let keyboard_sid = env.add_service("INPUT:KB").unwrap();
+    let elf_loader_sid = env.add_service("ELF_LOADER").unwrap();
+
+    env.services = Some(execute::Services {
+        fs: fs_sid,
+        keyboard: keyboard_sid,
+        elf_loader: elf_loader_sid,
+    });
 
     env.add_internal_fn("pwd", &fns::pwd);
     env.add_internal_fn("echo", &fns::echo);
@@ -106,6 +114,9 @@ pub extern "C" fn main() {
     env.add_internal_fn("ls", &fns::ls);
     env.add_internal_fn("cd", &fns::cd);
     env.add_internal_fn("cat", &fns::cat);
+
+    service_subscribe(keyboard_sid);
+    let mut input: KBInputDecoder = KBInputDecoder::new(keyboard_sid);
 
     loop {
         print!("{}:{} ", env.partition_id, env.cwd);

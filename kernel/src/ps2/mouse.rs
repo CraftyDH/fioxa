@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use crossbeam_queue::ArrayQueue;
 use input::mouse::MousePacket;
 use kernel_userspace::{
@@ -41,6 +42,7 @@ pub struct Mouse {
     packet_state: PS2MousePackets,
     mouse_service: ServiceID,
     current_pid: ProcessID,
+    send_buffer: Vec<u8>,
 }
 
 impl Mouse {
@@ -54,6 +56,7 @@ impl Mouse {
             packet_state: PS2MousePackets::None,
             mouse_service,
             current_pid: get_pid(),
+            send_buffer: Default::default(),
         }
     }
 
@@ -219,7 +222,7 @@ impl Mouse {
             tracking_number: generate_tracking_number(),
             destination: SendServiceMessageDest::ToSubscribers,
             message: ServiceMessageType::Input(InputServiceMessage::MouseEvent(packet)),
-        })
+        }, &mut self.send_buffer)
         .unwrap()
     }
 }
