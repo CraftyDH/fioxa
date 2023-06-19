@@ -10,6 +10,7 @@
 #![feature(panic_info_message)]
 #![feature(const_for)]
 #![feature(pointer_byte_offsets)]
+#![feature(new_uninit)]
 
 use bootloader::BootInfo;
 

@@ -109,6 +109,7 @@ pub struct FAT {
     pub fat_ebr: FatExtendedBootRecord,
     pub disk: FSPartitionDisk,
     pub file_id_lookup: BTreeMap<usize, FATFile>,
+    pub cluster_chain_buffer: BTreeMap<u32, Box<[u8]>>,
 }
 
 pub fn next_file_id() -> usize {
@@ -173,7 +174,7 @@ impl FAT {
 
     // pub fn get_cluster_from_sector()
 
-    pub fn get_next_cluster(&self, cluster: u32) -> u32 {
+    pub fn get_next_cluster(&mut self, cluster: u32) -> u32 {
         let fat_size = match self.fat_ebr {
             FatExtendedBootRecord::FAT16(_) => 2,
             FatExtendedBootRecord::FAT32(_) => 4,
@@ -182,9 +183,17 @@ impl FAT {
 
         let fat_buf_offset = cluster / (512 / fat_size) + bpb.reserved_sectors as u32;
 
-        let fat_buffer = &mut [0u8; 512];
+        let fat_buffer = match self.cluster_chain_buffer.get(&fat_buf_offset) {
+            Some(b) => b,
+            None => {
+                let mut buf = unsafe { Box::new_uninit_slice(512).assume_init() };
 
-        self.disk.read(fat_buf_offset as usize, 1, fat_buffer);
+                self.disk.read(fat_buf_offset as usize, 1, &mut buf);
+
+                self.cluster_chain_buffer.insert(fat_buf_offset, buf);
+                self.cluster_chain_buffer.get(&fat_buf_offset).unwrap()
+            }
+        };
 
         let idx = cluster % (512 / fat_size);
 
@@ -368,6 +377,7 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
             fat_ebr: FatExtendedBootRecord::FAT16(fat16ext),
             file_id_lookup: BTreeMap::new(),
             disk,
+            cluster_chain_buffer: Default::default(),
         };
     } else {
         let fat32ext =
@@ -378,6 +388,7 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
             fat_ebr: FatExtendedBootRecord::FAT32(fat32ext),
             file_id_lookup: BTreeMap::new(),
             disk,
+            cluster_chain_buffer: Default::default(),
         };
     }
 
@@ -437,24 +448,44 @@ impl FileSystemDev for FAT {
 
         println!("READING FROM DISK");
 
-        while sectors_to_read > 0 {
-            let read_amount = core::cmp::min(
-                sectors_to_read,
-                self.bios_parameter_block.sectors_per_cluster as u32,
-            );
+        let mut sectors: Vec<(u32, u32)> = Vec::new();
 
+        let sectors_per_cluster = self.bios_parameter_block.sectors_per_cluster as u32;
+
+        while sectors_to_read > 0 {
+            let read_amount = core::cmp::min(sectors_to_read, sectors_per_cluster);
             let file_sector = self.get_start_sector_of_cluster(cluster);
 
-            self.disk.read(
-                file_sector as usize,
-                read_amount as u32,
-                &mut buffer[buffer_offset..],
-            );
+            match sectors.last_mut() {
+                Some((start, len)) => {
+                    if *start + *len == file_sector {
+                        *len += read_amount
+                    } else {
+                        sectors.push((file_sector, read_amount))
+                    }
+                }
+                None => sectors.push((file_sector, read_amount)),
+            }
+
             sectors_to_read -= read_amount;
-            buffer_offset += read_amount as usize * 512;
 
             cluster = self.get_next_cluster(cluster);
         }
+
+        println!("START READING FROM DISK");
+
+        for (mut sector, mut len) in sectors {
+            while len > 0 {
+                let read_amount = core::cmp::min(len, 56);
+
+                self.disk
+                    .read(sector as usize, read_amount, &mut buffer[buffer_offset..]);
+                sector += read_amount;
+                len -= read_amount;
+                buffer_offset += read_amount as usize * 512;
+            }
+        }
+
         println!("FIN READING FROM DISK");
         &buffer[..length as usize]
     }
