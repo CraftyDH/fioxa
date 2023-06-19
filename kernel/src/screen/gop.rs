@@ -1,13 +1,13 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use bootloader::gop::GopInfo;
+use conquer_once::spin::Lazy;
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
 use kernel_userspace::service::{
     generate_tracking_number, SendError, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
 };
 use kernel_userspace::syscall::{get_pid, send_service_message, service_create, spawn_thread};
-use lazy_static::lazy_static;
 
 #[derive(Clone, Copy)]
 pub struct Pos {
@@ -227,8 +227,8 @@ impl core::fmt::Write for Writer {
         Ok(())
     }
 }
-lazy_static! {
-    pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
+pub static WRITER: Lazy<Mutex<Writer>> = Lazy::new(|| {
+    Mutex::new(Writer {
         pos: Pos { x: 0, y: 0 },
         gop: GopInfo {
             buffer: AtomicPtr::default(),
@@ -236,14 +236,14 @@ lazy_static! {
             horizonal: 0,
             vertical: 0,
             stride: 0,
-            pixel_format: uefi::proto::console::gop::PixelFormat::Rgb
+            pixel_format: uefi::proto::console::gop::PixelFormat::Rgb,
         },
         font: PSF1_FONT_NULL,
         unicode_table: None,
         fg_colour: 0xFF_FF_FF,
         bg_colour: 0x00_00_00,
-    });
-}
+    })
+});
 
 #[macro_export]
 macro_rules! println {
@@ -297,7 +297,8 @@ pub fn monitor_stdout_task() {
 
     let mut buffer = Vec::new();
     loop {
-        let msg = kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buffer).unwrap();
+        let msg =
+            kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buffer).unwrap();
 
         let m = match msg.message {
             ServiceMessageType::Stdout(str) => {
@@ -311,13 +312,16 @@ pub fn monitor_stdout_task() {
             _ => ServiceMessageType::UnknownCommand,
         };
 
-        match send_service_message(&ServiceMessage {
-            service_id: sid,
-            sender_pid: pid,
-            tracking_number: generate_tracking_number(),
-            destination: SendServiceMessageDest::ToProcess(msg.sender_pid),
-            message: m,
-        }, &mut buffer) {
+        match send_service_message(
+            &ServiceMessage {
+                service_id: sid,
+                sender_pid: pid,
+                tracking_number: generate_tracking_number(),
+                destination: SendServiceMessageDest::ToProcess(msg.sender_pid),
+                message: m,
+            },
+            &mut buffer,
+        ) {
             Ok(_) | Err(SendError::TargetNotExists) => (),
             Err(e) => Err(e).unwrap(),
         }

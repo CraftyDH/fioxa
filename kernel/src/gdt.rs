@@ -1,3 +1,4 @@
+use conquer_once::spin::Lazy;
 use x86_64::{
     instructions::{
         segmentation::{Segment, CS, SS},
@@ -22,33 +23,28 @@ pub const USER_CODE_SELECTOR: SegmentSelector = SegmentSelector::new(3, Privileg
 pub const USER_DATA_SELECTOR: SegmentSelector = SegmentSelector::new(4, PrivilegeLevel::Ring3);
 pub const TSS_SELECTOR: SegmentSelector = SegmentSelector::new(5, PrivilegeLevel::Ring0);
 
-lazy_static::lazy_static! {
-    pub static ref TSS: TaskStateSegment = {
-        let mut tss = TaskStateSegment::new();
-        tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
-            const STACK_SIZE: usize = 4096 * 5;
-            static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
+pub static TSS: Lazy<TaskStateSegment> = Lazy::new(|| {
+    let mut tss = TaskStateSegment::new();
+    tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] = {
+        const STACK_SIZE: usize = 4096 * 5;
+        static mut STACK: [u8; STACK_SIZE] = [0; STACK_SIZE];
 
-            let stack_start = VirtAddr::from_ptr(unsafe { &STACK });
-            let stack_end = stack_start + STACK_SIZE;
-            stack_end
-        };
-        tss
+        let stack_start = VirtAddr::from_ptr(unsafe { &STACK });
+        let stack_end = stack_start + STACK_SIZE;
+        stack_end
     };
+    tss
+});
 
-}
-
-lazy_static::lazy_static! {
-    pub static ref BOOTGDT: GlobalDescriptorTable = {
-        let mut gdt = GlobalDescriptorTable::new();
-        gdt.add_entry(Descriptor::kernel_code_segment());
-        gdt.add_entry(Descriptor::kernel_data_segment());
-        gdt.add_entry(Descriptor::user_code_segment());
-        gdt.add_entry(Descriptor::user_data_segment());
-        gdt.add_entry(Descriptor::tss_segment(&TSS));
-        gdt
-    };
-}
+pub static BOOTGDT: Lazy<GlobalDescriptorTable> = Lazy::new(|| {
+    let mut gdt = GlobalDescriptorTable::new();
+    gdt.add_entry(Descriptor::kernel_code_segment());
+    gdt.add_entry(Descriptor::kernel_data_segment());
+    gdt.add_entry(Descriptor::user_code_segment());
+    gdt.add_entry(Descriptor::user_data_segment());
+    gdt.add_entry(Descriptor::tss_segment(&TSS));
+    gdt
+});
 
 pub unsafe fn init_bootgdt() {
     BOOTGDT.load();

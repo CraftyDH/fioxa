@@ -1,6 +1,7 @@
 use core::sync::atomic::AtomicBool;
 
 use alloc::vec::Vec;
+use conquer_once::spin::Lazy;
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     service::{
@@ -8,7 +9,7 @@ use kernel_userspace::{
     },
     syscall::send_service_message,
 };
-use spin::mutex::Mutex;
+use spin::Mutex;
 use x86_64::{
     instructions::interrupts::without_interrupts,
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame},
@@ -17,8 +18,6 @@ use x86_64::{
 pub mod exceptions;
 // pub mod hardware;
 pub mod pic;
-
-use lazy_static::lazy_static;
 
 use crate::{
     gdt::TASK_SWITCH_INDEX,
@@ -70,18 +69,16 @@ impl Into<usize> for HardwareInterruptOffset {
     }
 }
 
-lazy_static! {
-    pub static ref IDT: Mutex<InterruptDescriptorTable> = {
-        let mut idt = InterruptDescriptorTable::new();
-        // Set idt table
-        exceptions::set_exceptions_idt(&mut idt);
-        // hardware::set_hardware_idt(&mut idt);
-        pic::set_spurious_interrupts(&mut idt);
-        syscall::set_syscall_idt(&mut idt);
+pub static IDT: Lazy<Mutex<InterruptDescriptorTable>> = Lazy::new(|| {
+    let mut idt = InterruptDescriptorTable::new();
+    // Set idt table
+    exceptions::set_exceptions_idt(&mut idt);
+    // hardware::set_hardware_idt(&mut idt);
+    pic::set_spurious_interrupts(&mut idt);
+    syscall::set_syscall_idt(&mut idt);
 
-        Mutex::new(idt)
-    };
-}
+    Mutex::new(idt)
+});
 
 #[macro_export]
 macro_rules! interrupt_handler {
@@ -162,19 +159,17 @@ fn pci_interrupt_handler(_: InterruptStackFrame) {
     PCI_INT.store(true, core::sync::atomic::Ordering::Relaxed)
 }
 
-lazy_static! {
-    pub static ref INTERRUPT_HANDLERS: [ServiceID; 3] = {
-        let kb = service::new(ProcessID(0));
-        let mouse = service::new(ProcessID(0));
-        let pci = service::new(ProcessID(0));
+pub static INTERRUPT_HANDLERS: Lazy<[ServiceID; 3]> = Lazy::new(|| {
+    let kb = service::new(ProcessID(0));
+    let mouse = service::new(ProcessID(0));
+    let pci = service::new(ProcessID(0));
 
-        PUBLIC_SERVICES.lock().insert("INTERRUPTS:KB", kb);
-        PUBLIC_SERVICES.lock().insert("INTERRUPTS:MOUSE", mouse);
-        PUBLIC_SERVICES.lock().insert("INTERRUPTS:PCI", pci);
+    PUBLIC_SERVICES.lock().insert("INTERRUPTS:KB", kb);
+    PUBLIC_SERVICES.lock().insert("INTERRUPTS:MOUSE", mouse);
+    PUBLIC_SERVICES.lock().insert("INTERRUPTS:PCI", pci);
 
-        [kb, mouse, pci]
-    };
-}
+    [kb, mouse, pci]
+});
 
 pub fn check_interrupts(send_buffer: &mut Vec<u8>) -> bool {
     let mut res = false;
@@ -194,12 +189,15 @@ pub fn check_interrupts(send_buffer: &mut Vec<u8>) -> bool {
 }
 
 fn send_int_message(service: ServiceID, send_buffer: &mut Vec<u8>) {
-    send_service_message(&ServiceMessage {
-        service_id: service,
-        sender_pid: ProcessID(0),
-        tracking_number: generate_tracking_number(),
-        destination: SendServiceMessageDest::ToSubscribers,
-        message: ServiceMessageType::InterruptEvent,
-    }, send_buffer)
+    send_service_message(
+        &ServiceMessage {
+            service_id: service,
+            sender_pid: ProcessID(0),
+            tracking_number: generate_tracking_number(),
+            destination: SendServiceMessageDest::ToSubscribers,
+            message: ServiceMessageType::InterruptEvent,
+        },
+        send_buffer,
+    )
     .unwrap()
 }

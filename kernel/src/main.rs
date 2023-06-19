@@ -304,13 +304,16 @@ fn after_boot() {
         let elf = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
         let pid = get_pid();
 
-        send_service_message(&ServiceMessage {
-            service_id: elf,
-            sender_pid: pid,
-            tracking_number: generate_tracking_number(),
-            destination: SendServiceMessageDest::ToProvider,
-            message: ServiceMessageType::ElfLoader(TERMINAL_ELF, &[]),
-        }, &mut buffer)
+        send_service_message(
+            &ServiceMessage {
+                service_id: elf,
+                sender_pid: pid,
+                tracking_number: generate_tracking_number(),
+                destination: SendServiceMessageDest::ToProvider,
+                message: ServiceMessageType::ElfLoader(TERMINAL_ELF, &[]),
+            },
+            &mut buffer,
+        )
         .unwrap();
     });
 
@@ -331,6 +334,15 @@ fn after_boot() {
         "",
         false,
     );
+
+    // spawn_thread(|| {
+    //     for i in 0.. {
+    //         request_page();
+    //         if i % 10000 == 0 {
+    //             println!("PAGE: {i} {}mb", i * 0x1000 / 1024 / 1024)
+    //         }
+    //     }
+    // });
 
     exit();
 }

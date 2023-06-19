@@ -6,7 +6,6 @@ use core::{
 use alloc::{sync::Arc, vec::Vec};
 use crossbeam_queue::SegQueue;
 use kernel_userspace::syscall::yield_now;
-use lazy_static::lazy_static;
 use modular_bitfield::{bitfield, specifiers::B48};
 use spin::Mutex;
 use x86_64::instructions::interrupts::without_interrupts;
@@ -19,9 +18,7 @@ use crate::{
 
 use super::arp::ARPEth;
 
-lazy_static! {
-    pub static ref RECEIVED_FRAMES_QUEUE: SegQueue<EthernetFrame> = SegQueue::new();
-}
+pub static RECEIVED_FRAMES_QUEUE: SegQueue<EthernetFrame> = SegQueue::new();
 
 #[bitfield]
 #[derive(Clone, Copy)]
@@ -109,11 +106,9 @@ impl IPAddr {
     }
 }
 
-lazy_static! {
-    pub static ref ETHERNET: Mutex<Ethernet> = Mutex::new(Ethernet {
-        devices: Vec::new()
-    });
-}
+pub static ETHERNET: Mutex<Ethernet> = Mutex::new(Ethernet {
+    devices: Vec::new(),
+});
 
 pub struct EthernetDevice {
     driver: Arc<Mutex<dyn EthernetDriver>>,

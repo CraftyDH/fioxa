@@ -19,9 +19,7 @@ mod pci_descriptors;
 
 pub type PCIDriver = Arc<Mutex<dyn Driver + Send>>;
 
-lazy_static::lazy_static! {
-    pub static ref PCI_INTERRUPT_DEVICES: Mutex<Vec<PCIDriver>> = Mutex::new(Vec::new());
-}
+pub static PCI_INTERRUPT_DEVICES: Mutex<Vec<PCIDriver>> = Mutex::new(Vec::new());
 
 pub fn poll_interrupts() {
     let mut buffer = Vec::new();

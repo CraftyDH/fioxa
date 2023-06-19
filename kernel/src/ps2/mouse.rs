@@ -1,5 +1,4 @@
 use alloc::vec::Vec;
-use crossbeam_queue::ArrayQueue;
 use input::mouse::MousePacket;
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
@@ -9,7 +8,6 @@ use kernel_userspace::{
     },
     syscall::{get_pid, send_service_message, service_create},
 };
-use lazy_static::lazy_static;
 
 use crate::{ioapic::mask_entry, service::PUBLIC_SERVICES};
 
@@ -23,10 +21,6 @@ enum MouseTypeId {
     Standard,
     WithScrollWheel,
     WithExtraButtons,
-}
-
-lazy_static! {
-    static ref MOUSEPACKET_QUEUE: ArrayQueue<MousePacket> = ArrayQueue::new(250);
 }
 
 enum PS2MousePackets {
@@ -216,13 +210,16 @@ impl Mouse {
             y_mov: y as i8,
         };
 
-        send_service_message(&ServiceMessage {
-            service_id: self.mouse_service,
-            sender_pid: self.current_pid,
-            tracking_number: generate_tracking_number(),
-            destination: SendServiceMessageDest::ToSubscribers,
-            message: ServiceMessageType::Input(InputServiceMessage::MouseEvent(packet)),
-        }, &mut self.send_buffer)
+        send_service_message(
+            &ServiceMessage {
+                service_id: self.mouse_service,
+                sender_pid: self.current_pid,
+                tracking_number: generate_tracking_number(),
+                destination: SendServiceMessageDest::ToSubscribers,
+                message: ServiceMessageType::Input(InputServiceMessage::MouseEvent(packet)),
+            },
+            &mut self.send_buffer,
+        )
         .unwrap()
     }
 }

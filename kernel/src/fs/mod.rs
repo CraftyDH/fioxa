@@ -3,9 +3,8 @@ pub mod mbr;
 
 use core::{fmt::Debug, sync::atomic::AtomicU64};
 
-use alloc::{
-    boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec,
-};
+use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
+use conquer_once::spin::Lazy;
 use kernel_userspace::{
     fs::{FSServiceMessage, StatResponse, StatResponseFile, StatResponseFolder},
     service::{SendServiceMessageDest, ServiceMessage, ServiceMessageType},
@@ -19,10 +18,14 @@ use crate::{
     service::PUBLIC_SERVICES,
 };
 
-lazy_static::lazy_static! {
-    pub static ref PARTITION: Mutex<BTreeMap<PartitionId, Box<dyn FileSystemDev>>> = Mutex::new(BTreeMap::new());
-    pub static ref FSDRIVES: Mutex<FileSystemDrives> = Mutex::new(FileSystemDrives { disks_buses: Default::default() });
-}
+pub static PARTITION: Lazy<Mutex<BTreeMap<PartitionId, Box<dyn FileSystemDev>>>> =
+    Lazy::new(|| Mutex::new(BTreeMap::new()));
+pub static FSDRIVES: Lazy<Mutex<FileSystemDrives>> = Lazy::new(|| {
+    Mutex::new(FileSystemDrives {
+        disks_buses: Default::default(),
+    })
+});
+
 pub struct FileSystemDrives {
     disks_buses: Vec<Box<dyn DiskBusDriver>>,
 }
@@ -237,7 +240,10 @@ pub fn file_handler() {
                     }
                 }
                 FSServiceMessage::ReadFullFileRequest(req) => {
-                    file_vec = read_file((PartitionId(req.disk_id as u64), req.node_id as usize), &mut read_buffer);
+                    file_vec = read_file(
+                        (PartitionId(req.disk_id as u64), req.node_id as usize),
+                        &mut read_buffer,
+                    );
                     ServiceMessageType::FS(FSServiceMessage::ReadResponse(Some(&file_vec)))
                 }
                 FSServiceMessage::GetDisksRequest => {
@@ -248,13 +254,16 @@ pub fn file_handler() {
             },
             _ => ServiceMessageType::UnknownCommand,
         };
-        send_service_message(&ServiceMessage {
-            service_id: sid,
-            sender_pid: pid,
-            tracking_number: query.tracking_number,
-            destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-            message: resp,
-        }, &mut message_buffer)
+        send_service_message(
+            &ServiceMessage {
+                service_id: sid,
+                sender_pid: pid,
+                tracking_number: query.tracking_number,
+                destination: SendServiceMessageDest::ToProcess(query.sender_pid),
+                message: resp,
+            },
+            &mut message_buffer,
+        )
         .unwrap();
     }
 }

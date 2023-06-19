@@ -1,3 +1,4 @@
+use conquer_once::spin::Lazy;
 use spin::Mutex;
 use x86_64::registers::control::Cr3;
 
@@ -12,48 +13,51 @@ pub mod page_allocator;
 pub mod page_directory;
 pub mod page_table_manager;
 
-lazy_static::lazy_static! {
-        pub static ref OFFSET_MAP: Mutex<PageTable<'static, PageLvl3>> =
-        Mutex::new({
-            // The AP startup code needs a 32 bit ptr
-            let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-            unsafe { new_page_table_from_phys(page as u64) }
-        });
-    pub static ref KERNEL_DATA_MAP: Mutex<PageTable<'static, PageLvl3>> =
-        Mutex::new({
-            // The AP startup code needs a 32 bit ptr
-            let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-            unsafe { new_page_table_from_phys(page as u64) }
-        });
-    pub static ref KERNEL_HEAP_MAP: Mutex<PageTable<'static, PageLvl3>> =
-        Mutex::new({
-            // The AP startup code needs a 32 bit ptr
-            let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-            unsafe { new_page_table_from_phys(page as u64) }
-        });
+pub static OFFSET_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = Lazy::new(|| {
+    Mutex::new({
+        // The AP startup code needs a 32 bit ptr
+        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
+        unsafe { new_page_table_from_phys(page as u64) }
+    })
+});
+pub static KERNEL_DATA_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = Lazy::new(|| {
+    Mutex::new({
+        // The AP startup code needs a 32 bit ptr
+        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
+        unsafe { new_page_table_from_phys(page as u64) }
+    })
+});
+pub static KERNEL_HEAP_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = Lazy::new(|| {
+    Mutex::new({
+        // The AP startup code needs a 32 bit ptr
+        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
+        unsafe { new_page_table_from_phys(page as u64) }
+    })
+});
 
-    pub static ref PER_CPU_MAP: Mutex<PageTable<'static, PageLvl3>> =
-        Mutex::new({
-            // The AP startup code needs a 32 bit ptr
-            let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-            unsafe { new_page_table_from_phys(page as u64) }
-        });
+pub static PER_CPU_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = Lazy::new(|| {
+    Mutex::new({
+        // The AP startup code needs a 32 bit ptr
+        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
+        unsafe { new_page_table_from_phys(page as u64) }
+    })
+});
 
-    pub static ref KERNEL_MAP: Mutex<PageTable<'static, PageLvl4>> =
-        Mutex::new({
-            // The AP startup code needs a 32 bit ptr
-            let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-            let mut lvl4 = unsafe { new_page_table_from_phys(page as u64) };
+pub static KERNEL_MAP: Lazy<Mutex<PageTable<'static, PageLvl4>>> = Lazy::new(|| {
+    Mutex::new({
+        // The AP startup code needs a 32 bit ptr
+        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
+        let mut lvl4 = unsafe { new_page_table_from_phys(page as u64) };
 
-            unsafe {
-                lvl4.set_lvl3_location(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
-                lvl4.set_lvl3_location(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
-                lvl4.set_lvl3_location(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
-                lvl4.set_lvl3_location(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
-            }
-            lvl4
-        });
-}
+        unsafe {
+            lvl4.set_lvl3_location(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
+            lvl4.set_lvl3_location(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
+            lvl4.set_lvl3_location(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
+            lvl4.set_lvl3_location(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
+        }
+        lvl4
+    })
+});
 
 pub unsafe fn get_uefi_active_mapper() -> PageTable<'static, PageLvl4> {
     let (lv4_table, _) = Cr3::read();

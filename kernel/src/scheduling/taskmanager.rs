@@ -5,7 +5,7 @@ use alloc::{collections::BTreeMap, vec::Vec};
 use conquer_once::noblock::OnceCell;
 use crossbeam_queue::ArrayQueue;
 use kernel_userspace::ids::{ProcessID, ThreadID};
-use spin::Mutex;
+use spin::{Lazy, Mutex};
 use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
@@ -24,13 +24,13 @@ use crate::{
 
 use super::process::{Process, Thread};
 
-lazy_static::lazy_static! {
-    // pub static ref TASKMANAGER: Mutex<TaskManager> = Mutex::new(TaskManager::uninit());
-    pub static ref PROCESSES: Mutex<BTreeMap<ProcessID, Process>> = Mutex::new(BTreeMap::new());
-    pub static ref TASK_QUEUE: ArrayQueue<(ProcessID, ThreadID)> = ArrayQueue::new(1000);
-    // Once task queue is finished reload used_task_queue
-    pub static ref USED_TASK_QUEUE: ArrayQueue<(ProcessID, ThreadID)> = ArrayQueue::new(1000);
-}
+pub static PROCESSES: Lazy<Mutex<BTreeMap<ProcessID, Process>>> =
+    Lazy::new(|| Mutex::new(BTreeMap::new()));
+pub static TASK_QUEUE: Lazy<ArrayQueue<(ProcessID, ThreadID)>> =
+    Lazy::new(|| ArrayQueue::new(1000));
+// Once task queue is finished reload used_task_queue
+pub static USED_TASK_QUEUE: Lazy<ArrayQueue<(ProcessID, ThreadID)>> =
+    Lazy::new(|| ArrayQueue::new(1000));
 
 pub static CORE_COUNT: OnceCell<u8> = OnceCell::uninit();
 
@@ -43,6 +43,7 @@ pub unsafe fn core_start_multitasking() -> ! {
     set_is_task_mgr_schedule(true);
     core::arch::asm!("sti");
     let mut send_buffer = Vec::new();
+
     loop {
         if check_interrupts(&mut send_buffer) {
             // If we got an interrupt sched the tasks
