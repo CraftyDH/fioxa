@@ -136,7 +136,10 @@ pub fn send_service_message(msg: &ServiceMessage, buffer: &mut Vec<u8>) -> Resul
     // Calulate how big to make the buffer
     let size =
         postcard::serialize_with_flavor(&msg, postcard::ser_flavors::Size::default()).unwrap();
-    buffer.resize(size, 0);
+    unsafe {
+        buffer.reserve(size);
+        buffer.set_len(size);
+    }
 
     let data = postcard::to_slice(&msg, buffer).unwrap();
 

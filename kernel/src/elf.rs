@@ -16,7 +16,7 @@ use crate::{
     },
     scheduling::{
         process::Process,
-        taskmanager::{PROCESSES, TASK_QUEUE},
+        taskmanager::{push_task_queue, PROCESSES},
         without_context_switch,
     },
     service::PUBLIC_SERVICES,
@@ -152,7 +152,7 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> ProcessID {
     without_context_switch(|| {
         PROCESSES.lock().insert(proc.pid, proc);
     });
-    TASK_QUEUE.push((pid, tid)).unwrap();
+    push_task_queue((pid, tid)).unwrap();
     pid
 }
 
@@ -184,13 +184,16 @@ pub fn elf_new_process_loader() {
             _ => ServiceMessageType::UnknownCommand,
         };
 
-        send_service_message(&ServiceMessage {
-            service_id: sid,
-            sender_pid: pid,
-            tracking_number: query.tracking_number,
-            destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-            message: resp,
-        }, &mut message_buffer)
+        send_service_message(
+            &ServiceMessage {
+                service_id: sid,
+                sender_pid: pid,
+                tracking_number: query.tracking_number,
+                destination: SendServiceMessageDest::ToProcess(query.sender_pid),
+                message: resp,
+            },
+            &mut message_buffer,
+        )
         .unwrap();
     }
 }

@@ -116,14 +116,14 @@ extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
 
     // If timer is used for switching tasks switch task
     if SWITCH_TASK.load(Ordering::Acquire) {
-        match get_task_mgr_current_ticks().checked_sub(1) {
-            Some(n) => set_task_mgr_current_ticks(n),
-            None => {
-                if is_task_mgr_schedule() {
-                    Some(taskmanager::switch_task(stack_frame, regs));
-                }
-            }
+        // match get_task_mgr_current_ticks().checked_sub(1) {
+        //     Some(n) => set_task_mgr_current_ticks(n),
+        //     None => {
+        if is_task_mgr_schedule() {
+            Some(taskmanager::switch_task(stack_frame, regs));
         }
+        //     }
+        // }
     }
     // Ack interrupt
     unsafe { *(0xfee000b0 as *mut u32) = 0 }

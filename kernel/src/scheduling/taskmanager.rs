@@ -22,17 +22,20 @@ use crate::{
     },
 };
 
-use super::process::{Process, Thread};
+use super::{
+    process::{Process, Thread},
+    without_context_switch,
+};
 
 pub static PROCESSES: Lazy<Mutex<BTreeMap<ProcessID, Process>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
-pub static TASK_QUEUE: Lazy<ArrayQueue<(ProcessID, ThreadID)>> =
-    Lazy::new(|| ArrayQueue::new(1000));
-// Once task queue is finished reload used_task_queue
-pub static USED_TASK_QUEUE: Lazy<ArrayQueue<(ProcessID, ThreadID)>> =
-    Lazy::new(|| ArrayQueue::new(1000));
+static TASK_QUEUE: Lazy<ArrayQueue<(ProcessID, ThreadID)>> = Lazy::new(|| ArrayQueue::new(1000));
 
 pub static CORE_COUNT: OnceCell<u8> = OnceCell::uninit();
+
+pub fn push_task_queue(val: (ProcessID, ThreadID)) -> Result<(), (ProcessID, ThreadID)> {
+    without_context_switch(|| TASK_QUEUE.push(val))
+}
 
 /// Used for sleeping each core after the task queue becomes empty
 /// Aka the end of the round robin cycle
@@ -45,22 +48,15 @@ pub unsafe fn core_start_multitasking() -> ! {
     let mut send_buffer = Vec::new();
 
     loop {
-        if check_interrupts(&mut send_buffer) {
-            // If we got an interrupt sched the tasks
-            kernel_userspace::syscall::yield_now();
-        };
-        // Move the tasks back to the queue
-        while let Some(task) = USED_TASK_QUEUE.pop() {
-            TASK_QUEUE.push(task).unwrap();
-        }
-        // Sleep for rest of cycle
-        core::arch::asm!("hlt;");
-    }
-}
+        // Check interrupts
+        check_interrupts(&mut send_buffer);
 
-pub fn every_n_handler() {
-    while let Some(task) = USED_TASK_QUEUE.pop() {
-        TASK_QUEUE.push(task).unwrap();
+        kernel_userspace::syscall::yield_now();
+
+        // Use hlt, to drop CPU usage.
+        // However this causes hugely increased latency for dependant tasks.
+        // core::arch::asm!("hlt;");
+        core::arch::asm!("pause");
     }
 }
 
@@ -117,10 +113,10 @@ fn save_current_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers)
         let thread = get_thread_mut(pid, tid, &mut processes)?;
         thread.save(stack_frame, reg);
     }
-    // Don't save nop task
-    if pid != ProcessID(0) {
-        USED_TASK_QUEUE.push((pid, tid)).unwrap()
-    }
+    // // Don't save nop task
+    // if pid != ProcessID(0) {
+    TASK_QUEUE.push((pid, tid)).unwrap();
+    // }
     Some(())
 }
 

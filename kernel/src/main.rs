@@ -40,7 +40,7 @@ use kernel::service::PUBLIC_SERVICES;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
-use kernel::{allocator, elf, gdt, paging, ps2, service, BOOT_INFO};
+use kernel::{elf, gdt, paging, ps2, service, BOOT_INFO};
 
 use kernel_userspace::service::{
     generate_tracking_number, get_public_service_id, SendServiceMessageDest, ServiceMessage,

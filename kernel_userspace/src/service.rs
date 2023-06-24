@@ -97,13 +97,16 @@ pub enum PublicServiceMessage<'a> {
 }
 
 pub fn get_public_service_id(name: &str, buffer: &mut Vec<u8>) -> Option<ServiceID> {
-    let resp = send_and_get_response_service_message(&ServiceMessage {
-        service_id: ServiceID(1),
-        sender_pid: get_pid(),
-        tracking_number: generate_tracking_number(),
-        destination: SendServiceMessageDest::ToProvider,
-        message: ServiceMessageType::PublicService(PublicServiceMessage::Request(name)),
-    }, buffer)
+    let resp = send_and_get_response_service_message(
+        &ServiceMessage {
+            service_id: ServiceID(1),
+            sender_pid: get_pid(),
+            tracking_number: generate_tracking_number(),
+            destination: SendServiceMessageDest::ToProvider,
+            message: ServiceMessageType::PublicService(PublicServiceMessage::Request(name)),
+        },
+        buffer,
+    )
     .unwrap();
 
     match resp.message {

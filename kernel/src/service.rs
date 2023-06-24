@@ -1,11 +1,11 @@
 use core::sync::atomic::AtomicU64;
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec, boxed::Box};
+use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
 use kernel_userspace::{
     ids::{ProcessID, ServiceID, ThreadID},
     service::{
-        PublicServiceMessage, SendError, SendServiceMessageDest, ServiceMessage,
-        ServiceMessageType, ServiceTrackingNumber, self,
+        self, PublicServiceMessage, SendError, SendServiceMessageDest, ServiceMessage,
+        ServiceMessageType, ServiceTrackingNumber,
     },
     syscall::{receive_service_message_blocking, send_service_message},
 };
@@ -17,7 +17,7 @@ use crate::{
     cpu_localstorage::get_task_mgr_current_pid,
     scheduling::{
         process::{Process, ScheduleStatus},
-        taskmanager::{load_new_task, PROCESSES, TASK_QUEUE},
+        taskmanager::{load_new_task, push_task_queue, PROCESSES},
     },
 };
 
@@ -113,7 +113,7 @@ fn send_message(
             t.register_state.rax = message.2.len();
             t.current_message = Some(message);
             t.schedule_status = ScheduleStatus::Scheduled;
-            TASK_QUEUE.push((proc.pid, tid)).unwrap();
+            push_task_queue((proc.pid, tid)).unwrap();
             return Ok(());
         }
     }
@@ -243,13 +243,16 @@ pub fn start_mgmt() {
             _ => ServiceMessageType::UnknownCommand,
         };
 
-        send_service_message(&ServiceMessage {
-            service_id: sid,
-            sender_pid: pid,
-            tracking_number: query.tracking_number,
-            destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-            message: resp,
-        }, &mut buffer)
+        send_service_message(
+            &ServiceMessage {
+                service_id: sid,
+                sender_pid: pid,
+                tracking_number: query.tracking_number,
+                destination: SendServiceMessageDest::ToProcess(query.sender_pid),
+                message: resp,
+            },
+            &mut buffer,
+        )
         .unwrap();
     }
 }

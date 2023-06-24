@@ -244,7 +244,7 @@ pub fn file_handler() {
                         (PartitionId(req.disk_id as u64), req.node_id as usize),
                         &mut read_buffer,
                     );
-                    ServiceMessageType::FS(FSServiceMessage::ReadResponse(Some(&file_vec)))
+                    ServiceMessageType::FS(FSServiceMessage::ReadResponse(Some(file_vec)))
                 }
                 FSServiceMessage::GetDisksRequest => {
                     let disks = PARTITION.lock().keys().map(|p| p.0).collect();

@@ -88,13 +88,16 @@ impl Keyboard {
 
         let res = self.decoder.add_byte(scancode);
         if let Some(key) = res {
-            send_service_message(&ServiceMessage {
-                service_id: self.keyboard_service,
-                sender_pid: self.current_pid,
-                tracking_number: generate_tracking_number(),
-                destination: SendServiceMessageDest::ToSubscribers,
-                message: ServiceMessageType::Input(InputServiceMessage::KeyboardEvent(key)),
-            }, &mut self.send_buffer)
+            send_service_message(
+                &ServiceMessage {
+                    service_id: self.keyboard_service,
+                    sender_pid: self.current_pid,
+                    tracking_number: generate_tracking_number(),
+                    destination: SendServiceMessageDest::ToSubscribers,
+                    message: ServiceMessageType::Input(InputServiceMessage::KeyboardEvent(key)),
+                },
+                &mut self.send_buffer,
+            )
             .unwrap()
         }
     }
