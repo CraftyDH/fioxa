@@ -1,22 +1,32 @@
 use core::{mem::size_of, slice};
 
-use alloc::sync::Arc;
-use crossbeam_queue::SegQueue;
+use alloc::{sync::Arc, vec::Vec};
+use conquer_once::spin::Lazy;
 use modular_bitfield::{
     bitfield,
     specifiers::{B4, B48},
 };
+use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 use crate::{
+    cpu_localstorage::get_task_mgr_current_pid,
     driver::driver::Driver,
-    net::ethernet::{EthernetFrame, EthernetFrameHeader, RECEIVED_FRAMES_QUEUE},
     paging::{page_allocator::frame_alloc_exec, page_table_manager::ident_map_curr_process},
     pci::PCIHeaderCommon,
+    service::PUBLIC_SERVICES,
 };
-use kernel_userspace::syscall::yield_now;
+use kernel_userspace::{
+    ids::ServiceID,
+    net::PhysicalNet,
+    service::{get_public_service_id, SendServiceMessageDest, ServiceMessage, ServiceMessageType},
+    syscall::{
+        receive_service_message_blocking, send_service_message, service_create, service_subscribe,
+        spawn_thread, yield_now,
+    },
+};
 
-use super::{EthernetDriver, SendError};
+use super::SendError;
 
 const IP_ADDR: u32 = 100 << 24 | 1 << 16 | 168 << 8 | 192;
 
@@ -49,6 +59,73 @@ struct InitBlock {
     logical_address: u64,
     recv_buffer_desc_addr: u32,
     send_buffer_desc_addr: u32,
+}
+
+static PCNET_SID: Lazy<ServiceID> = Lazy::new(|| {
+    let sid = service_create();
+    PUBLIC_SERVICES.lock().insert("PCNET", sid);
+    sid
+});
+
+pub fn amd_pcnet_main(pci_device: PCIHeaderCommon) {
+    let pcnet = Arc::new(Mutex::new(PCNET::new(pci_device).unwrap()));
+
+    let _ = *PCNET_SID;
+
+    let mut buffer = Vec::new();
+
+    let pci_event = get_public_service_id("INTERRUPTS:PCI", &mut buffer).unwrap();
+    service_subscribe(pci_event);
+
+    let pcnet2 = pcnet.clone();
+    spawn_thread(move || {
+        let mut buffer = Vec::new();
+        loop {
+            let message = receive_service_message_blocking(pci_event, &mut buffer).unwrap();
+            match message.message {
+                kernel_userspace::service::ServiceMessageType::InterruptEvent => {
+                    pcnet.lock().interrupt_handler()
+                }
+                _ => unimplemented!(),
+            }
+        }
+    });
+
+    spawn_thread(move || {
+        loop {
+            let mut buffer = Vec::new();
+            let query = receive_service_message_blocking(*PCNET_SID, &mut buffer).unwrap();
+
+            let resp = match query.message {
+                ServiceMessageType::PhysicalNet(net) => match net {
+                    PhysicalNet::MacAddrGet => ServiceMessageType::PhysicalNet(
+                        PhysicalNet::MacAddrResp(pcnet2.lock().read_mac_addr()),
+                    ),
+                    PhysicalNet::SendPacket(packet) => {
+                        // Keep trying to send
+                        while let Err(_) = pcnet2.lock().send_packet(packet) {
+                            yield_now()
+                        }
+                        ServiceMessageType::Ack
+                    }
+                    _ => ServiceMessageType::UnknownCommand,
+                },
+                _ => ServiceMessageType::UnknownCommand,
+            };
+
+            send_service_message(
+                &ServiceMessage {
+                    service_id: *PCNET_SID,
+                    sender_pid: get_task_mgr_current_pid(),
+                    tracking_number: query.tracking_number,
+                    destination: SendServiceMessageDest::ToProcess(query.sender_pid),
+                    message: resp,
+                },
+                &mut buffer,
+            )
+            .unwrap();
+        }
+    });
 }
 
 pub struct PCNETIOPort(u16);
@@ -127,7 +204,6 @@ pub struct PCNET<'b> {
 
     send_buffer_desc: &'b mut [BufferDescriptor],
     recv_buffer_desc: &'b mut [BufferDescriptor],
-    recv_frame_location: Option<Arc<SegQueue<EthernetFrame>>>,
 }
 
 impl Driver for PCNET<'_> {
@@ -211,7 +287,6 @@ impl Driver for PCNET<'_> {
             init_block,
             send_buffer_desc,
             recv_buffer_desc,
-            recv_frame_location: None,
         };
 
         // Write regs
@@ -274,7 +349,7 @@ impl Driver for PCNET<'_> {
     }
 }
 
-impl EthernetDriver for PCNET<'_> {
+impl PCNET<'_> {
     fn send_packet(&mut self, data: &[u8]) -> Result<(), SendError> {
         for buffer_desc in self.send_buffer_desc.iter_mut() {
             // Find a buffer which we own
@@ -301,36 +376,32 @@ impl EthernetDriver for PCNET<'_> {
         Err(SendError::BufferFull)
     }
 
-    fn register_receive_buffer(&mut self, buffer: Arc<crossbeam_queue::SegQueue<EthernetFrame>>) {
-        self.recv_frame_location = Some(buffer)
-    }
-
     fn read_mac_addr(&mut self) -> u64 {
         self.io.read_mac_addr()
     }
-}
 
-impl PCNET<'_> {
     pub fn receive(&mut self) {
         for buffer_desc in self.recv_buffer_desc.iter_mut() {
             let flags = buffer_desc.flags;
             if flags & 0x80000000 == 0 {
                 if flags & 0x40000000 == 0 && flags & 0x03000000 > 0 {
                     let size: usize = buffer_desc.flags_2 as usize & 0xFFFF;
-                    let header = unsafe { *(buffer_desc.address as *const EthernetFrameHeader) };
-                    let data = unsafe {
-                        slice::from_raw_parts(
-                            (buffer_desc.address as usize + size_of::<EthernetFrameHeader>())
-                                as *const u8,
-                            size - size_of::<EthernetFrameHeader>(),
-                        )
-                    };
-
-                    let frame = EthernetFrame {
-                        header: header.clone(),
-                        data: data.to_vec(),
-                    };
-                    RECEIVED_FRAMES_QUEUE.push(frame);
+                    let packet =
+                        unsafe { slice::from_raw_parts(buffer_desc.address as *const u8, size) };
+                    send_service_message(
+                        &ServiceMessage {
+                            service_id: *PCNET_SID,
+                            sender_pid: get_task_mgr_current_pid(),
+                            tracking_number: kernel_userspace::service::ServiceTrackingNumber(0),
+                            destination:
+                                kernel_userspace::service::SendServiceMessageDest::ToSubscribers,
+                            message: ServiceMessageType::PhysicalNet(PhysicalNet::ReceivedPacket(
+                                &packet,
+                            )),
+                        },
+                        &mut Vec::new(),
+                    )
+                    .unwrap();
                 }
                 buffer_desc.flags = 0x80000000 | BUFFER_SIZE_MASK;
                 buffer_desc.flags_2 = 0;

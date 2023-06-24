@@ -20,12 +20,12 @@ use kernel::boot_aps::boot_aps;
 use kernel::bootfs::TERMINAL_ELF;
 use kernel::cpu_localstorage::init_bsp_task;
 use kernel::fs::{self, FSDRIVES};
-use kernel::interrupts::{self};
+use kernel::interrupts::{self, check_interrupts};
 
 use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::enable_localapic;
 use kernel::memory::MemoryMapIter;
-use kernel::net::ethernet::{ethernet_task, lookup_ip};
+use kernel::net::ethernet::{lookup_ip, userspace_networking_main};
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
 use kernel::paging::page_allocator::{frame_alloc_exec, free_page, request_page};
 use kernel::paging::page_table_manager::{page_4kb, Mapper};
@@ -48,7 +48,7 @@ use kernel_userspace::service::{
 };
 use kernel_userspace::syscall::{
     exit, get_pid, receive_service_message_blocking, send_service_message, service_create,
-    spawn_process, spawn_thread,
+    spawn_process, spawn_thread, yield_now,
 };
 use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
 use uefi::table::{Runtime, SystemTable};
@@ -275,6 +275,10 @@ fn after_boot() {
     let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
 
     spawn_process(service::start_mgmt, "", true);
+    spawn_thread(|| loop {
+        check_interrupts(&mut Vec::new());
+        yield_now();
+    });
     spawn_process(elf::elf_new_process_loader, "", true);
 
     spawn_process(ps2::main, "", true);
@@ -284,20 +288,20 @@ fn after_boot() {
     log!("Enumnerating PCI...");
 
     enumerate_pci(acpi_tables);
-    spawn_thread(|| kernel::pci::poll_interrupts());
 
-    spawn_thread(ethernet_task);
+    spawn_process(userspace_networking_main, "", true);
 
     spawn_thread(|| FSDRIVES.lock().identify());
 
-    spawn_thread(|| {
-        for i in 0..5 {
-            println!(
-                "10.0.2.{i} = {:#X?}",
-                lookup_ip(kernel::net::ethernet::IPAddr::V4(10, 0, 2, i))
-            );
-        }
-    });
+    spawn_process(
+        || {
+            for i in 0..5 {
+                println!("10.0.2.{i} = {:#X?}", lookup_ip(10, 0, 2, i));
+            }
+        },
+        "",
+        false,
+    );
 
     spawn_thread(|| {
         let mut buffer = Vec::new();

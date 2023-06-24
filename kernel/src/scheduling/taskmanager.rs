@@ -1,6 +1,6 @@
 use core::ptr::slice_from_raw_parts;
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::collections::BTreeMap;
 
 use conquer_once::noblock::OnceCell;
 use crossbeam_queue::ArrayQueue;
@@ -15,7 +15,6 @@ use crate::{
         set_is_task_mgr_schedule, set_task_mgr_current_pid, set_task_mgr_current_ticks,
         set_task_mgr_current_tid,
     },
-    interrupts::check_interrupts,
     paging::{
         page_table_manager::{PageLvl4, PageTable},
         virt_addr_for_phys,
@@ -45,13 +44,12 @@ pub unsafe fn core_start_multitasking() -> ! {
     // Performs work to keep core working & is preemptible
     set_is_task_mgr_schedule(true);
     core::arch::asm!("sti");
-    let mut send_buffer = Vec::new();
 
     loop {
         // Check interrupts
-        check_interrupts(&mut send_buffer);
+        // check_interrupts(&mut send_buffer);
 
-        kernel_userspace::syscall::yield_now();
+        // kernel_userspace::syscall::yield_now();
 
         // Use hlt, to drop CPU usage.
         // However this causes hugely increased latency for dependant tasks.
@@ -113,10 +111,10 @@ fn save_current_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers)
         let thread = get_thread_mut(pid, tid, &mut processes)?;
         thread.save(stack_frame, reg);
     }
-    // // Don't save nop task
-    // if pid != ProcessID(0) {
-    TASK_QUEUE.push((pid, tid)).unwrap();
-    // }
+    // Don't save nop task
+    if pid != ProcessID(0) {
+        TASK_QUEUE.push((pid, tid)).unwrap();
+    }
     Some(())
 }
 

@@ -8,7 +8,7 @@ use alloc::{
 };
 use kernel_userspace::{
     ids::{ProcessID, ServiceID, ThreadID},
-    service::{ServiceTrackingNumber},
+    service::ServiceTrackingNumber,
     syscall::exit,
 };
 use x86_64::{

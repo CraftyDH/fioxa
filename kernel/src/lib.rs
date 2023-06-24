@@ -14,6 +14,8 @@
 
 use bootloader::BootInfo;
 
+use crate::scheduling::without_context_switch;
+
 #[macro_use]
 extern crate alloc;
 
@@ -63,9 +65,11 @@ pub fn kernel_memory_loc() -> (u64, u64) {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     // unsafe { WRITER.force_unlock() };
-    unsafe { core::arch::asm!("cli") }
-    log!("Panic: {}", info);
-    loop {}
+    // unsafe { core::arch::asm!("cli") }
+    without_context_switch(|| {
+        log!("Panic: {}", info);
+        loop {}
+    })
 }
 
 #[alloc_error_handler]

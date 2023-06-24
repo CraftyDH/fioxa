@@ -1,16 +1,12 @@
 use crate::{
     acpi::FioxaAcpiHandler,
-    driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::PCNET},
+    driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::amd_pcnet_main},
     fs::FSDRIVES,
-    net::ethernet::ETHERNET,
     pci::mcfg::get_mcfg,
 };
 
-use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
-use kernel_userspace::{
-    service::get_public_service_id,
-    syscall::{receive_service_message_blocking, service_subscribe},
-};
+use alloc::{boxed::Box, format, sync::Arc};
+
 use spin::Mutex;
 mod express;
 mod legacy;
@@ -18,29 +14,6 @@ mod mcfg;
 mod pci_descriptors;
 
 pub type PCIDriver = Arc<Mutex<dyn Driver + Send>>;
-
-pub static PCI_INTERRUPT_DEVICES: Mutex<Vec<PCIDriver>> = Mutex::new(Vec::new());
-
-pub fn poll_interrupts() {
-    let mut buffer = Vec::new();
-    let pci_event = get_public_service_id("INTERRUPTS:PCI", &mut buffer).unwrap();
-    service_subscribe(pci_event);
-
-    loop {
-        let message = receive_service_message_blocking(pci_event, &mut buffer).unwrap();
-        match message.message {
-            kernel_userspace::service::ServiceMessageType::InterruptEvent => {
-                // For each device check if it had the interrupt
-                let mut d = PCI_INTERRUPT_DEVICES.lock();
-                for device in d.iter_mut() {
-                    let mut d = device.lock();
-                    d.interrupt_handler();
-                }
-            }
-            _ => unimplemented!(),
-        }
-    }
-}
 
 pub trait PCIDevice {
     unsafe fn read_u8(&self, offset: u32) -> u8;
@@ -197,7 +170,7 @@ fn enumerate_device(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: u8
         return;
     }
     for function in 0..8 {
-        enumerate_function(pci_bus, segment, bus, device, function)
+        enumerate_function(pci_bus, segment, bus, device, function);
     }
 }
 
@@ -232,9 +205,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
             // AM79c973
             0x2000 => {
                 println!("AMD PCnet");
-                let driv = Arc::new(Mutex::new(PCNET::new(pci_header).unwrap()));
-                PCI_INTERRUPT_DEVICES.lock().push(driv.clone());
-                ETHERNET.lock().new_device(driv);
+                amd_pcnet_main(pci_header);
                 return;
             }
             _ => (),

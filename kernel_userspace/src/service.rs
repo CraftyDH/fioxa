@@ -7,6 +7,7 @@ use crate::{
     fs::FSServiceMessage,
     ids::{ProcessID, ServiceID},
     input::InputServiceMessage,
+    net,
     syscall::{get_pid, send_and_get_response_service_message},
 };
 
@@ -88,6 +89,10 @@ pub enum ServiceMessageType<'a> {
     ElfLoaderResp(ProcessID),
 
     InterruptEvent,
+
+    #[serde(borrow)]
+    PhysicalNet(net::PhysicalNet<'a>),
+    Networking(net::Networking),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
