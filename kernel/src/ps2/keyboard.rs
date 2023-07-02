@@ -3,12 +3,13 @@ use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     input::InputServiceMessage,
     service::{
-        generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+        generate_tracking_number, register_public_service, SendServiceMessageDest, ServiceMessage,
+        ServiceMessageType,
     },
     syscall::{get_pid, send_service_message, service_create},
 };
 
-use crate::{ioapic::mask_entry, service::PUBLIC_SERVICES};
+use crate::ioapic::mask_entry;
 
 use super::{
     scancode::{set2::ScancodeSet2, Scancode},
@@ -26,7 +27,7 @@ pub struct Keyboard {
 impl Keyboard {
     pub fn new(command: PS2Command) -> Self {
         let keyboard_service = service_create();
-        PUBLIC_SERVICES.lock().insert("INPUT:KB", keyboard_service);
+        register_public_service("INPUT:KB", keyboard_service, &mut Vec::new());
 
         Self {
             command,

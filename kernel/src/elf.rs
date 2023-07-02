@@ -3,7 +3,9 @@ use core::cmp::{max, min};
 use alloc::vec::Vec;
 use kernel_userspace::{
     ids::ProcessID,
-    service::{SendServiceMessageDest, ServiceMessage, ServiceMessageType},
+    service::{
+        register_public_service, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+    },
     syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
 };
 
@@ -19,7 +21,6 @@ use crate::{
         taskmanager::{push_task_queue, PROCESSES},
         without_context_switch,
     },
-    service::PUBLIC_SERVICES,
 };
 
 #[repr(C)]
@@ -159,7 +160,7 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> ProcessID {
 pub fn elf_new_process_loader() {
     let sid = service_create();
     let pid = get_pid();
-    PUBLIC_SERVICES.lock().insert("ELF_LOADER", sid);
+    register_public_service("ELF_LOADER", sid, &mut Vec::new());
 
     let mut message_buffer = Vec::new();
     let mut tmp_prog_buffer = Vec::new();

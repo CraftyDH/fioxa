@@ -1,4 +1,7 @@
-use core::{mem::size_of, slice};
+use core::{
+    mem::{size_of, transmute, transmute_copy},
+    slice,
+};
 
 use alloc::{sync::Arc, vec::Vec};
 use conquer_once::spin::Lazy;
@@ -13,16 +16,19 @@ use crate::{
     cpu_localstorage::get_task_mgr_current_pid,
     driver::driver::Driver,
     paging::{page_allocator::frame_alloc_exec, page_table_manager::ident_map_curr_process},
-    pci::PCIHeaderCommon,
-    service::PUBLIC_SERVICES,
+    pci::{self, PCIHeaderCommon},
 };
 use kernel_userspace::{
     ids::ServiceID,
     net::PhysicalNet,
-    service::{get_public_service_id, SendServiceMessageDest, ServiceMessage, ServiceMessageType},
+    pci::PCIDevice,
+    service::{
+        get_public_service_id, register_public_service, SendServiceMessageDest, ServiceMessage,
+        ServiceMessageType,
+    },
     syscall::{
-        receive_service_message_blocking, send_service_message, service_create, service_subscribe,
-        spawn_thread, yield_now,
+        read_args_raw, receive_service_message_blocking, send_service_message, service_create,
+        service_subscribe, spawn_thread, yield_now,
     },
 };
 
@@ -63,12 +69,21 @@ struct InitBlock {
 
 static PCNET_SID: Lazy<ServiceID> = Lazy::new(|| {
     let sid = service_create();
-    PUBLIC_SERVICES.lock().insert("PCNET", sid);
+    register_public_service("PCNET", sid, &mut Vec::new());
     sid
 });
 
-pub fn amd_pcnet_main(pci_device: PCIHeaderCommon) {
-    let pcnet = Arc::new(Mutex::new(PCNET::new(pci_device).unwrap()));
+pub fn amd_pcnet_main() {
+    let args = read_args_raw();
+    let pci_device = u64::from_ne_bytes(args[0..8].try_into().unwrap());
+    let pci_device = ServiceID(pci_device);
+
+    let pcnet = Arc::new(Mutex::new(
+        PCNET::new(PCIDevice {
+            device_service: pci_device,
+        })
+        .unwrap(),
+    ));
 
     let _ = *PCNET_SID;
 
@@ -206,14 +221,15 @@ pub struct PCNET<'b> {
     recv_buffer_desc: &'b mut [BufferDescriptor],
 }
 
-impl Driver for PCNET<'_> {
-    fn new(pci_device: PCIHeaderCommon) -> Option<Self> {
+impl PCNET<'_> {
+    fn new(pci_device: kernel_userspace::pci::PCIDevice) -> Option<Self> {
+        let common_header = kernel_userspace::pci::PCIHeaderCommon { device: pci_device };
         // Ensure device is actually supported
-        if !(pci_device.get_vendor_id() == 0x1022 && pci_device.get_device_id() == 0x2000) {
+        if !(common_header.get_vendor_id() == 0x1022 && common_header.get_device_id() == 0x2000) {
             return None;
         };
 
-        let pci_device = unsafe { pci_device.get_as_header0() };
+        let pci_device = unsafe { common_header.get_as_header0() };
 
         let port_base: u16 = pci_device.get_port_base().unwrap().try_into().unwrap();
         let mut port = PCNETIOPort(port_base);

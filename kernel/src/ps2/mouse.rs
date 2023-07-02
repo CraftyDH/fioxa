@@ -4,12 +4,13 @@ use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     input::InputServiceMessage,
     service::{
-        generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+        generate_tracking_number, register_public_service, SendServiceMessageDest, ServiceMessage,
+        ServiceMessageType,
     },
     syscall::{get_pid, send_service_message, service_create},
 };
 
-use crate::{ioapic::mask_entry, service::PUBLIC_SERVICES};
+use crate::ioapic::mask_entry;
 
 use super::PS2Command;
 
@@ -42,7 +43,7 @@ pub struct Mouse {
 impl Mouse {
     pub fn new(command: PS2Command) -> Self {
         let mouse_service = service_create();
-        PUBLIC_SERVICES.lock().insert("INPUT:MOUSE", mouse_service);
+        register_public_service("INPUT:MOUSE", mouse_service, &mut Vec::new());
 
         Self {
             command,

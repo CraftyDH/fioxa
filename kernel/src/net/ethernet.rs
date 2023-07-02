@@ -8,8 +8,8 @@ use kernel_userspace::{
     ids::ServiceID,
     net::Networking,
     service::{
-        generate_tracking_number, get_public_service_id, SendServiceMessageDest, ServiceMessage,
-        ServiceMessageType, ServiceTrackingNumber,
+        generate_tracking_number, get_public_service_id, register_public_service,
+        SendServiceMessageDest, ServiceMessage, ServiceMessageType, ServiceTrackingNumber,
     },
     syscall::{
         receive_service_message_blocking, receive_service_message_blocking_tracking,
@@ -23,7 +23,6 @@ use x86_64::instructions::interrupts::without_interrupts;
 use crate::{
     cpu_localstorage::get_task_mgr_current_pid,
     net::arp::{ARP, ARP_TABLE},
-    service::PUBLIC_SERVICES,
     syscall::syssleep,
 };
 
@@ -111,9 +110,10 @@ impl IPAddr {
 const IP_ADDR: IPAddr = IPAddr::V4(10, 0, 2, 15);
 const SUBNET: u32 = 0xFF0000;
 
-pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) {
+pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) -> Option<()> {
     if !IP_ADDR.same_subnet(&ip, SUBNET) {
-        todo!("Not in same subnet: {:?}->{:?}", IP_ADDR, ip)
+        println!("Not in same subnet: {:?}->{:?}", IP_ADDR, ip);
+        return None;
     }
     let mut arp = ARP::new();
     arp.set_hardware_type(1u16.to_be()); // Ethernet
@@ -148,11 +148,12 @@ pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) {
         &mut buffer,
     )
     .unwrap();
+    Some(())
 }
 
 pub fn userspace_networking_main() {
     let sid = service_create();
-    PUBLIC_SERVICES.lock().insert("NETWORKING", sid);
+    register_public_service("NETWORKING", sid, &mut Vec::new());
 
     let pcnet;
     let mut buffer = Vec::new();

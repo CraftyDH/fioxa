@@ -7,7 +7,9 @@ use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::V
 use conquer_once::spin::Lazy;
 use kernel_userspace::{
     fs::{FSServiceMessage, StatResponse, StatResponseFile, StatResponseFolder},
-    service::{SendServiceMessageDest, ServiceMessage, ServiceMessageType},
+    service::{
+        register_public_service, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+    },
     syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
 };
 use spin::Mutex;
@@ -15,7 +17,6 @@ use spin::Mutex;
 use crate::{
     driver::disk::{DiskBusDriver, DiskDevice},
     fs::mbr::read_partitions,
-    service::PUBLIC_SERVICES,
 };
 
 pub static PARTITION: Lazy<Mutex<BTreeMap<PartitionId, Box<dyn FileSystemDev>>>> =
@@ -188,7 +189,7 @@ pub fn tree(folder: VFileID, prefix: String) {
 pub fn file_handler() {
     let sid = service_create();
     let pid = get_pid();
-    PUBLIC_SERVICES.lock().insert("FS", sid);
+    register_public_service("FS", sid, &mut Vec::new());
 
     let mut message_buffer = Vec::new();
     let mut read_buffer = Vec::new();

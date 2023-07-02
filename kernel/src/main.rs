@@ -36,15 +36,14 @@ use kernel::pci::enumerate_pci;
 use kernel::scheduling::taskmanager::core_start_multitasking;
 use kernel::screen::gop::{self, WRITER};
 use kernel::screen::psf1::{self, load_psf1_font};
-use kernel::service::PUBLIC_SERVICES;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
 use kernel::{elf, gdt, paging, ps2, service, BOOT_INFO};
 
 use kernel_userspace::service::{
-    generate_tracking_number, get_public_service_id, SendServiceMessageDest, ServiceMessage,
-    ServiceMessageType,
+    generate_tracking_number, get_public_service_id, register_public_service,
+    SendServiceMessageDest, ServiceMessage, ServiceMessageType,
 };
 use kernel_userspace::syscall::{
     exit, get_pid, receive_service_message_blocking, send_service_message, service_create,
@@ -221,7 +220,7 @@ pub fn main(info: *const BootInfo) -> ! {
     enable_apic(&madt, &mut KERNEL_MAP.lock());
 
     boot_aps(&madt);
-    spawn_process(after_boot, "", true);
+    spawn_process(after_boot, &[], true);
 
     // Disable interrupts so when we enable switching this core can finish init.
     unsafe { core::arch::asm!("cli") };
@@ -274,34 +273,24 @@ fn after_boot() {
 
     let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
 
-    spawn_process(service::start_mgmt, "", true);
+    spawn_process(service::start_mgmt, &[], true);
     spawn_thread(|| loop {
         check_interrupts(&mut Vec::new());
         yield_now();
     });
-    spawn_process(elf::elf_new_process_loader, "", true);
+    spawn_process(elf::elf_new_process_loader, &[], true);
 
-    spawn_process(ps2::main, "", true);
-    spawn_process(gop::gop_entry, "", true);
+    spawn_process(ps2::main, &[], true);
+    spawn_process(gop::gop_entry, &[], true);
     spawn_thread(fs::file_handler);
 
     log!("Enumnerating PCI...");
 
     enumerate_pci(acpi_tables);
 
-    spawn_process(userspace_networking_main, "", true);
+    spawn_process(userspace_networking_main, &[], true);
 
     spawn_thread(|| FSDRIVES.lock().identify());
-
-    spawn_process(
-        || {
-            for i in 0..5 {
-                println!("10.0.2.{i} = {:#X?}", lookup_ip(10, 0, 2, i));
-            }
-        },
-        "",
-        false,
-    );
 
     spawn_thread(|| {
         let mut buffer = Vec::new();
@@ -325,7 +314,7 @@ fn after_boot() {
     spawn_process(
         || {
             let sid = service_create();
-            PUBLIC_SERVICES.lock().insert("ACCEPTER", sid);
+            register_public_service("ACCEPTER", sid, &mut Vec::new());
             let mut buffer = Vec::new();
 
             for i in 0.. {
@@ -335,7 +324,7 @@ fn after_boot() {
                 }
             }
         },
-        "",
+        &[],
         false,
     );
 

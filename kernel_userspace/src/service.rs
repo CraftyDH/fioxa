@@ -7,7 +7,7 @@ use crate::{
     fs::FSServiceMessage,
     ids::{ProcessID, ServiceID},
     input::InputServiceMessage,
-    net,
+    net, pci,
     syscall::{get_pid, send_and_get_response_service_message},
 };
 
@@ -93,12 +93,15 @@ pub enum ServiceMessageType<'a> {
     #[serde(borrow)]
     PhysicalNet(net::PhysicalNet<'a>),
     Networking(net::Networking),
+
+    PCIDev(pci::PCIDevCmd),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum PublicServiceMessage<'a> {
     Request(&'a str),
     Response(Option<ServiceID>),
+    RegisterPublicService(&'a str, ServiceID),
 }
 
 pub fn get_public_service_id(name: &str, buffer: &mut Vec<u8>) -> Option<ServiceID> {
@@ -118,6 +121,24 @@ pub fn get_public_service_id(name: &str, buffer: &mut Vec<u8>) -> Option<Service
         ServiceMessageType::PublicService(PublicServiceMessage::Response(sid)) => sid,
         _ => panic!("Didn't get valid response"),
     }
+}
+
+pub fn register_public_service(name: &str, sid: ServiceID, buffer: &mut Vec<u8>) {
+    let ServiceMessageType::Ack = send_and_get_response_service_message(
+        &ServiceMessage {
+            service_id: ServiceID(1),
+            sender_pid: get_pid(),
+            tracking_number: generate_tracking_number(),
+            destination: SendServiceMessageDest::ToProvider,
+            message: ServiceMessageType::PublicService(
+                PublicServiceMessage::RegisterPublicService(name, sid),
+            ),
+        },
+        buffer,
+    )
+    .unwrap().message else {
+        todo!()
+    };
 }
 
 pub fn parse_message(buffer: &[u8]) -> Result<ServiceMessage, postcard::Error> {

@@ -91,7 +91,7 @@ pub fn yield_now() {
     unsafe { syscall(YIELD_NOW) };
 }
 
-pub fn spawn_process<F>(func: F, args: &str, kernel: bool) -> PID
+pub fn spawn_process<F>(func: F, args: &[u8], kernel: bool) -> PID
 where
     F: Fn() + Send + Sync,
 {

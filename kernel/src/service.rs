@@ -1,13 +1,19 @@
 use core::sync::atomic::AtomicU64;
 
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::BTreeMap,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use kernel_userspace::{
     ids::{ProcessID, ServiceID, ThreadID},
     service::{
         self, PublicServiceMessage, SendError, SendServiceMessageDest, ServiceMessage,
         ServiceMessageType, ServiceTrackingNumber,
     },
-    syscall::{receive_service_message_blocking, send_service_message},
+    syscall::{receive_service_message_blocking, send_service_message, spawn_thread},
 };
 use spin::Mutex;
 use x86_64::structures::idt::InterruptStackFrame;
@@ -212,7 +218,7 @@ pub fn get_message(
     Some(())
 }
 
-pub static PUBLIC_SERVICES: Mutex<BTreeMap<&str, ServiceID>> = Mutex::new(BTreeMap::new());
+pub static PUBLIC_SERVICES: Mutex<BTreeMap<String, ServiceID>> = Mutex::new(BTreeMap::new());
 
 pub fn start_mgmt() {
     let pid = get_task_mgr_current_pid();
@@ -228,8 +234,7 @@ pub fn start_mgmt() {
     let pid = ProcessID(pid.0);
 
     let mut buffer = Vec::new();
-
-    loop {
+    spawn_thread(move || loop {
         let query = receive_service_message_blocking(sid, &mut buffer).unwrap();
 
         let resp = match query.message {
@@ -239,6 +244,14 @@ pub fn start_mgmt() {
                 let sid = s.get(name);
 
                 ServiceMessageType::PublicService(PublicServiceMessage::Response(sid.copied()))
+            }
+            ServiceMessageType::PublicService(PublicServiceMessage::RegisterPublicService(
+                name,
+                sid,
+            )) => {
+                let mut s = PUBLIC_SERVICES.lock();
+                s.insert(name.to_string(), sid);
+                ServiceMessageType::Ack
             }
             _ => ServiceMessageType::UnknownCommand,
         };
@@ -254,5 +267,5 @@ pub fn start_mgmt() {
             &mut buffer,
         )
         .unwrap();
-    }
+    });
 }

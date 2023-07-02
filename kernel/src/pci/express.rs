@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 
 use crate::paging::page_table_manager::ident_map_curr_process;
 
@@ -68,5 +68,18 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
         PCIHeaderCommon {
             device: Arc::new(PCIExpressDevice { address }),
         }
+    }
+    fn get_device_raw(
+        &mut self,
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Box<dyn PCIDevice> {
+        let address = self.get_address(segment, bus, device, function).unwrap();
+
+        ident_map_curr_process(address, true);
+
+        Box::new(PCIExpressDevice { address })
     }
 }

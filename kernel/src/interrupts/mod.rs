@@ -5,7 +5,8 @@ use conquer_once::spin::Lazy;
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     service::{
-        generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+        generate_tracking_number, register_public_service, SendServiceMessageDest, ServiceMessage,
+        ServiceMessageType,
     },
     syscall::send_service_message,
 };
@@ -165,9 +166,11 @@ pub static INTERRUPT_HANDLERS: Lazy<[ServiceID; 3]> = Lazy::new(|| {
     let mouse = service::new(ProcessID(0));
     let pci = service::new(ProcessID(0));
 
-    PUBLIC_SERVICES.lock().insert("INTERRUPTS:KB", kb);
-    PUBLIC_SERVICES.lock().insert("INTERRUPTS:MOUSE", mouse);
-    PUBLIC_SERVICES.lock().insert("INTERRUPTS:PCI", pci);
+    PUBLIC_SERVICES.lock().insert("INTERRUPTS:KB".into(), kb);
+    PUBLIC_SERVICES
+        .lock()
+        .insert("INTERRUPTS:MOUSE".into(), mouse);
+    PUBLIC_SERVICES.lock().insert("INTERRUPTS:PCI".into(), pci);
 
     [kb, mouse, pci]
 });

@@ -5,7 +5,8 @@ use conquer_once::spin::Lazy;
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
 use kernel_userspace::service::{
-    generate_tracking_number, SendError, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+    generate_tracking_number, register_public_service, SendError, SendServiceMessageDest,
+    ServiceMessage, ServiceMessageType,
 };
 use kernel_userspace::syscall::{get_pid, send_service_message, service_create, spawn_thread};
 
@@ -267,7 +268,6 @@ use crate::paging::get_uefi_active_mapper;
 use crate::paging::offset_map::map_gop;
 use crate::scheduling::without_context_switch;
 use crate::screen::psf1::PSF1_FONT_NULL;
-use crate::service::PUBLIC_SERVICES;
 use core::fmt::Arguments;
 use spin::mutex::Mutex;
 
@@ -293,7 +293,7 @@ pub fn _print(args: Arguments) {
 pub fn monitor_stdout_task() {
     let sid = service_create();
     let pid = get_pid();
-    PUBLIC_SERVICES.lock().insert("STDOUT", sid);
+    register_public_service("STDOUT", sid, &mut Vec::new());
 
     let mut buffer = Vec::new();
     loop {

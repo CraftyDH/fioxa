@@ -1,4 +1,4 @@
-use alloc::sync::Arc;
+use alloc::{boxed::Box, sync::Arc};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -53,6 +53,18 @@ impl PCIBus for LegacyPCI {
         PCIHeaderCommon {
             device: Arc::new(new_header),
         }
+    }
+
+    fn get_device_raw(
+        &mut self,
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Box<dyn PCIDevice> {
+        assert!(segment == 0);
+        let new_header = PCILegacyDevice::new(bus, device, function);
+        Box::new(new_header)
     }
 }
 

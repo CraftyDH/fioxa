@@ -1,12 +1,18 @@
 use crate::{
     acpi::FioxaAcpiHandler,
+    cpu_localstorage::get_task_mgr_current_pid,
     driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::amd_pcnet_main},
     fs::FSDRIVES,
     pci::mcfg::get_mcfg,
 };
 
-use alloc::{boxed::Box, format, sync::Arc};
+use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 
+use kernel_userspace::{
+    ids::ServiceID,
+    service::{ServiceMessage, ServiceMessageType},
+    syscall::{send_service_message, spawn_process, spawn_thread},
+};
 use spin::Mutex;
 mod express;
 mod legacy;
@@ -15,7 +21,7 @@ mod pci_descriptors;
 
 pub type PCIDriver = Arc<Mutex<dyn Driver + Send>>;
 
-pub trait PCIDevice {
+pub trait PCIDevice: Send + Sync {
     unsafe fn read_u8(&self, offset: u32) -> u8;
     unsafe fn read_u16(&self, offset: u32) -> u16;
     unsafe fn read_u32(&self, offset: u32) -> u32;
@@ -205,7 +211,8 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
             // AM79c973
             0x2000 => {
                 println!("AMD PCnet");
-                amd_pcnet_main(pci_header);
+                let sid = pci_dev_handler(pci_bus, segment, bus, device, function);
+                spawn_process(amd_pcnet_main, &sid.0.to_ne_bytes(), true);
                 return;
             }
             _ => (),
@@ -241,4 +248,59 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
 
 trait PCIBus {
     fn get_device(&mut self, segment: u16, bus: u8, device: u8, function: u8) -> PCIHeaderCommon;
+    fn get_device_raw(
+        &mut self,
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Box<dyn PCIDevice>;
+}
+
+fn pci_dev_handler(
+    pci_bus: &mut impl PCIBus,
+    segment: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
+) -> ServiceID {
+    let mut device = pci_bus.get_device_raw(segment, bus, device, function);
+    let sid = kernel_userspace::syscall::service_create();
+
+    spawn_thread(move || loop {
+        let mut buf = Vec::new();
+        let req =
+            kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buf).unwrap();
+        let resp = match req.message {
+            ServiceMessageType::PCIDev(kernel_userspace::pci::PCIDevCmd::Read(offset))
+                if offset <= 256 =>
+            unsafe {
+                ServiceMessageType::PCIDev(kernel_userspace::pci::PCIDevCmd::Data(
+                    device.read_u32(offset),
+                ))
+            },
+            ServiceMessageType::PCIDev(kernel_userspace::pci::PCIDevCmd::Write(offset, data))
+                if offset <= 256 =>
+            unsafe {
+                device.write_u32(offset, data);
+                ServiceMessageType::Ack
+            },
+            _ => ServiceMessageType::UnknownCommand,
+        };
+        send_service_message(
+            &ServiceMessage {
+                service_id: sid,
+                sender_pid: get_task_mgr_current_pid(),
+                tracking_number: req.tracking_number,
+                destination: kernel_userspace::service::SendServiceMessageDest::ToProcess(
+                    req.sender_pid,
+                ),
+                message: resp,
+            },
+            &mut buf,
+        )
+        .unwrap();
+    });
+
+    sid
 }
