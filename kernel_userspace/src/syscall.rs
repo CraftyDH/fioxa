@@ -44,51 +44,56 @@ pub const UNMMAP_PAGE: usize = 10;
 // As it is static is won't give the correct answer
 pub static CURRENT_PID: Lazy<ProcessID> = Lazy::new(|| get_pid());
 
-unsafe fn syscall(syscall: usize) -> usize {
-    let result: usize;
-    core::arch::asm!("int 0x80", in("rax") syscall, lateout("rax") result, options(nostack));
-    result
-}
+// TODO: Use fancier macros to dynamically build the argss
+#[macro_export]
+macro_rules! syscall {
+    // No result
+    ($syscall:expr) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, in("r8") $arg1, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, in("r8") $arg1, in("r9") $arg2, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, in("r8") $arg1, in("r9") $arg2, in("r10") $arg3, options(nostack))
+    };
 
-unsafe fn syscall1(syscall: usize, arg: usize) -> usize {
-    let result: usize;
-    core::arch::asm!("int 0x80", in("rax") syscall, in("r8") arg, lateout("rax") result, options(nostack));
-    result
-}
+    // 1 result
+    ($syscall:expr => $result:ident) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, lateout("rax") $result, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr => $result:ident) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, in("r8") $arg1, lateout("rax") $result, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr => $result:ident) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, in("r8") $arg1, in("r9") $arg2, lateout("rax") $result, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr => $result:ident) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, in("r8") $arg1, in("r9") $arg2, in("r10") $arg3, lateout("rax") $result, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr => $result:ident) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, in("r8") $arg1, in("r9") $arg2, in("r10") $arg3, in("r11") $arg4, lateout("rax") $result, options(nostack))
+    };
 
-unsafe fn syscall2(syscall: usize, arg1: usize, arg2: usize) -> usize {
-    let result: usize;
-    core::arch::asm!("int 0x80", in("rax") syscall, in("r8") arg1, in("r9") arg2, lateout("rax") result, options(nostack));
-    result
-}
-
-unsafe fn syscall3(syscall: usize, arg1: usize, arg2: usize, arg3: usize) -> usize {
-    let result: usize;
-    core::arch::asm!("int 0x80", in("rax") syscall, in("r8") arg1, in("r9") arg2, in("r10") arg3, lateout("rax") result, options(nostack));
-    result
-}
-
-unsafe fn syscall3_2(syscall: usize, arg1: usize, arg2: usize, arg3: usize) -> (usize, usize) {
-    let result: usize;
-    let result2: usize;
-    core::arch::asm!("int 0x80", in("rax") syscall, in("r8") arg1, in("r9") arg2, in("r10") arg3, lateout("rax") result, lateout("r8") result2, options(nostack));
-    (result, result2)
-}
-
-unsafe fn syscall4(syscall: usize, arg1: usize, arg2: usize, arg3: usize, arg4: usize) -> usize {
-    let result: usize;
-    core::arch::asm!("int 0x80", in("rax") syscall, in("r8") arg1, in("r9") arg2, in("r10") arg3, in("r11") arg4, lateout("rax") result, options(nostack));
-    result
+    // 2 results
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr => $result:ident, $result2:ident) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, in("r8") $arg1, in("r9") $arg2, in("r10") $arg3, lateout("rax") $result, lateout("r8") $result2, options(nostack))
+    };
 }
 
 #[inline]
 pub fn echo(num: usize) -> usize {
-    unsafe { syscall1(ECHO, num) }
+    let result;
+    unsafe { syscall!(ECHO, num => result) }
+    result
 }
 
 #[inline]
 pub fn yield_now() {
-    unsafe { syscall(YIELD_NOW) };
+    unsafe { syscall!(YIELD_NOW) };
 }
 
 pub fn spawn_process<F>(func: F, args: &[u8], kernel: bool) -> PID
@@ -100,15 +105,17 @@ where
 
     let privilege = if kernel { 1 } else { 0 };
 
-    let res = unsafe {
-        syscall4(
+    let res: u64;
+    unsafe {
+        syscall!(
             SPAWN_PROCESS,
             raw as usize,
             args.as_ptr() as usize,
             args.len(),
-            privilege,
+            privilege
+            => res
         )
-    } as u64;
+    }
     PID::from(res)
 }
 
@@ -118,18 +125,19 @@ where
 {
     let boxed_func: Box<dyn FnOnce()> = Box::new(func);
     let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
-    let res = unsafe { syscall1(SPAWN_THREAD, raw as usize) } as u64;
+    let res: u64;
+    unsafe { syscall!(SPAWN_THREAD, raw as usize => res) }
     res.into()
 }
 
 #[inline]
 pub fn mmap_page(vmem: usize) {
-    unsafe { syscall1(MMAP_PAGE, vmem) };
+    unsafe { syscall!(MMAP_PAGE, vmem) };
 }
 
 #[inline]
 pub fn unmmap_page(vmem: usize) {
-    unsafe { syscall1(UNMMAP_PAGE, vmem) };
+    unsafe { syscall!(UNMMAP_PAGE, vmem) };
 }
 
 pub fn send_service_message(msg: &ServiceMessage, buffer: &mut Vec<u8>) -> Result<(), SendError> {
@@ -143,7 +151,8 @@ pub fn send_service_message(msg: &ServiceMessage, buffer: &mut Vec<u8>) -> Resul
 
     let data = postcard::to_slice(&msg, buffer).unwrap();
 
-    let error = unsafe { syscall3(SERVICE, SERVICE_PUSH, data.as_ptr() as usize, data.len()) };
+    let error: usize;
+    unsafe { syscall!(SERVICE, SERVICE_PUSH, data.as_ptr() as usize, data.len() => error) };
 
     SendError::try_decode(error)
 }
@@ -193,11 +202,14 @@ pub fn fetch_service_message(
     tracking_number: ServiceTrackingNumber,
 ) -> Option<usize> {
     unsafe {
-        let length = syscall3(
+        let length;
+
+        syscall!(
             SERVICE,
             SERVICE_FETCH,
             id.0 as usize,
-            tracking_number.0 as usize,
+            tracking_number.0 as usize
+            => length
         );
 
         if length == 0 {
@@ -213,11 +225,13 @@ pub fn fetch_service_message_blocking(
     tracking_number: ServiceTrackingNumber,
 ) -> usize {
     unsafe {
-        let length = syscall3(
+        let length;
+        syscall!(
             SERVICE,
             SERVICE_FETCH_WAIT,
             id.0 as usize,
-            tracking_number.0 as usize,
+            tracking_number.0 as usize
+            => length
         );
 
         if length == 0 {
@@ -229,7 +243,8 @@ pub fn fetch_service_message_blocking(
 
 pub fn get_service_message(buf: &mut [u8]) -> Result<ServiceMessage, postcard::Error> {
     unsafe {
-        let result = syscall3(SERVICE, SERVICE_GET, buf.as_mut_ptr() as usize, buf.len());
+        let result: usize;
+        syscall!(SERVICE, SERVICE_GET, buf.as_mut_ptr() as usize, buf.len() => result);
 
         if result != 0 {
             panic!("Error getting message")
@@ -252,24 +267,26 @@ pub fn send_and_get_response_service_message<'a>(
 
 pub fn service_create() -> ServiceID {
     unsafe {
-        let sid = syscall1(SERVICE, SERVICE_CREATE);
+        let sid: usize;
+        syscall!(SERVICE, SERVICE_CREATE => sid);
         ServiceID(sid.try_into().unwrap())
     }
 }
 
 pub fn service_subscribe(id: ServiceID) {
     unsafe {
-        syscall2(SERVICE, SERVICE_SUBSCRIBE, id.0 as usize);
+        syscall!(SERVICE, SERVICE_SUBSCRIBE, id.0 as usize);
     }
 }
 
 pub fn read_args() -> String {
     unsafe {
-        let size = syscall1(READ_ARGS, 0);
+        let size;
+        syscall!(READ_ARGS, 0 => size);
 
         let buf: vec::Vec<u8> = vec![0u8; size];
 
-        syscall1(READ_ARGS, buf.as_ptr() as usize);
+        syscall!(READ_ARGS, buf.as_ptr() as usize);
 
         String::from_utf8(buf).unwrap()
     }
@@ -277,11 +294,12 @@ pub fn read_args() -> String {
 
 pub fn read_args_raw() -> vec::Vec<u8> {
     unsafe {
-        let size = syscall1(READ_ARGS, 0);
+        let size;
+        syscall!(READ_ARGS, 0 => size);
 
         let buf: vec::Vec<u8> = vec![0u8; size];
 
-        syscall1(READ_ARGS, buf.as_ptr() as usize);
+        syscall!(READ_ARGS, buf.as_ptr() as usize);
 
         buf
     }
@@ -289,7 +307,7 @@ pub fn read_args_raw() -> vec::Vec<u8> {
 
 pub fn exit() -> ! {
     unsafe {
-        syscall(EXIT_THREAD);
+        syscall!(EXIT_THREAD);
 
         loop {
             core::arch::asm!("hlt")
@@ -299,7 +317,8 @@ pub fn exit() -> ! {
 
 pub fn get_pid() -> ProcessID {
     unsafe {
-        let pid = syscall(GET_PID);
-        ProcessID(pid as u64)
+        let pid: u64;
+        syscall!(GET_PID => pid);
+        ProcessID(pid)
     }
 }
