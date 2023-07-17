@@ -13,7 +13,7 @@ use crate::{
     assembly::registers::Registers,
     paging::{
         page_allocator::frame_alloc_exec,
-        page_table_manager::{page_4kb, Mapper},
+        page_table_manager::{Mapper, Page},
         virt_addr_for_phys,
     },
     scheduling::{
@@ -105,7 +105,7 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> ProcessID {
     let mem_start = (base / 0x1000) * 0x1000;
     // The size from start to finish
     let size = size - base;
-    let pages = size / 4096 + 1;
+    let pages_count = size / 4096 + 1;
 
     // println!(
     //     "Elf size:{size}, base:{base}, entry: {}",
@@ -115,18 +115,16 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> ProcessID {
     let mut proc: Process = Process::new(crate::scheduling::process::ProcessPrivilige::USER, args);
     let map = &mut proc.page_mapper;
     println!("ALLOCING MEM...");
-    let start = frame_alloc_exec(|c| c.request_cont_pages(pages as usize)).unwrap();
+    let mut pages = frame_alloc_exec(|c| c.request_cont_pages(pages_count as usize))
+        .unwrap()
+        .peekable();
 
-    println!("MAPPING MEM...");
-    for page in 0..pages {
-        let p = page * 0x1000;
-        let page = page_4kb(start + p);
+    assert_eq!(pages.len(), pages_count as usize);
+    let start = pages.peek().unwrap().get_address();
 
+    for (page, virt_addr) in pages.zip((mem_start..).step_by(0x1000)) {
+        map.map_memory(Page::new(virt_addr), *page).unwrap().flush();
         proc.owned_pages.push(page);
-
-        map.map_memory(page_4kb(mem_start + p), page)
-            .unwrap()
-            .flush();
     }
 
     println!("COPYING MEM...");

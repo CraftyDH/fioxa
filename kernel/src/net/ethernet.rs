@@ -135,7 +135,7 @@ pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) -> Option<()> {
 
     let mut buffer = Vec::new();
 
-    let resp = send_and_get_response_service_message(
+    send_and_get_response_service_message(
         &ServiceMessage {
             service_id: service,
             sender_pid: get_task_mgr_current_pid(),

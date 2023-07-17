@@ -24,9 +24,9 @@ use crate::{
     gdt,
     paging::{
         offset_map::map_gop,
-        page_allocator::{free_page, request_page},
+        page_allocator::{request_page, AllocatedPage},
         page_table_manager::{
-            new_page_table_from_phys, page_4kb, Mapper, Page, PageLvl4, PageTable, Size4KB,
+            new_page_table_from_page, Mapper, Page, PageLvl4, PageTable, Size4KB,
         },
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
@@ -70,14 +70,15 @@ pub struct Process {
     thread_next_id: u64,
     pub args: Vec<u8>,
     pub service_msgs: VecDeque<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>,
-    pub owned_pages: Vec<Page<Size4KB>>,
     pub waiting_services: BTreeMap<(ServiceID, ServiceTrackingNumber), Vec<ThreadID>>,
+    pub owned_pages: Vec<AllocatedPage>,
 }
 
 impl Process {
     pub fn new(privilege: ProcessPrivilige, args: &[u8]) -> Self {
         let pml4 = request_page().unwrap();
-        let mut page_mapper = unsafe { new_page_table_from_phys(pml4) };
+        let mut page_mapper = unsafe { new_page_table_from_page(*pml4) };
+        let owned_pages = vec![pml4];
 
         unsafe {
             page_mapper.set_lvl3_location(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
@@ -87,7 +88,13 @@ impl Process {
                 .set_lvl3_location(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
             page_mapper.set_lvl3_location(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
             map_gop(&mut page_mapper);
-            page_mapper.map_memory(page_4kb(0xfee000b0 & !0xFFF), page_4kb(0xfee000b0 & !0xFFF));
+            page_mapper
+                .map_memory(
+                    Page::<Size4KB>::new(0xfee000b0 & !0xFFF),
+                    Page::new(0xfee000b0 & !0xFFF),
+                )
+                .unwrap()
+                .ignore();
         }
 
         Self {
@@ -98,8 +105,8 @@ impl Process {
             thread_next_id: 0,
             args: args.to_vec(),
             service_msgs: Default::default(),
-            owned_pages: Vec::new(),
             waiting_services: Default::default(),
+            owned_pages,
         }
     }
 
@@ -160,16 +167,14 @@ impl Process {
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0 as u64;
 
         for addr in (stack_base..(stack_base + STACK_SIZE as u64 - 1)).step_by(0x1000) {
-            let frame = request_page().unwrap();
-
-            let page = page_4kb(frame);
-
-            self.owned_pages.push(page);
+            let page = request_page().unwrap();
 
             self.page_mapper
-                .map_memory(page_4kb(addr), page)
+                .map_memory(Page::new(addr), *page)
                 .unwrap()
                 .flush();
+
+            self.owned_pages.push(page);
         }
 
         let pushed_register_state = InterruptStackFrameValue {
@@ -197,15 +202,6 @@ impl Process {
         register_state.rdi = entry_point;
 
         self.new_thread_direct(thread_bootstraper as *const u64, register_state)
-    }
-}
-
-impl Drop for Process {
-    fn drop(&mut self) {
-        // Free pages
-        for page in &self.owned_pages {
-            free_page(page.get_address());
-        }
     }
 }
 

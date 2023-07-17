@@ -2,59 +2,46 @@ use conquer_once::spin::Lazy;
 use spin::Mutex;
 use x86_64::registers::control::Cr3;
 
-use crate::paging::{
-    page_allocator::frame_alloc_exec, page_table_manager::new_page_table_from_phys,
-};
+use crate::paging::page_allocator::frame_alloc_exec;
 
-use self::page_table_manager::{PageLvl3, PageLvl4, PageTable};
+use self::page_table_manager::{new_page_table_from_page, Page, PageLvl3, PageLvl4, PageTable};
 
 pub mod offset_map;
 pub mod page_allocator;
 pub mod page_directory;
 pub mod page_table_manager;
 
-pub static OFFSET_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = Lazy::new(|| {
-    Mutex::new({
-        // The AP startup code needs a 32 bit ptr
-        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-        unsafe { new_page_table_from_phys(page as u64) }
+pub const fn gen_lvl3_map() -> Lazy<Mutex<PageTable<'static, PageLvl3>>> {
+    Lazy::new(|| {
+        Mutex::new(unsafe {
+            // The AP startup code needs a 32 bit ptr
+            let page = frame_alloc_exec(|a| a.request_32bit_reserved_page())
+                .unwrap()
+                .leak();
+            new_page_table_from_page(page)
+        })
     })
-});
-pub static KERNEL_DATA_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = Lazy::new(|| {
-    Mutex::new({
-        // The AP startup code needs a 32 bit ptr
-        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-        unsafe { new_page_table_from_phys(page as u64) }
-    })
-});
-pub static KERNEL_HEAP_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = Lazy::new(|| {
-    Mutex::new({
-        // The AP startup code needs a 32 bit ptr
-        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-        unsafe { new_page_table_from_phys(page as u64) }
-    })
-});
+}
 
-pub static PER_CPU_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = Lazy::new(|| {
-    Mutex::new({
-        // The AP startup code needs a 32 bit ptr
-        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-        unsafe { new_page_table_from_phys(page as u64) }
-    })
-});
+pub static OFFSET_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
+pub static KERNEL_DATA_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
+
+pub static KERNEL_HEAP_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
+pub static PER_CPU_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
 
 pub static KERNEL_MAP: Lazy<Mutex<PageTable<'static, PageLvl4>>> = Lazy::new(|| {
-    Mutex::new({
+    Mutex::new(unsafe {
         // The AP startup code needs a 32 bit ptr
-        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-        let mut lvl4 = unsafe { new_page_table_from_phys(page as u64) };
+        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page())
+            .unwrap()
+            .leak();
+        let mut lvl4 = new_page_table_from_page(page);
 
-        unsafe {
-            lvl4.set_lvl3_location(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
-            lvl4.set_lvl3_location(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
-            lvl4.set_lvl3_location(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
-            lvl4.set_lvl3_location(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
-        }
+        lvl4.set_lvl3_location(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
+        lvl4.set_lvl3_location(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
+        lvl4.set_lvl3_location(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
+        lvl4.set_lvl3_location(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
+
         lvl4
     })
 });
@@ -64,7 +51,7 @@ pub unsafe fn get_uefi_active_mapper() -> PageTable<'static, PageLvl4> {
 
     let phys = lv4_table.start_address();
 
-    new_page_table_from_phys(phys.as_u64())
+    new_page_table_from_page(Page::new(phys.as_u64()))
 }
 
 pub type MemoryLoc = MemoryLoc64bit48bits;

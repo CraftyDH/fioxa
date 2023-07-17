@@ -5,8 +5,7 @@ use conquer_once::spin::Lazy;
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     service::{
-        generate_tracking_number, register_public_service, SendServiceMessageDest, ServiceMessage,
-        ServiceMessageType,
+        generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
     },
     syscall::send_service_message,
 };

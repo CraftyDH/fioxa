@@ -37,6 +37,7 @@ impl PageSize for Size1GB {
     }
 }
 
+#[derive(Debug)]
 pub struct Page<S: PageSize> {
     address: u64,
     _size: core::marker::PhantomData<S>,
@@ -66,11 +67,15 @@ impl<S: PageSize> Page<S> {
             _size: core::marker::PhantomData,
         }
     }
+
+    pub fn containing(address: u64) -> Self {
+        Self::new(address & !(S::size() - 1))
+    }
 }
 
-impl Copy for Page<Size4KB> {}
+impl<S: PageSize> Copy for Page<S> {}
 
-impl Clone for Page<Size4KB> {
+impl<S: PageSize> Clone for Page<S> {
     fn clone(&self) -> Self {
         Self {
             address: self.address.clone(),
@@ -79,16 +84,12 @@ impl Clone for Page<Size4KB> {
     }
 }
 
-pub const fn page_4kb(address: u64) -> Page<Size4KB> {
-    assert!(address & 0xFFF == 0);
-    Page {
-        address,
-        _size: core::marker::PhantomData,
-    }
-}
-
 pub trait Mapper<S: PageSize> {
     fn map_memory(&mut self, from: Page<S>, to: Page<S>) -> Option<Flusher>;
+    #[inline]
+    fn identity_map_memory(&mut self, page: Page<S>) -> Option<Flusher> {
+        self.map_memory(page, page)
+    }
     fn unmap_memory(&mut self, page: Page<S>) -> Option<Flusher>;
     fn get_phys_addr(&self, page: Page<S>) -> Option<u64>;
 }
@@ -119,10 +120,10 @@ impl PhysPageTable {
         if entry.present() {
             addr = virt_addr_for_phys(entry.get_address()) as *mut PhysPageTable;
         } else {
-            let new_page = request_page().unwrap();
-            addr = virt_addr_for_phys(new_page) as *mut PhysPageTable;
+            let new_page = unsafe { request_page().unwrap().leak() };
+            addr = virt_addr_for_phys(new_page.get_address()) as *mut PhysPageTable;
 
-            entry.set_address(new_page);
+            entry.set_address(new_page.get_address());
             entry.set_present(true);
             entry.set_read_write(true);
             entry.set_user_super(true);
@@ -160,8 +161,8 @@ pub struct PageTable<'t, L: PageLevel> {
     level: core::marker::PhantomData<L>,
 }
 
-pub unsafe fn new_page_table_from_phys<L: PageLevel>(addr: u64) -> PageTable<'static, L> {
-    let table = virt_addr_for_phys(addr) as *mut PhysPageTable;
+pub unsafe fn new_page_table_from_page<L: PageLevel>(page: Page<Size4KB>) -> PageTable<'static, L> {
+    let table = virt_addr_for_phys(page.get_address()) as *mut PhysPageTable;
 
     PageTable {
         table: unsafe { &mut *table },
@@ -169,11 +170,14 @@ pub unsafe fn new_page_table_from_phys<L: PageLevel>(addr: u64) -> PageTable<'st
     }
 }
 
-pub fn ident_map_curr_process(memory: u64, write: bool) {
+pub fn ident_map_curr_process<'a, S: PageSize>(page: Page<S>, _write: bool)
+where
+    PageTable<'a, PageLvl4>: Mapper<S>,
+{
     let mut mapper = unsafe { get_uefi_active_mapper() };
-    let page = page_4kb(memory);
-    mapper.map_memory(page, page).unwrap().flush();
+    mapper.identity_map_memory(page).unwrap().flush();
 }
+
 #[must_use = "TLB must be flushed or can be ignored"]
 pub struct Flusher(u64);
 

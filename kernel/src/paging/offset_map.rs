@@ -2,14 +2,14 @@ use crate::{
     kernel_memory_loc,
     memory::MemoryMapIter,
     paging::{
-        page_table_manager::{get_chunked_page_range, page_4kb, Mapper, Page},
+        page_table_manager::{get_chunked_page_range, Mapper, Page},
         MemoryLoc,
     },
     screen::gop::WRITER,
     BOOT_INFO,
 };
 
-use super::page_table_manager::{PageLvl3, PageLvl4, PageTable};
+use super::page_table_manager::{PageLvl3, PageLvl4, PageTable, Size4KB};
 
 pub fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMapIter) {
     // Only map actual memory
@@ -70,8 +70,10 @@ pub fn map_gop(mapper: &mut PageTable<PageLvl4>) {
     let fb_size = fb_base + (WRITER.lock().gop.buffer_size as u64);
 
     for i in (fb_base..fb_size + 0xFFF).step_by(0x1000) {
-        let page = page_4kb(i);
-        mapper.map_memory(page, page).unwrap().ignore();
+        mapper
+            .identity_map_memory(Page::<Size4KB>::new(i))
+            .unwrap()
+            .ignore();
     }
 }
 
@@ -87,8 +89,8 @@ pub fn create_kernel_map(mapper: &mut PageTable<PageLvl3>) {
     for i in (0..pages * 0x1000).step_by(0x1000) {
         mapper
             .map_memory(
-                page_4kb(MemoryLoc::KernelStart as u64 + i),
-                page_4kb(base + i),
+                Page::<Size4KB>::new(MemoryLoc::KernelStart as u64 + i),
+                Page::<Size4KB>::new(base + i),
             )
             .unwrap()
             .ignore();

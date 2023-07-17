@@ -392,7 +392,7 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
         };
     }
 
-    let root = fat.enumerate_root();
+    fat.enumerate_root();
     PARTITION.lock().insert(partition_id, Box::new(fat));
 }
 

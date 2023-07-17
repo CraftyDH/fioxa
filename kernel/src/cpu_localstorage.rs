@@ -7,7 +7,7 @@ use crate::{
     paging::{
         get_uefi_active_mapper,
         page_allocator::{frame_alloc_exec, request_page},
-        page_table_manager::{page_4kb, Mapper},
+        page_table_manager::{Mapper, Page},
         virt_addr_for_phys, MemoryLoc,
     },
 };
@@ -35,11 +35,9 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
 
     let mut map = get_uefi_active_mapper();
 
-    for page in (vaddr_base..vaddr_base + gdt_size + 0x1FFF).step_by(0x1000) {
-        let phys = request_page().unwrap();
-        map.map_memory(page_4kb(page), page_4kb(phys))
-            .unwrap()
-            .flush();
+    for page in (vaddr_base..vaddr_base + gdt_size + 0xfff).step_by(0x1000) {
+        let phys = request_page().unwrap().leak();
+        map.map_memory(Page::new(page), phys).unwrap().flush();
     }
 
     let ls = unsafe { &mut *(vaddr_base as *mut CPULocalStorage) };
@@ -85,7 +83,12 @@ pub unsafe fn new_cpu(core_id: u8) -> u64 {
     let vaddr = init_core(core_id);
     let ls = unsafe { &mut *(vaddr as *mut CPULocalStorage) };
 
-    let stack_base = frame_alloc_exec(|c| c.request_cont_pages(10)).unwrap();
+    let stack_base = frame_alloc_exec(|c| c.request_cont_pages(10))
+        .unwrap()
+        .next()
+        .unwrap()
+        .leak()
+        .get_address();
 
     ls.stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE;
     vaddr

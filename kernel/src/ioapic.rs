@@ -15,7 +15,7 @@ use crate::{
     },
     paging::{
         get_uefi_active_mapper,
-        page_table_manager::{page_4kb, Mapper, Page, PageLvl4, PageTable, Size4KB},
+        page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
     },
 };
 
@@ -26,8 +26,10 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
 
     for apic in &io_apics {
         println!("APIC: {:?}", apic);
-        let page = page_4kb(apic.apic_addr.into());
-        mapper.map_memory(page, page).unwrap().flush();
+        mapper
+            .identity_map_memory(Page::<Size4KB>::new(apic.apic_addr.into()))
+            .unwrap()
+            .flush();
     }
 
     let apic = io_apics.first().unwrap();

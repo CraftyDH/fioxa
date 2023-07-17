@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(pointer_byte_offsets)]
 
+#[allow(unused_imports)]
 #[macro_use]
 extern crate alloc;
 
@@ -25,10 +26,10 @@ use kernel::interrupts::{self, check_interrupts};
 use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::enable_localapic;
 use kernel::memory::MemoryMapIter;
-use kernel::net::ethernet::{lookup_ip, userspace_networking_main};
+use kernel::net::ethernet::userspace_networking_main;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
-use kernel::paging::page_allocator::{frame_alloc_exec, free_page, request_page};
-use kernel::paging::page_table_manager::{page_4kb, Mapper};
+use kernel::paging::page_allocator::{frame_alloc_exec, request_page};
+use kernel::paging::page_table_manager::{Mapper, Page, Size4KB};
 use kernel::paging::{
     get_uefi_active_mapper, set_mem_offset, virt_addr_for_phys, MemoryLoc, KERNEL_MAP,
 };
@@ -114,7 +115,7 @@ pub fn main(info: *const BootInfo) -> ! {
 
         // Remap this threads stack
         for page in ((rsp & !0xFFF) as u64..(rsp + 1024 * 1024 * 5) as u64).step_by(0x1000) {
-            map.map_memory(page_4kb(page), page_4kb(page))
+            map.identity_map_memory(Page::<Size4KB>::new(page))
                 .unwrap()
                 .ignore();
         }
@@ -124,11 +125,13 @@ pub fn main(info: *const BootInfo) -> ! {
         create_kernel_map(&mut map.get_lvl3(MemoryLoc::KernelStart as u64));
         map_gop(&mut map);
 
-        let page = page_4kb((info as u64) & !0xFFF);
-        map.map_memory(page, page).unwrap().ignore();
+        map.identity_map_memory(Page::<Size4KB>::containing(info as u64))
+            .unwrap()
+            .ignore();
 
-        let page = page_4kb(boot_info.uefi_runtime_table & !0xFFF);
-        map.map_memory(page, page).unwrap().ignore();
+        map.identity_map_memory(Page::<Size4KB>::containing(boot_info.uefi_runtime_table))
+            .unwrap()
+            .ignore();
 
         println!("Remapping to higher half");
         unsafe { set_mem_offset(MemoryLoc::PhysMapOffset as u64) }
@@ -155,13 +158,9 @@ pub fn main(info: *const BootInfo) -> ! {
 
     unsafe {
         let frame = request_page().unwrap();
-        let page = page_4kb(0x400000000000);
-        KERNEL_MAP
-            .lock()
-            .map_memory(page, page_4kb(frame as u64))
-            .unwrap()
-            .flush();
-        let f = virt_addr_for_phys(frame) as *mut u64;
+        let page = Page::new(0x400000000000);
+        KERNEL_MAP.lock().map_memory(page, *frame).unwrap().flush();
+        let f = virt_addr_for_phys(frame.get_address()) as *mut u64;
 
         println!("Page test");
         *f = 4493;
@@ -170,7 +169,6 @@ pub fn main(info: *const BootInfo) -> ! {
             "Paging test failed"
         );
         KERNEL_MAP.lock().unmap_memory(page).unwrap().flush();
-        free_page(frame);
     }
 
     // log!("Initializing HEAP...");
@@ -192,7 +190,7 @@ pub fn main(info: *const BootInfo) -> ! {
     {
         KERNEL_MAP
             .lock()
-            .map_memory(page_4kb(page), page_4kb(page))
+            .identity_map_memory(Page::<Size4KB>::new(page))
             .unwrap()
             .ignore();
     }
@@ -242,8 +240,9 @@ fn after_boot() {
 
     let mut map = unsafe { get_uefi_active_mapper() };
 
-    let page = page_4kb(boot_info.uefi_runtime_table & !0xFFF);
-    map.map_memory(page, page).unwrap().ignore();
+    map.identity_map_memory(Page::<Size4KB>::containing(boot_info.uefi_runtime_table))
+        .unwrap()
+        .ignore();
 
     let runtime_table =
         unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
@@ -256,7 +255,7 @@ fn after_boot() {
         + size_of::<ConfigTableEntry>() as u64 * config_tables.len() as u64)
         .step_by(0x1000)
     {
-        map.map_memory(page_4kb(page), page_4kb(page))
+        map.identity_map_memory(Page::<Size4KB>::new(page))
             .unwrap()
             .ignore();
     }

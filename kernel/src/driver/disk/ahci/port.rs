@@ -13,8 +13,8 @@ use crate::{
     },
     paging::{
         get_uefi_active_mapper,
-        page_allocator::{free_page, request_page},
-        page_table_manager::{ident_map_curr_process, page_4kb, Mapper},
+        page_allocator::{request_page, AllocatedPage},
+        page_table_manager::{ident_map_curr_process, Mapper, Page, Size4KB},
     },
     syscall::sleep,
 };
@@ -30,32 +30,30 @@ pub enum PortType {
     SATAPI = 4,
 }
 
+#[allow(dead_code)]
 pub struct Port {
     hba_port: &'static mut HBAPort,
     received_fis: &'static mut ReceivedFis,
     cmd_list: &'static mut [HBACommandHeader],
-    cmd_table_buffers: Vec<u64>,
-}
-
-impl Drop for Port {
-    fn drop(&mut self) {
-        free_page(self.received_fis as *const ReceivedFis as u64).unwrap();
-        free_page(&self.cmd_list[0] as *const HBACommandHeader as u64).unwrap();
-        // Each 16 chunks are on same page
-        for i in &self.cmd_table_buffers {
-            free_page(*i).unwrap();
-        }
-    }
+    owned_pages: Vec<AllocatedPage>,
 }
 
 impl Port {
     pub fn new(port: &'static mut HBAPort) -> Self {
         Self::stop_cmd(port);
 
-        let rfis_addr = request_page().unwrap();
-        ident_map_curr_process(rfis_addr, true);
-        let cmd_list_addr = request_page().unwrap();
-        ident_map_curr_process(cmd_list_addr, true);
+        let mut owned_pages = Vec::new();
+
+        let rfis = request_page().unwrap();
+        let cmd_list = request_page().unwrap();
+        let rfis_addr = rfis.get_address();
+        let cmd_list_addr = cmd_list.get_address();
+
+        ident_map_curr_process(*rfis, true);
+        ident_map_curr_process(*cmd_list, true);
+
+        owned_pages.push(rfis);
+        owned_pages.push(cmd_list);
 
         let cmd_list =
             unsafe { slice::from_raw_parts_mut(cmd_list_addr as *mut HBACommandHeader, 32) };
@@ -69,12 +67,12 @@ impl Port {
 
         port.fis_base_address_upper.write((rfis_addr >> 32) as u32);
 
-        let mut cmd_table_buffers = Vec::with_capacity(32);
-
         for c in 0..=1 {
-            let command_table_addr = request_page().unwrap();
-            ident_map_curr_process(command_table_addr, true);
-            cmd_table_buffers.push(command_table_addr);
+            let command_table = request_page().unwrap();
+            let command_table_addr = command_table.get_address();
+            ident_map_curr_process(*command_table, true);
+
+            owned_pages.push(command_table);
 
             for i in 0..16 {
                 let index = i + c * 16;
@@ -95,7 +93,7 @@ impl Port {
             hba_port: port,
             received_fis,
             cmd_list,
-            cmd_table_buffers,
+            owned_pages,
         }
     }
 
@@ -109,7 +107,6 @@ impl Port {
             }
             sleep(10);
         }
-        // unimplemented!();
     }
 
     pub fn start_cmd(port: &mut HBAPort) {
@@ -168,7 +165,9 @@ impl DiskDevice for Port {
             // Align ptr on prev boundary
             ptr_addr = ptr_addr & !0xFFF;
 
-            let phys_addr = mapper.get_phys_addr(page_4kb(ptr_addr)).unwrap();
+            let phys_addr = mapper
+                .get_phys_addr(Page::<Size4KB>::new(ptr_addr))
+                .unwrap();
             // Set the offset back on, since page offsets arn't supper pain yet (Only 4kb pages)
             cmd_table.prdt_entry[0].set_data_base_address(phys_addr + left_align_size as u64);
 
@@ -181,7 +180,9 @@ impl DiskDevice for Port {
         }
 
         while bytes_to_read > 0x1000 {
-            let phys_addr = mapper.get_phys_addr(page_4kb(ptr_addr)).unwrap();
+            let phys_addr = mapper
+                .get_phys_addr(Page::<Size4KB>::new(ptr_addr))
+                .unwrap();
             cmd_table.prdt_entry[prdt_length].set_data_base_address(phys_addr);
             // Read read of bytes
             cmd_table.prdt_entry[prdt_length].set_byte_count(0xFFF);
@@ -191,7 +192,9 @@ impl DiskDevice for Port {
         }
 
         if bytes_to_read > 0 {
-            let phys_addr = mapper.get_phys_addr(page_4kb(ptr_addr)).unwrap();
+            let phys_addr = mapper
+                .get_phys_addr(Page::<Size4KB>::new(ptr_addr))
+                .unwrap();
             cmd_table.prdt_entry[prdt_length].set_data_base_address(phys_addr);
             // Read read of bytes
             cmd_table.prdt_entry[prdt_length].set_byte_count(bytes_to_read - 1);
@@ -273,7 +276,7 @@ impl DiskDevice for Port {
         let mapper = unsafe { get_uefi_active_mapper() };
 
         let phys_addr = mapper
-            .get_phys_addr(page_4kb((buffer.as_ptr() as u64) & !0xFFF))
+            .get_phys_addr(Page::<Size4KB>::new((buffer.as_ptr() as u64) & !0xFFF))
             .unwrap()
             + (buffer.as_ptr() as u64 & 0xFFF);
 

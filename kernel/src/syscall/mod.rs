@@ -12,7 +12,7 @@ use crate::{
     cpu_localstorage::{get_task_mgr_current_pid, get_task_mgr_current_tid},
     gdt::TASK_SWITCH_INDEX,
     paging::{
-        page_allocator::{free_page, request_page},
+        page_allocator::request_page,
         page_table_manager::{Mapper, Page, Size4KB},
     },
     scheduling::taskmanager::{self, PROCESSES},
@@ -151,15 +151,15 @@ fn mmap_page_handler(regs: &mut Registers) {
 
     let process = processes.get_mut(&pid).unwrap();
 
-    let page = Page::new(request_page().unwrap());
-
-    process.owned_pages.push(page);
+    let page = request_page().unwrap();
 
     process
         .page_mapper
-        .map_memory(Page::<Size4KB>::new(regs.r8 as u64), page)
+        .map_memory(Page::<Size4KB>::new(regs.r8 as u64), *page)
         .unwrap()
         .flush();
+
+    process.owned_pages.push(page);
 }
 
 fn unmmap_page_handler(regs: &mut Registers) {
@@ -175,6 +175,7 @@ fn unmmap_page_handler(regs: &mut Registers) {
     let phys_page = process.page_mapper.get_phys_addr(page).unwrap();
     process.page_mapper.unmap_memory(page).unwrap().flush();
 
+    // The memory should be freed by the allocated page destructor
     process.owned_pages.swap_remove(
         process
             .owned_pages
@@ -182,8 +183,6 @@ fn unmmap_page_handler(regs: &mut Registers) {
             .position(|e| e.get_address() == phys_page)
             .unwrap(),
     );
-
-    free_page(phys_page);
 }
 
 pub fn sleep(ms: usize) {

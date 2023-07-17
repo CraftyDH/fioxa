@@ -1,7 +1,4 @@
-use core::{
-    mem::{size_of, transmute, transmute_copy},
-    slice,
-};
+use core::{mem::size_of, slice};
 
 use alloc::{sync::Arc, vec::Vec};
 use conquer_once::spin::Lazy;
@@ -14,9 +11,10 @@ use x86_64::instructions::port::Port;
 
 use crate::{
     cpu_localstorage::get_task_mgr_current_pid,
-    driver::driver::Driver,
-    paging::{page_allocator::frame_alloc_exec, page_table_manager::ident_map_curr_process},
-    pci::{self, PCIHeaderCommon},
+    paging::{
+        page_allocator::{frame_alloc_exec, Allocated32Page},
+        page_table_manager::ident_map_curr_process,
+    },
 };
 use kernel_userspace::{
     ids::ServiceID,
@@ -212,13 +210,14 @@ impl PCNETIOPort {
         }
     }
 }
+
+#[allow(dead_code)]
 pub struct PCNET<'b> {
     io: PCNETIOPort,
-
     init_block: &'b mut InitBlock,
-
     send_buffer_desc: &'b mut [BufferDescriptor],
     recv_buffer_desc: &'b mut [BufferDescriptor],
+    owned_pages: Vec<Allocated32Page>,
 }
 
 impl PCNET<'_> {
@@ -243,11 +242,17 @@ impl PCNET<'_> {
 
         assert!(header_mem_size <= 0x1000);
 
+        let mut owned_pages = Vec::new();
+
         let (init_block, send_buffer_desc, recv_buffer_desc) = unsafe {
             // Allocate page below 4gb location.
-            let mut buffer_start =
-                frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap() as *const u8;
-            ident_map_curr_process(buffer_start as u64, true);
+            let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
+            ident_map_curr_process(*buffer, true);
+
+            let buffer_start = buffer.get_address();
+            owned_pages.push(buffer);
+
+            let mut buffer_start = buffer_start as *const u8;
 
             // Init block
             let init_block = &mut *(buffer_start as *mut InitBlock);
@@ -278,8 +283,12 @@ impl PCNET<'_> {
         // Alloc buffer each 2 buffer
         for i in (0..SEND_BUFFER_CNT).step_by(2) {
             // Allocate page below 4gb location.
-            let buffer_start = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
-            ident_map_curr_process(buffer_start as u64, true);
+            let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
+            ident_map_curr_process(*buffer, true);
+
+            let buffer_start = buffer.get_address();
+            owned_pages.push(buffer);
+
             send_buffer_desc[i].address = buffer_start;
             send_buffer_desc[i].flags = BUFFER_SIZE_MASK;
             send_buffer_desc[i + 1].address = buffer_start + 2048;
@@ -288,8 +297,12 @@ impl PCNET<'_> {
         // Alloc buffer each 2 buffer
         for i in (0..RECV_BUFFER_CNT).step_by(2) {
             // Allocate page below 4gb location.
-            let buffer_start = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
-            ident_map_curr_process(buffer_start as u64, true);
+            let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
+            ident_map_curr_process(*buffer, true);
+
+            let buffer_start = buffer.get_address();
+            owned_pages.push(buffer);
+
             recv_buffer_desc[i].address = buffer_start;
             recv_buffer_desc[i].flags = BUFFER_SIZE_MASK | 0x80000000;
             recv_buffer_desc[i + 1].address = buffer_start + 2048;
@@ -303,6 +316,7 @@ impl PCNET<'_> {
             init_block,
             send_buffer_desc,
             recv_buffer_desc,
+            owned_pages,
         };
 
         // Write regs

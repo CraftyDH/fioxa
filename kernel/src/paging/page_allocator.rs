@@ -1,6 +1,7 @@
 use core::{
     cmp::min,
     mem::{size_of, MaybeUninit},
+    ops::{Deref, DerefMut},
     ptr::slice_from_raw_parts_mut,
 };
 
@@ -11,16 +12,19 @@ use uefi::table::boot::MemoryType;
 
 use crate::{memory::MemoryMapIter, scheduling::without_context_switch};
 
-use super::{virt_addr_for_phys, MemoryLoc};
+use super::{
+    page_table_manager::{Page, Size4KB},
+    virt_addr_for_phys, MemoryLoc,
+};
 
 static GLOBAL_FRAME_ALLOCATOR: Mutex<MaybeUninit<PageFrameAllocator>> =
     Mutex::new(MaybeUninit::uninit());
 
 const RESERVED_32BIT_MEM_PAGES: u64 = 32; // 16Kb
 
-pub fn frame_alloc_exec<T, F>(closure: F) -> Option<T>
+pub fn frame_alloc_exec<T, F>(closure: F) -> T
 where
-    F: Fn(&mut PageFrameAllocator) -> Option<T>,
+    F: Fn(&mut PageFrameAllocator) -> T,
 {
     without_context_switch(|| unsafe {
         closure(&mut *GLOBAL_FRAME_ALLOCATOR.lock().assume_init_mut())
@@ -33,12 +37,111 @@ pub unsafe fn init(mmap: MemoryMapIter) {
         .write(unsafe { PageFrameAllocator::new(mmap.clone()) });
 }
 
-pub fn request_page() -> Option<u64> {
+pub fn request_page() -> Option<AllocatedPage> {
     frame_alloc_exec(|mutex| mutex.request_page())
 }
 
-pub fn free_page(page: u64) -> Option<()> {
-    frame_alloc_exec(|mutex| mutex.free_page(page))
+pub struct AllocatedPage(Option<Page<Size4KB>>);
+
+impl AllocatedPage {
+    pub unsafe fn new(page: Page<Size4KB>) -> Self {
+        Self(Some(page))
+    }
+
+    pub unsafe fn leak(mut self) -> Page<Size4KB> {
+        self.0.take().unwrap()
+    }
+}
+
+impl Deref for AllocatedPage {
+    type Target = Page<Size4KB>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl DerefMut for AllocatedPage {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().unwrap()
+    }
+}
+
+impl Drop for AllocatedPage {
+    fn drop(&mut self) {
+        if let Some(p) = self.0 {
+            unsafe { frame_alloc_exec(|a| a.free_page(p)) }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct AllocatedPageRangeIter {
+    base: u64,
+    count: usize,
+}
+
+impl Iterator for AllocatedPageRangeIter {
+    type Item = AllocatedPage;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.count > 0 {
+            let res = unsafe { AllocatedPage::new(Page::new(self.base)) };
+            self.count -= 1;
+            self.base += 0x1000;
+            Some(res)
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, Some(self.count))
+    }
+}
+
+impl ExactSizeIterator for AllocatedPageRangeIter {
+    fn len(&self) -> usize {
+        self.count
+    }
+}
+
+pub struct Allocated32Page(Option<Page<Size4KB>>);
+
+impl Allocated32Page {
+    pub unsafe fn new(page: Page<Size4KB>) -> Self {
+        Self(Some(page))
+    }
+
+    pub unsafe fn leak(mut self) -> Page<Size4KB> {
+        self.0.take().unwrap()
+    }
+
+    pub fn get_address(&self) -> u32 {
+        self.0.unwrap().get_address().try_into().unwrap()
+    }
+}
+
+impl Deref for Allocated32Page {
+    type Target = Page<Size4KB>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().unwrap()
+    }
+}
+
+impl DerefMut for Allocated32Page {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().unwrap()
+    }
+}
+
+impl Drop for Allocated32Page {
+    fn drop(&mut self) {
+        if let Some(p) = self.0 {
+            unsafe { frame_alloc_exec(|a| a.free_32bit_reserved_page(p)) }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -295,7 +398,10 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
         }
     }
 
-    fn find_page_in_region(current_min: u64, mem_region: &mut MemoryRegion) -> Option<u64> {
+    fn find_page_in_region(
+        current_min: u64,
+        mem_region: &mut MemoryRegion,
+    ) -> Option<Page<Size4KB>> {
         let page_start = core::cmp::max(current_min, mem_region.phys_start);
         let page_offset = (page_start - mem_region.phys_start) as usize / 0x1000;
 
@@ -305,19 +411,20 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
                 let page = mem_region.phys_start + idx as u64 * 0x1000;
                 unsafe { core::ptr::write_bytes(virt_addr_for_phys(page) as *mut u8, 0, 0x1000) };
 
-                return Some(page);
+                return Some(Page::new(page));
             }
         }
 
         None
     }
 
-    pub fn request_32bit_reserved_page(&mut self) -> Option<u32> {
-        Some(Self::find_page_in_region(0, self.reserved_32bit)? as u32)
+    pub fn request_32bit_reserved_page(&mut self) -> Option<Allocated32Page> {
+        Self::find_page_in_region(0, self.reserved_32bit)
+            .and_then(|p| Some(unsafe { Allocated32Page::new(p) }))
     }
 
     // Returns memory address page starts at in physical memory
-    pub fn request_page(&mut self) -> Option<u64> {
+    pub fn request_page(&mut self) -> Option<AllocatedPage> {
         for mem_region in self.page_bitmap.iter_mut() {
             // Check if there are potentially free pages in this region
             if self.first_free_page <= mem_region.phys_end {
@@ -327,9 +434,9 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
 
                     // Avoid recursing the entire memory map by pointing to this addr
                     // Don't add 0x1000 because we would then need to check if the next page is valid
-                    self.first_free_page = page;
+                    self.first_free_page = page.get_address();
 
-                    return Some(page);
+                    return Some(unsafe { AllocatedPage::new(page) });
                 }
             }
         }
@@ -374,7 +481,7 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
         None
     }
 
-    pub fn request_cont_pages(&mut self, cnt: usize) -> Option<u64> {
+    pub fn request_cont_pages(&mut self, cnt: usize) -> Option<AllocatedPageRangeIter> {
         for mem_region in self.page_bitmap.iter_mut() {
             if self.first_free_page <= mem_region.phys_end {
                 if let Some(page) =
@@ -383,7 +490,10 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
                     self.free_pages -= cnt;
                     self.used_pages += cnt;
                     // We don't set first_free_page, because we might've skipped some free pages in the search for cont pages
-                    return Some(page);
+                    return Some(AllocatedPageRangeIter {
+                        base: page,
+                        count: cnt,
+                    });
                 }
             }
         }
@@ -412,39 +522,36 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
         }
     }
 
-    pub fn free_32bit_reserved_page(&mut self, memory_address: u32) -> Option<()> {
-        // Check it is page aligned
-        assert!(memory_address % 4096 == 0);
-        Self::free_page_in_region(self.reserved_32bit, memory_address as u64)
+    pub unsafe fn free_32bit_reserved_page(&mut self, page: Page<Size4KB>) {
+        assert!(page.get_address() <= u32::MAX.into());
+        Self::free_page_in_region(self.reserved_32bit, page.get_address()).unwrap();
     }
 
-    pub fn free_page(&mut self, memory_address: u64) -> Option<()> {
-        // Check it is page aligned
-        assert!(memory_address % 4096 == 0);
+    pub unsafe fn free_page(&mut self, page: Page<Size4KB>) {
+        let memory_address = page.get_address();
         for mem_region in self.page_bitmap.iter_mut() {
             // Check if section contains memory address
             if (mem_region.phys_start..=mem_region.phys_end).contains(&memory_address) {
-                return if let Some(()) = Self::free_page_in_region(mem_region, memory_address) {
+                if let Some(()) = Self::free_page_in_region(mem_region, memory_address) {
                     self.free_pages += 1;
                     self.used_pages -= 1;
 
                     // Improve allocator performance by setting last free mem region as this if less
                     self.first_free_page = min(self.first_free_page, memory_address);
-                    Some(())
+                    return;
                 } else {
                     panic!("WARN: tried to free unallocated page: {}", memory_address);
                 };
             }
         }
-        None
+        panic!("went through whole mem and couldn't find page");
     }
 
-    pub fn free_pages(&mut self, page_address: u64, page_cnt: u64) -> Option<()> {
-        for i in 0..page_cnt {
-            self.free_page(page_address + i * 4096)?;
-        }
-        Some(())
-    }
+    // pub fn free_pages(&mut self, page_address: u64, page_cnt: u64) {
+    //     for i in 0..page_cnt {
+    //         self.free_page(page_address + i * 4096)
+    //     }
+    // }
 
     pub fn lock_page(&mut self, memory_address: u64) -> Option<()> {
         // Check it is page aligned

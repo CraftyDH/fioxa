@@ -15,7 +15,7 @@ use crate::{
     driver::{disk::DiskDevice, driver::Driver},
     paging::{
         get_uefi_active_mapper,
-        page_table_manager::{page_4kb, Mapper},
+        page_table_manager::{Mapper, Page, Size4KB},
     },
     pci::{PCIHeader0, PCIHeaderCommon},
 };
@@ -163,7 +163,7 @@ impl Driver for AHCIDriver {
         let abar = header0.get_bar(5);
 
         mapper
-            .map_memory(page_4kb(abar as u64), page_4kb(abar as u64))
+            .identity_map_memory(Page::<Size4KB>::new(abar as u64))
             .unwrap()
             .flush();
 
