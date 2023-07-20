@@ -112,13 +112,18 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                 }
                 None => {
                     let base = ptr as u64;
+                    let length = ((max_size + 0xFFF) & !0xFFF) as u64;
+
                     let mut mapper = get_uefi_active_mapper();
                     // We assume that we allocted cont pages
-                    for page in (base..(base + max_size as u64)).step_by(0x1000) {
+                    for page in (base..(base + length)).step_by(0x1000) {
                         let phys_page =
                             Page::new(mapper.get_phys_addr(Page::<Size4KB>::new(page)).unwrap());
+                        mapper
+                            .unmap_memory(Page::<Size4KB>::new(page))
+                            .unwrap()
+                            .flush();
                         page_allocator::frame_alloc_exec(|a| a.free_page(phys_page));
-                        mapper.unmap_memory(phys_page).unwrap().flush();
                     }
                 }
             }

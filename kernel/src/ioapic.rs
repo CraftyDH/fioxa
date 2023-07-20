@@ -99,7 +99,7 @@ pub fn mask_entry(irq: u8, enable: bool) {
 
     let page = Page::<Size4KB>::new(apic_base as u64);
 
-    mapper.map_memory(page, page).unwrap().flush();
+    mapper.identity_map_memory(page).unwrap().flush();
     let mut low = read_ioapic_register(apic_base, 0x10 + 2 * irq);
 
     low.set_bit(16, !enable);

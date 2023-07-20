@@ -1,18 +1,15 @@
-pub mod lvl1;
-pub mod lvl2;
-pub mod lvl3;
-pub mod lvl4;
+pub mod map;
+pub mod walk;
 
 use core::marker::PhantomData;
 
+use crate::paging::page_allocator;
+
 use super::{
     get_uefi_active_mapper, page_allocator::request_page, page_directory::PageDirectoryEntry,
-    virt_addr_for_phys, MemoryLoc,
+    virt_addr_for_phys,
 };
 
-pub trait PageSize: Sized {
-    fn size() -> u64;
-}
 #[derive(Debug)]
 pub struct Size4KB;
 #[derive(Debug)]
@@ -21,20 +18,21 @@ pub struct Size2MB;
 #[derive(Debug)]
 pub struct Size1GB;
 
+pub trait PageSize: Sized {
+    const LARGE_PAGE: bool = true;
+    /// The size of the page in bytes
+    const PAGE_SIZE: u64;
+}
+
 impl PageSize for Size4KB {
-    fn size() -> u64 {
-        0x1000
-    }
+    const LARGE_PAGE: bool = false;
+    const PAGE_SIZE: u64 = 0x1000;
 }
 impl PageSize for Size2MB {
-    fn size() -> u64 {
-        0x200000
-    }
+    const PAGE_SIZE: u64 = 0x200000;
 }
 impl PageSize for Size1GB {
-    fn size() -> u64 {
-        0x40000000
-    }
+    const PAGE_SIZE: u64 = 0x40000000;
 }
 
 #[derive(Debug)]
@@ -44,22 +42,22 @@ pub struct Page<S: PageSize> {
 }
 
 impl<S: PageSize> Page<S> {
-    pub fn get_address(&self) -> u64 {
+    pub const fn get_address(&self) -> u64 {
         self.address
     }
 
-    pub fn new(address: u64) -> Self {
-        assert!(address & (S::size() - 1) == 0);
+    pub const fn new(address: u64) -> Self {
+        assert!(
+            address & (S::PAGE_SIZE - 1) == 0,
+            "Address must be a multiple of page size"
+        );
 
         let lvl4 = (address >> (12 + 9 + 9 + 9)) & 0x1ff;
         let sign = address >> (12 + 9 + 9 + 9 + 9);
 
         assert!(
             (sign == 0 && lvl4 <= 255) || (sign == 0xFFFF && lvl4 > 255),
-            "Sign extension is not valid, addr: {:#X}, sign: {:#X}, lvl4: {}",
-            address,
-            sign,
-            lvl4,
+            "Sign extension is not valid"
         );
 
         Page {
@@ -68,8 +66,8 @@ impl<S: PageSize> Page<S> {
         }
     }
 
-    pub fn containing(address: u64) -> Self {
-        Self::new(address & !(S::size() - 1))
+    pub const fn containing(address: u64) -> Self {
+        Self::new(address & !(S::PAGE_SIZE - 1))
     }
 }
 
@@ -91,19 +89,68 @@ pub trait Mapper<S: PageSize> {
         self.map_memory(page, page)
     }
     fn unmap_memory(&mut self, page: Page<S>) -> Option<Flusher>;
-    fn get_phys_addr(&self, page: Page<S>) -> Option<u64>;
+    fn get_phys_addr(&mut self, page: Page<S>) -> Option<u64>;
 }
 
-pub trait PageLevel {}
 pub struct PageLvl1;
 pub struct PageLvl2;
 pub struct PageLvl3;
 pub struct PageLvl4;
 
-impl PageLevel for PageLvl1 {}
-impl PageLevel for PageLvl2 {}
-impl PageLevel for PageLvl3 {}
-impl PageLevel for PageLvl4 {}
+pub trait PageLevel {
+    const INDEXER: usize;
+
+    /// Calulates the index of the page table entry at the given level
+    fn calc_idx(address: u64) -> usize {
+        (address as usize >> Self::INDEXER) & 0x1ff
+    }
+}
+
+impl PageLevel for PageLvl4 {
+    const INDEXER: usize = 12 + 9 + 9 + 9;
+}
+
+impl PageLevel for PageLvl3 {
+    const INDEXER: usize = 12 + 9 + 9;
+}
+
+impl PageLevel for PageLvl2 {
+    const INDEXER: usize = 12 + 9;
+}
+
+impl PageLevel for PageLvl1 {
+    const INDEXER: usize = 12;
+}
+pub trait NextLevel {
+    type Next: PageLevel;
+}
+
+impl NextLevel for PageLvl4 {
+    type Next = PageLvl3;
+}
+
+impl NextLevel for PageLvl3 {
+    type Next = PageLvl2;
+}
+
+impl NextLevel for PageLvl2 {
+    type Next = PageLvl1;
+}
+pub trait LvlSize {
+    type Size: PageSize;
+}
+
+impl LvlSize for PageLvl3 {
+    type Size = Size1GB;
+}
+
+impl LvlSize for PageLvl2 {
+    type Size = Size2MB;
+}
+
+impl LvlSize for PageLvl1 {
+    type Size = Size4KB;
+}
 
 #[repr(C, align(0x1000))]
 pub struct PhysPageTable {
@@ -132,6 +179,15 @@ impl PhysPageTable {
         unsafe { &mut *addr }
     }
 
+    unsafe fn free_table(&mut self, idx: usize) {
+        let entry = &mut self.entries[idx as usize];
+        assert!(entry.present());
+        let phys = Page::<Size4KB>::new(entry.get_address());
+        page_allocator::frame_alloc_exec(|a| a.free_page(phys));
+        entry.set_present(false);
+        entry.set_address(0);
+    }
+
     fn set_table(&mut self, idx: usize, table: &mut PhysPageTable) {
         let entry = &mut self.entries[idx as usize];
         if entry.present() {
@@ -154,6 +210,10 @@ impl PhysPageTable {
             None
         }
     }
+
+    fn is_empty(&self) -> bool {
+        self.entries.iter().all(|e| !e.present())
+    }
 }
 
 pub struct PageTable<'t, L: PageLevel> {
@@ -161,20 +221,123 @@ pub struct PageTable<'t, L: PageLevel> {
     level: core::marker::PhantomData<L>,
 }
 
-pub unsafe fn new_page_table_from_page<L: PageLevel>(page: Page<Size4KB>) -> PageTable<'static, L> {
-    let table = virt_addr_for_phys(page.get_address()) as *mut PhysPageTable;
+impl<L: PageLevel> PageTable<'_, L> {
+    pub unsafe fn from_page(page: Page<Size4KB>) -> Self {
+        let table = virt_addr_for_phys(page.get_address()) as *mut PhysPageTable;
 
-    PageTable {
-        table: unsafe { &mut *table },
-        level: core::marker::PhantomData,
+        PageTable {
+            table: unsafe { &mut *table },
+            level: core::marker::PhantomData,
+        }
     }
 }
 
-pub fn ident_map_curr_process<'a, S: PageSize>(page: Page<S>, _write: bool)
+impl<S: PageLevel + NextLevel> PageTable<'_, S> {
+    pub fn get_next_table<P: PageSize>(&mut self, address: Page<P>) -> PageTable<'_, S::Next> {
+        let table = self
+            .table
+            .get_or_create_table(S::calc_idx(address.get_address()));
+        PageTable {
+            table,
+            level: core::marker::PhantomData,
+        }
+    }
+
+    pub fn try_get_next_table<P: PageSize>(
+        &self,
+        address: Page<P>,
+    ) -> Option<PageTable<'_, S::Next>> {
+        let table = self.table.get_table(S::calc_idx(address.get_address()))?;
+        Some(PageTable {
+            table,
+            level: core::marker::PhantomData,
+        })
+    }
+
+    pub unsafe fn set_next_table(&mut self, address: u64, table: &mut PageTable<'_, S::Next>) {
+        self.table
+            .set_table(PageLvl4::calc_idx(address), table.table);
+    }
+
+    pub fn unmap_memory_walk_inner<P: PageSize>(&mut self, page: Page<P>) -> Option<Flusher>
+    where
+        for<'a> PageTable<'a, S::Next>: Mapper<P>,
+    {
+        self.get_next_table(page).unmap_memory(page).and_then(|r| {
+            let table = self.table.get_table(S::calc_idx(page.get_address()))?;
+            if table.is_empty() {
+                unsafe { self.table.free_table(S::calc_idx(page.get_address())) }
+            }
+            Some(r)
+        })
+    }
+}
+
+impl<S: PageLevel + LvlSize> PageTable<'_, S> {
+    fn get_entry_mut(&mut self, page: Page<S::Size>) -> &mut PageDirectoryEntry {
+        &mut self.table.entries[S::calc_idx(page.get_address())]
+    }
+
+    fn get_entry(&self, page: Page<S::Size>) -> &PageDirectoryEntry {
+        &self.table.entries[S::calc_idx(page.get_address())]
+    }
+
+    fn map_memory_inner(&mut self, from: Page<S::Size>, to: Page<S::Size>) -> Option<Flusher> {
+        let entry = self.get_entry_mut(from);
+
+        // TODO: Stop overriding exiting mappings
+        if entry.present() {
+            // Make sure we aren't creating bugs by checking that it only overrides with the same addr
+            assert_eq!(entry.get_address(), to.address)
+            // println!("WARN: overiding mapping");
+        }
+
+        entry.set_present(true);
+        entry.set_larger_pages(S::Size::LARGE_PAGE);
+        entry.set_address(to.address);
+        entry.set_read_write(true);
+        entry.set_user_super(true);
+
+        Some(Flusher(from.address))
+    }
+
+    fn unmap_memory_inner(&mut self, page: Page<S::Size>) -> Option<Flusher> {
+        let entry = self.get_entry_mut(page);
+
+        if !entry.present() {
+            println!(
+                "WARN: attempting to unmap something that is not mapped: {:?}",
+                page._size
+            );
+        }
+
+        entry.set_present(false);
+        entry.set_address(0);
+
+        Some(Flusher(page.address))
+    }
+
+    fn get_phys_addr_inner(&self, page: Page<S::Size>) -> Option<u64> {
+        let entry = self.get_entry(page);
+
+        if !entry.present() {
+            return None;
+        }
+
+        if entry.larger_pages() {
+            // TODO: Better error
+            todo!()
+        } else {
+            Some(entry.get_address())
+        }
+    }
+}
+
+pub unsafe fn ident_map_curr_process<S: PageSize>(page: Page<S>, _write: bool)
 where
-    PageTable<'a, PageLvl4>: Mapper<S>,
+    for<'a> PageTable<'a, PageLvl4>: Mapper<S>,
 {
-    let mut mapper = unsafe { get_uefi_active_mapper() };
+    let mut mapper = get_uefi_active_mapper();
     mapper.identity_map_memory(page).unwrap().flush();
 }
 
@@ -304,7 +467,7 @@ impl<S: PageSize> Iterator for PageRange<S> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let res = self.idx;
-        self.idx += S::size();
+        self.idx += S::PAGE_SIZE;
 
         if res < self.end {
             Some(Page {

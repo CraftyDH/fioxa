@@ -49,8 +49,10 @@ impl Port {
         let rfis_addr = rfis.get_address();
         let cmd_list_addr = cmd_list.get_address();
 
-        ident_map_curr_process(*rfis, true);
-        ident_map_curr_process(*cmd_list, true);
+        unsafe {
+            ident_map_curr_process(*rfis, true);
+            ident_map_curr_process(*cmd_list, true);
+        }
 
         owned_pages.push(rfis);
         owned_pages.push(cmd_list);
@@ -70,7 +72,7 @@ impl Port {
         for c in 0..=1 {
             let command_table = request_page().unwrap();
             let command_table_addr = command_table.get_address();
-            ident_map_curr_process(*command_table, true);
+            unsafe { ident_map_curr_process(*command_table, true) };
 
             owned_pages.push(command_table);
 
@@ -152,7 +154,7 @@ impl DiskDevice for Port {
         let cmd_table =
             unsafe { &mut *(cmd_list.command_table_base_address() as *mut HBACommandTable) };
 
-        let mapper = unsafe { get_uefi_active_mapper() };
+        let mut mapper = unsafe { get_uefi_active_mapper() };
 
         let mut prdt_length = 0;
 
@@ -273,7 +275,7 @@ impl DiskDevice for Port {
         let buffer: Vec<u8> = vec![0; 508];
 
         // TODO: Will probably break if buffer ever spans two non continuous pages
-        let mapper = unsafe { get_uefi_active_mapper() };
+        let mut mapper = unsafe { get_uefi_active_mapper() };
 
         let phys_addr = mapper
             .get_phys_addr(Page::<Size4KB>::new((buffer.as_ptr() as u64) & !0xFFF))

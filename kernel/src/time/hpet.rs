@@ -15,7 +15,7 @@ pub struct HPET {
 
 impl HPET {
     pub fn new(hpet: HpetInfo) -> Self {
-        ident_map_curr_process(Page::<Size4KB>::new(hpet.base_address as u64), true);
+        unsafe { ident_map_curr_process(Page::<Size4KB>::new(hpet.base_address as u64), true) };
         let x = unsafe { core::ptr::read_volatile(hpet.base_address as *const u64) };
         let capabilities: CapabilitiesIDRegister = unsafe { transmute(x) };
 

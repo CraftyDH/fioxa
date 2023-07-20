@@ -121,8 +121,13 @@ pub fn main(info: *const BootInfo) -> ! {
         }
 
         // create_offset_map(&mut map.get_lvl3(0), mmap.clone());
-        create_offset_map(&mut map.get_lvl3(MemoryLoc::PhysMapOffset as u64), mmap);
-        create_kernel_map(&mut map.get_lvl3(MemoryLoc::KernelStart as u64));
+        create_offset_map(
+            &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::PhysMapOffset as u64)),
+            mmap,
+        );
+        create_kernel_map(
+            &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::KernelStart as u64)),
+        );
         map_gop(&mut map);
 
         map.identity_map_memory(Page::<Size4KB>::containing(info as u64))

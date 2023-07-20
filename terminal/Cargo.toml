@@ -13,3 +13,4 @@ input = { path = "../input" }
 
 [profile.dev]
 strip = true
+opt-level = 1

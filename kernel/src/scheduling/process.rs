@@ -25,9 +25,7 @@ use crate::{
     paging::{
         offset_map::map_gop,
         page_allocator::{request_page, AllocatedPage},
-        page_table_manager::{
-            new_page_table_from_page, Mapper, Page, PageLvl4, PageTable, Size4KB,
-        },
+        page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
 };
@@ -77,16 +75,14 @@ pub struct Process {
 impl Process {
     pub fn new(privilege: ProcessPrivilige, args: &[u8]) -> Self {
         let pml4 = request_page().unwrap();
-        let mut page_mapper = unsafe { new_page_table_from_page(*pml4) };
+        let mut page_mapper = unsafe { PageTable::<PageLvl4>::from_page(*pml4) };
         let owned_pages = vec![pml4];
 
         unsafe {
-            page_mapper.set_lvl3_location(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
-            page_mapper
-                .set_lvl3_location(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
-            page_mapper
-                .set_lvl3_location(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
-            page_mapper.set_lvl3_location(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
+            page_mapper.set_next_table(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
+            page_mapper.set_next_table(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
+            page_mapper.set_next_table(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
+            page_mapper.set_next_table(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
             map_gop(&mut page_mapper);
             page_mapper
                 .map_memory(

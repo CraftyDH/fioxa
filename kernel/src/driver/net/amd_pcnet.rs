@@ -284,7 +284,7 @@ impl PCNET<'_> {
         for i in (0..SEND_BUFFER_CNT).step_by(2) {
             // Allocate page below 4gb location.
             let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
-            ident_map_curr_process(*buffer, true);
+            unsafe { ident_map_curr_process(*buffer, true) };
 
             let buffer_start = buffer.get_address();
             owned_pages.push(buffer);
@@ -298,7 +298,7 @@ impl PCNET<'_> {
         for i in (0..RECV_BUFFER_CNT).step_by(2) {
             // Allocate page below 4gb location.
             let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
-            ident_map_curr_process(*buffer, true);
+            unsafe { ident_map_curr_process(*buffer, true) };
 
             let buffer_start = buffer.get_address();
             owned_pages.push(buffer);

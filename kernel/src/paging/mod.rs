@@ -4,7 +4,7 @@ use x86_64::registers::control::Cr3;
 
 use crate::paging::page_allocator::frame_alloc_exec;
 
-use self::page_table_manager::{new_page_table_from_page, Page, PageLvl3, PageLvl4, PageTable};
+use self::page_table_manager::{Page, PageLvl3, PageLvl4, PageTable};
 
 pub mod offset_map;
 pub mod page_allocator;
@@ -18,7 +18,7 @@ pub const fn gen_lvl3_map() -> Lazy<Mutex<PageTable<'static, PageLvl3>>> {
             let page = frame_alloc_exec(|a| a.request_32bit_reserved_page())
                 .unwrap()
                 .leak();
-            new_page_table_from_page(page)
+            PageTable::from_page(page)
         })
     })
 }
@@ -35,12 +35,12 @@ pub static KERNEL_MAP: Lazy<Mutex<PageTable<'static, PageLvl4>>> = Lazy::new(|| 
         let page = frame_alloc_exec(|a| a.request_32bit_reserved_page())
             .unwrap()
             .leak();
-        let mut lvl4 = new_page_table_from_page(page);
+        let mut lvl4 = PageTable::from_page(page);
 
-        lvl4.set_lvl3_location(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
-        lvl4.set_lvl3_location(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
-        lvl4.set_lvl3_location(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
-        lvl4.set_lvl3_location(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
+        lvl4.set_next_table(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
+        lvl4.set_next_table(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
+        lvl4.set_next_table(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
+        lvl4.set_next_table(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
 
         lvl4
     })
@@ -51,7 +51,7 @@ pub unsafe fn get_uefi_active_mapper() -> PageTable<'static, PageLvl4> {
 
     let phys = lv4_table.start_address();
 
-    new_page_table_from_page(Page::new(phys.as_u64()))
+    PageTable::from_page(Page::new(phys.as_u64()))
 }
 
 pub type MemoryLoc = MemoryLoc64bit48bits;

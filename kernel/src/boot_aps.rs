@@ -14,7 +14,7 @@ use crate::{
     paging::{
         self, get_uefi_active_mapper,
         page_allocator::frame_alloc_exec,
-        page_table_manager::{new_page_table_from_page, Mapper, Page, Size4KB},
+        page_table_manager::{Mapper, Page, PageTable, Size4KB},
         MemoryLoc, KERNEL_MAP,
     },
     scheduling::taskmanager::{self, core_start_multitasking},
@@ -119,7 +119,7 @@ pub fn boot_aps(madt: &Madt) {
     }
 
     unsafe {
-        let mapper = new_page_table_from_page(Page::new(
+        let mapper = PageTable::from_page(Page::new(
             KERNEL_MAP.lock().get_lvl4_addr() - paging::MemoryLoc::PhysMapOffset as u64,
         ));
         taskmanager::init(mapper, n_cores.try_into().unwrap());

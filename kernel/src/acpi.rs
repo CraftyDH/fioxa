@@ -8,7 +8,7 @@ use crate::paging::{
 };
 
 pub fn prepare_acpi(rsdp: usize) -> Result<AcpiTables<FioxaAcpiHandler>, AcpiError> {
-    ident_map_curr_process(Page::<Size4KB>::containing(rsdp as u64), false);
+    unsafe { ident_map_curr_process(Page::<Size4KB>::containing(rsdp as u64), false) };
 
     let root_acpi_handler = unsafe { acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, rsdp) }?;
 
