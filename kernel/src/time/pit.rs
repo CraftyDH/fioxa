@@ -13,10 +13,7 @@ use x86_64::{
 
 use crate::{
     assembly::registers::Registers,
-    cpu_localstorage::{
-        get_current_cpu_id, get_task_mgr_current_ticks, is_task_mgr_schedule,
-        set_task_mgr_current_ticks,
-    },
+    cpu_localstorage::{get_current_cpu_id, is_task_mgr_schedule},
     scheduling::taskmanager,
     wrap_function_registers,
 };
@@ -89,7 +86,7 @@ pub fn get_uptime() -> u64 {
 }
 
 pub fn get_frequency() -> u64 {
-    return PIT_BASE_FREQUENCY / PIT_DIVISOR.load(Ordering::Acquire) as u64;
+    PIT_BASE_FREQUENCY / PIT_DIVISOR.load(Ordering::Acquire) as u64
 }
 
 pub fn start_switching_tasks() {
@@ -120,7 +117,7 @@ extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
         //     Some(n) => set_task_mgr_current_ticks(n),
         //     None => {
         if is_task_mgr_schedule() {
-            Some(taskmanager::switch_task(stack_frame, regs));
+            taskmanager::switch_task(stack_frame, regs);
         }
         //     }
         // }

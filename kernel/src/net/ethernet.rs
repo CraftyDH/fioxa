@@ -101,7 +101,7 @@ impl IPAddr {
             (Self::V4(a1, b1, c1, d1), Self::V4(a2, b2, c2, d2)) => {
                 let ip1 = (*a1 as u32) << 24 | (*b1 as u32) << 16 | (*c1 as u32) << 8 | *d1 as u32;
                 let ip2 = (*a2 as u32) << 24 | (*b2 as u32) << 16 | (*c2 as u32) << 8 | *d2 as u32;
-                return (ip1 & subnet) == (ip2 & subnet);
+                (ip1 & subnet) == (ip2 & subnet)
             }
         }
     }
@@ -193,7 +193,7 @@ pub fn userspace_networking_main() {
                     let ip = IPAddr::V4(a, b, c, d);
                     let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
 
-                    if let None = mac_addr {
+                    if mac_addr.is_none() {
                         send_arp(pcnet, mac, ip);
                     }
 

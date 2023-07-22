@@ -42,18 +42,17 @@ pub fn new(owner: ProcessID) -> ServiceID {
     SERVICES.lock().insert(
         id,
         ServiceInfo {
-            owner: owner,
+            owner,
             subscribers: Vec::new(),
         },
     );
-    id.clone()
+    id
 }
 
 pub fn subscribe(pid: ProcessID, id: ServiceID) {
-    SERVICES
-        .lock()
-        .get_mut(&id)
-        .and_then(|v| Some(v.subscribers.push(pid)));
+    if let Some(v) = SERVICES.lock().get_mut(&id) {
+        v.subscribers.push(pid)
+    }
 }
 
 pub fn push(current_pid: ProcessID, msg: Box<[u8]>) -> Result<(), SendError> {
@@ -135,10 +134,8 @@ pub fn try_find_message(
     narrow_by_tracking: ServiceTrackingNumber,
     proc: &mut Process,
 ) -> Option<usize> {
-    let msg;
-
-    if narrow_by_sid.0 == u64::MAX {
-        msg = proc.service_msgs.pop_front()?;
+    let msg = if narrow_by_sid.0 == u64::MAX {
+        proc.service_msgs.pop_front()?
     } else {
         let mut iter = proc.service_msgs.iter();
         let index = if narrow_by_tracking.0 == u64::MAX {
@@ -146,8 +143,8 @@ pub fn try_find_message(
         } else {
             iter.position(|x| x.0 == narrow_by_sid && x.1 == narrow_by_tracking)?
         };
-        msg = proc.service_msgs.remove(index)?;
-    }
+        proc.service_msgs.remove(index)?
+    };
 
     let length = msg.2.len();
 

@@ -198,10 +198,9 @@ impl FAT {
         let idx = cluster % (512 / fat_size);
 
         if fat_size == 4 {
-            return unsafe { *(fat_buffer.as_ptr() as *const u32).add(idx as usize) };
+            unsafe { read_volatile((fat_buffer.as_ptr() as *const u32).add(idx as usize)) }
         } else if fat_size == 2 {
-            return unsafe { read_volatile((fat_buffer.as_ptr() as *const u16).add(idx as usize)) }
-                as u32;
+            unsafe { read_volatile((fat_buffer.as_ptr() as *const u16).add(idx as usize)) as u32 }
         } else {
             todo!()
         }
@@ -291,19 +290,18 @@ impl FAT {
             let cluster = (entry.first_cluster_hi as u32) << 8 | entry.first_cluster_low as u32;
 
             let file_id = next_file_id();
-            let file;
             // Directory
-            if entry.attributes & 0x10 == 0x10 {
-                file = FATFile {
+            let file = if entry.attributes & 0x10 == 0x10 {
+                FATFile {
                     cluster,
                     entry_type: FATFileType::Folder(None),
-                };
+                }
             } else {
-                file = FATFile {
+                FATFile {
                     cluster,
                     entry_type: FATFileType::File(entry.size),
-                };
-            }
+                }
+            };
             dir_entries.insert(name, file_id);
             self.file_id_lookup.insert(file_id, file);
         }
@@ -345,7 +343,7 @@ impl FAT {
             cluster: 0,
             entry_type: FATFileType::Folder(Some(children.clone())),
         };
-        self.file_id_lookup.insert(0, folder.clone());
+        self.file_id_lookup.insert(0, folder);
         children
     }
 }
@@ -403,7 +401,7 @@ impl FileSystemDev for FAT {
         let mut update = false;
         match &mut fat_file.entry_type {
             FATFileType::Folder(f) => {
-                if let None = f {
+                if f.is_none() {
                     *f = Some(self.read_directory(fat_file.cluster));
                     update = true;
                 }

@@ -42,7 +42,7 @@ pub const UNMMAP_PAGE: usize = 10;
 
 // ! BEWARE, DO NOT USE THIS FROM THE KERNEL
 // As it is static is won't give the correct answer
-pub static CURRENT_PID: Lazy<ProcessID> = Lazy::new(|| get_pid());
+pub static CURRENT_PID: Lazy<ProcessID> = Lazy::new(get_pid);
 
 // TODO: Use fancier macros to dynamically build the argss
 #[macro_export]
@@ -213,7 +213,7 @@ pub fn fetch_service_message(
         );
 
         if length == 0 {
-            return None;
+            None
         } else {
             Some(length)
         }

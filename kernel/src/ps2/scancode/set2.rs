@@ -25,11 +25,11 @@ impl Scancode for ScancodeSet2 {
             State::Start => match code {
                 RELEASE_CODE => {
                     self.state = State::Release;
-                    return None;
+                    None
                 }
                 EXTENDED_CODE => {
                     self.state = State::Extended;
-                    return None;
+                    None
                 }
                 _ => {
                     if let Some(key) = self.map_scancode(code) {
@@ -49,7 +49,7 @@ impl Scancode for ScancodeSet2 {
             State::Extended => match code {
                 RELEASE_CODE => {
                     self.state = State::ExtendedRelease;
-                    return None;
+                    None
                 }
                 _ => {
                     self.state = State::Start;

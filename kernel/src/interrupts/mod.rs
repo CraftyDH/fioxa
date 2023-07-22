@@ -58,15 +58,15 @@ pub enum HardwareInterruptOffset {
     ATASecondary,
 }
 
-impl Into<u8> for HardwareInterruptOffset {
-    fn into(self) -> u8 {
-        self as u8
+impl From<HardwareInterruptOffset> for u8 {
+    fn from(val: HardwareInterruptOffset) -> Self {
+        val as u8
     }
 }
 
-impl Into<usize> for HardwareInterruptOffset {
-    fn into(self) -> usize {
-        self as usize
+impl From<HardwareInterruptOffset> for usize {
+    fn from(val: HardwareInterruptOffset) -> Self {
+        val as usize
     }
 }
 
@@ -90,13 +90,13 @@ macro_rules! interrupt_handler {
             // println!("Core: {y} received int");
             $fn(i);
             // Finish int
-            unsafe { core::ptr::write_volatile(0xfee000B0 as *mut u32, 0) }
+            unsafe { core::ptr::write_volatile(0xfee000b0 as *mut u32, 0) }
         }
     };
 }
 
 pub fn set_irq_handler(irq: usize, func: extern "x86-interrupt" fn(InterruptStackFrame)) {
-    assert!(irq >= IRQ_OFFSET && irq <= 255);
+    assert!((IRQ_OFFSET..=255).contains(&irq));
     IDT.lock()[irq].set_handler_fn(func);
 }
 

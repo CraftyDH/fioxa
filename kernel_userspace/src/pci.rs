@@ -19,6 +19,7 @@ pub struct PCIDevice {
     pub device_service: ServiceID,
 }
 
+#[allow(dead_code)]
 impl PCIDevice {
     unsafe fn read_u8(&self, offset: u32) -> u8 {
         let block = self.read_u32(offset & !0b11);
@@ -161,7 +162,7 @@ impl PCIHeader0 {
     pub fn get_port_base(&self) -> Option<u32> {
         for i in 0..5 {
             let bar = self.get_bar(i);
-            let address = (bar & 0xFFFFFFFC).try_into().unwrap();
+            let address = bar & 0xFFFFFFFC;
             if address > 0 && bar & 1 == 1 {
                 return Some(address);
             }

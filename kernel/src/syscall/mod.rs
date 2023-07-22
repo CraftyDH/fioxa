@@ -191,7 +191,7 @@ pub fn sleep(ms: usize) {
 }
 
 pub fn syssleep(ms: u64) {
-    let end = get_uptime() + ms as u64;
+    let end = get_uptime() + ms;
     while end > get_uptime() {
         yield_now()
     }

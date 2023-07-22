@@ -188,7 +188,7 @@ impl Driver for AHCIDriver {
                     let mut port = Port::new(port);
 
                     // Test read
-                    if let Some(_) = port.read(0, 1, buffer) {
+                    if port.read(0, 1, buffer).is_some() {
                         ahci.ports[i] = Some(Arc::new(Mutex::new(port)));
                     }
                 }
@@ -212,8 +212,8 @@ impl DiskBusDriver for AHCIDriver {
         self.ports
             .clone()
             .into_iter()
-            .filter_map(|a| a)
-            .map(|a| a.clone() as Arc<Mutex<dyn DiskDevice>>)
+            .flatten()
+            .map(|a| a as Arc<Mutex<dyn DiskDevice>>)
             .collect()
     }
 

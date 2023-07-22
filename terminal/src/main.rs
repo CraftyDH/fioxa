@@ -82,7 +82,7 @@ impl Iterator for KBInputDecoder {
                     },
                     KeyboardEvent::Down(letter) => {
                         return Some(input::keyboard::us_keyboard::USKeymap::get_unicode(
-                            letter.clone(),
+                            letter,
                             self.lshift,
                             self.rshift,
                             self.caps_lock,
@@ -123,7 +123,7 @@ pub extern "C" fn main() {
                 println!();
                 break;
             } else if c == '\x08' {
-                if let Some(_) = curr_line.pop() {
+                if curr_line.pop().is_some() {
                     print!("\x08");
                 }
             } else {
@@ -153,7 +153,7 @@ pub extern "C" fn main() {
                 }
 
                 println!("Drives:");
-                for part in get_disks(fs_sid, &mut buffer).into_iter() {
+                for part in get_disks(fs_sid, &mut buffer).iter() {
                     println!("{}:", part)
                 }
             }
@@ -209,7 +209,7 @@ pub extern "C" fn main() {
                 }
             }
             "exec" => {
-                let (prog, args) = rest.split_once(' ').unwrap_or_else(|| (rest, ""));
+                let (prog, args) = rest.split_once(' ').unwrap_or((rest, ""));
 
                 let path = add_path(&cwd, prog);
 
@@ -233,7 +233,7 @@ pub extern "C" fn main() {
 
                 println!("SPAWNING...");
 
-                let resp = send_and_get_response_service_message(
+                send_and_get_response_service_message(
                     &ServiceMessage {
                         service_id: elf_loader_sid,
                         sender_pid: *CURRENT_PID,

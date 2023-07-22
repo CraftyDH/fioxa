@@ -45,7 +45,7 @@ pub fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMapIter) 
             }
         }
 
-        for page in pages.2.into_iter() {
+        for page in pages.2 {
             mapper
                 .map_memory(
                     Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),

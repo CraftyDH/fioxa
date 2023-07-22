@@ -60,9 +60,9 @@ pub fn load_psf1_font(file: &[u8]) -> PSF1Font {
         )
     };
 
-    return PSF1Font {
-        psf1_header: psf1_header,
+    PSF1Font {
+        psf1_header,
         glyph_buffer: psf1_font,
         unicode_buffer: unicode_table_buffer,
-    };
+    }
 }

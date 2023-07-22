@@ -68,11 +68,11 @@ fn get_next_task(core_id: usize) -> (ProcessID, ThreadID) {
     (ProcessID(0), ThreadID(core_id as u64))
 }
 
-fn get_thread<'a>(
+fn get_thread(
     pid: ProcessID,
     tid: ThreadID,
-    processes: &'a BTreeMap<ProcessID, Process>,
-) -> Option<(&'a Process, &'a Thread)> {
+    processes: &BTreeMap<ProcessID, Process>,
+) -> Option<(&Process, &Thread)> {
     let process = processes.get(&pid)?;
     let thread = process.threads.get(&tid)?;
     Some((process, thread))

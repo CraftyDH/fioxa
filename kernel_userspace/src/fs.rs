@@ -102,14 +102,12 @@ pub fn stat<'a>(
     .unwrap();
 
     match resp.message {
-        crate::service::ServiceMessageType::FS(FSServiceMessage::StatResponse(resp)) => {
-            return resp
-        }
+        crate::service::ServiceMessageType::FS(FSServiceMessage::StatResponse(resp)) => resp,
         _ => todo!(),
     }
 }
 
-pub fn read_file_sector<'a>(
+pub fn read_file_sector(
     fs_sid: ServiceID,
     disk: usize,
     node: usize,
@@ -126,7 +124,7 @@ pub fn read_file_sector<'a>(
                 ReadRequest {
                     disk_id: disk,
                     node_id: node,
-                    sector: sector,
+                    sector,
                 },
             )),
         },

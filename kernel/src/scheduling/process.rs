@@ -194,8 +194,10 @@ impl Process {
     }
 
     pub fn new_thread(&mut self, entry_point: usize) -> ThreadID {
-        let mut register_state = Registers::default();
-        register_state.rdi = entry_point;
+        let register_state = Registers {
+            rdi: entry_point,
+            ..Default::default()
+        };
 
         self.new_thread_direct(thread_bootstraper as *const u64, register_state)
     }

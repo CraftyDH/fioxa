@@ -187,8 +187,8 @@ impl PS2Controller {
         let mouse = mouse.and_then(|_| self.mouse.initialize());
 
         // Now enable interrupts
-        let keyboard = keyboard.and_then(|_| Ok(self.keyboard.receive_interrupts()));
-        let mouse = mouse.and_then(|_| Ok(self.mouse.receive_interrupts()));
+        let keyboard = keyboard.map(|_| self.keyboard.receive_interrupts());
+        let mouse = mouse.map(|_| self.mouse.receive_interrupts());
 
         // If keyboard failed to initalize print the error reason
         if let Err(e) = keyboard {

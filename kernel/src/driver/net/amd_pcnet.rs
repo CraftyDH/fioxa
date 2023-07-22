@@ -116,7 +116,7 @@ pub fn amd_pcnet_main() {
                     ),
                     PhysicalNet::SendPacket(packet) => {
                         // Keep trying to send
-                        while let Err(_) = pcnet2.lock().send_packet(packet) {
+                        while pcnet2.lock().send_packet(packet).is_err() {
                             yield_now()
                         }
                         ServiceMessageType::Ack
@@ -320,7 +320,7 @@ impl PCNET<'_> {
         };
 
         // Write regs
-        this.io.write_csr_32(1, init_block_addr & 0xFFFF_FFFF);
+        this.io.write_csr_32(1, init_block_addr);
         this.io.write_csr_32(2, init_block_addr >> 16);
 
         // Set init
@@ -426,7 +426,7 @@ impl PCNET<'_> {
                             destination:
                                 kernel_userspace::service::SendServiceMessageDest::ToSubscribers,
                             message: ServiceMessageType::PhysicalNet(PhysicalNet::ReceivedPacket(
-                                &packet,
+                                packet,
                             )),
                         },
                         &mut Vec::new(),

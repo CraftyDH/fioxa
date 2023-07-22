@@ -76,7 +76,7 @@ impl<S: PageSize> Copy for Page<S> {}
 impl<S: PageSize> Clone for Page<S> {
     fn clone(&self) -> Self {
         Self {
-            address: self.address.clone(),
+            address: self.address,
             _size: core::marker::PhantomData,
         }
     }
@@ -159,7 +159,7 @@ pub struct PhysPageTable {
 
 impl PhysPageTable {
     fn get_or_create_table(&mut self, idx: usize) -> &mut PhysPageTable {
-        let entry = &mut self.entries[idx as usize];
+        let entry = &mut self.entries[idx];
         if entry.larger_pages() {
             panic!("Page Lvl4 cannot contain huge pages")
         }
@@ -180,7 +180,7 @@ impl PhysPageTable {
     }
 
     unsafe fn free_table(&mut self, idx: usize) {
-        let entry = &mut self.entries[idx as usize];
+        let entry = &mut self.entries[idx];
         assert!(entry.present());
         let phys = Page::<Size4KB>::new(entry.get_address());
         page_allocator::frame_alloc_exec(|a| a.free_page(phys));
@@ -189,7 +189,7 @@ impl PhysPageTable {
     }
 
     fn set_table(&mut self, idx: usize, table: &mut PhysPageTable) {
-        let entry = &mut self.entries[idx as usize];
+        let entry = &mut self.entries[idx];
         if entry.present() {
             println!("WARN: setting table over existing entry");
         }
@@ -389,7 +389,7 @@ pub fn get_chunked_page_range(
         let new_end = core::cmp::max(end & !0x1f_ffff, start);
         let tmp = PageRange {
             idx: new_end,
-            end: end,
+            end,
             _size: PhantomData,
         };
         end = new_end;
@@ -425,7 +425,7 @@ pub fn get_chunked_page_range(
 
         let tmp = PageRange {
             idx: new_end,
-            end: end,
+            end,
             _size: PhantomData,
         };
         end = new_end;

@@ -150,7 +150,7 @@ pub fn get_file_from_path(partition_id: PartitionId, path: &str) -> Option<VFile
     let mut file = get_file_by_id((partition_id, 0));
 
     for sect in path.split('/') {
-        if sect == "" {
+        if sect.is_empty() {
             continue;
         }
         let folder = match file.specialized {
@@ -229,7 +229,7 @@ pub fn file_handler() {
                 }
                 FSServiceMessage::ReadRequest(req) => {
                     if let Some(len) = read_file_sector(
-                        (PartitionId(req.disk_id as u64), req.node_id as usize),
+                        (PartitionId(req.disk_id as u64), req.node_id),
                         req.sector as usize,
                         &mut buffer,
                     ) {
@@ -242,7 +242,7 @@ pub fn file_handler() {
                 }
                 FSServiceMessage::ReadFullFileRequest(req) => {
                     file_vec = read_file(
-                        (PartitionId(req.disk_id as u64), req.node_id as usize),
+                        (PartitionId(req.disk_id as u64), req.node_id),
                         &mut read_buffer,
                     );
                     ServiceMessageType::FS(FSServiceMessage::ReadResponse(Some(file_vec)))

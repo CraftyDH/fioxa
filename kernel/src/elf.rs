@@ -70,15 +70,7 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> ProcessID {
     let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
     // Ensure that all the header flags are suitable
-    if &elf_header.e_ident[0..6]
-        == [
-            0x7F,
-            'E' as u8,
-            'L' as u8,
-            'F' as u8,
-            ELFCLASS64,
-            ELFDATA2LSB,
-        ]
+    if elf_header.e_ident[0..6] == [0x7F, b'E', b'L', b'F', ELFCLASS64, ELFDATA2LSB]
         && elf_header.e_type == ET_EXEC
         && elf_header.e_machine == EM_X86_64
         && elf_header.e_version == 1

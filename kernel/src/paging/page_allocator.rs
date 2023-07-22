@@ -176,7 +176,7 @@ const fn bitmap_size(elements: u64) -> u64 {
     (elements + 7) & !7
 }
 
-impl<'mmap, 'bit> PageFrameAllocator<'bit> {
+impl PageFrameAllocator<'_> {
     /// Unsafe because this must only be called once (ever) since it hands out pages based on it's own state
     pub unsafe fn new(mmap: MemoryMapIter) -> Self {
         // Can inner self to get safe type checking
@@ -420,7 +420,7 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
 
     pub fn request_32bit_reserved_page(&mut self) -> Option<Allocated32Page> {
         Self::find_page_in_region(0, self.reserved_32bit)
-            .and_then(|p| Some(unsafe { Allocated32Page::new(p) }))
+            .map(|p| unsafe { Allocated32Page::new(p) })
     }
 
     // Returns memory address page starts at in physical memory
@@ -505,7 +505,7 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
         if mem_region.allocated.get_bit(page_idx as usize) {
             mem_region.allocated.set_bit(page_idx as usize, false);
 
-            return Some(());
+            Some(())
         } else {
             panic!("WARN: tried to free unallocated page: {}", memory_address);
         }
@@ -516,7 +516,7 @@ impl<'mmap, 'bit> PageFrameAllocator<'bit> {
         if !mem_region.allocated.get_bit(page_idx as usize) {
             mem_region.allocated.set_bit(page_idx as usize, true);
 
-            return Some(());
+            Some(())
         } else {
             panic!("WARN: tried to lock allocated page: {}", memory_address);
         }

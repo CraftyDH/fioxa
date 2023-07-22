@@ -108,7 +108,7 @@ impl PCIHeader0 {
     pub fn get_port_base(&self) -> Option<u32> {
         for i in 0..5 {
             let bar = self.get_bar(i);
-            let address = (bar & 0xFFFFFFFC).try_into().unwrap();
+            let address = bar & 0xFFFFFFFC;
             if address > 0 && bar & 1 == 1 {
                 return Some(address);
             }
@@ -188,12 +188,11 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
     }
 
     let class = pci_header.get_class() as usize;
-    let cls;
-    if class < pci_descriptors::DEVICE_CLASSES.len() {
-        cls = pci_descriptors::DEVICE_CLASSES[class]
+    let cls = if class < pci_descriptors::DEVICE_CLASSES.len() {
+        pci_descriptors::DEVICE_CLASSES[class]
     } else {
-        cls = "Unknown";
-    }
+        "Unknown"
+    };
 
     println!(
         "Class: {}, Vendor: {}, Device: {}",

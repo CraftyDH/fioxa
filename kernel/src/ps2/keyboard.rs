@@ -53,7 +53,7 @@ impl Keyboard {
             }
             return Ok(());
         }
-        return Err("Keyboard required too many command resends");
+        Err("Keyboard required too many command resends")
     }
 
     pub fn initialize(&mut self) -> Result<(), &'static str> {

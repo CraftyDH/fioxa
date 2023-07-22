@@ -61,11 +61,11 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
 
 pub fn send_ipi_to(apic_id: u8, vector: u8) {
     // Check no IPI pending
-    while unsafe { *((0xfee00000u64 + 0x300) as *const u32) & (1 << 12) > 0 } {}
+    while unsafe { read_volatile((0xfee00000u64 + 0x300) as *const u32) & (1 << 12) > 0 } {}
     // Target
-    unsafe { *((0xfee00000u64 + 0x310) as *mut u32) = (apic_id as u32) << 24 };
+    unsafe { write_volatile((0xfee00000u64 + 0x310) as *mut u32, (apic_id as u32) << 24) };
     // Send interrupt
-    unsafe { *((0xfee00000u64 + 0x300) as *mut u32) = vector as u32 | 1 << 14 };
+    unsafe { write_volatile((0xfee00000u64 + 0x300) as *mut u32, vector as u32 | 1 << 14) };
 }
 
 fn set_redirect_entry(apic_base: u32, processor: u32, irq: u8, vector: u8, enable: bool) {
@@ -111,7 +111,7 @@ pub fn mask_entry(irq: u8, enable: bool) {
 fn write_ioapic_register(apic_base: u32, offset: u8, val: u32) {
     unsafe {
         write_volatile(apic_base as *mut u32, offset as u32);
-        write_volatile((apic_base + 0x10) as *mut u32, val as u32);
+        write_volatile((apic_base + 0x10) as *mut u32, val);
     }
 }
 

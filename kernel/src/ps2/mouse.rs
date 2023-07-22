@@ -75,7 +75,7 @@ impl Mouse {
             println!("Res: {}", response);
             return Err("Mouse didn't acknolodge command");
         }
-        return Err("Mouse required too many command resends");
+        Err("Mouse required too many command resends")
     }
 
     pub fn initialize(&mut self) -> Result<(), &'static str> {
