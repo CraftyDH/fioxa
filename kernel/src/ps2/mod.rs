@@ -35,13 +35,14 @@ pub fn main() {
 
     let controller = Arc::new(Mutex::new(ps2_controller));
 
-    spawn_thread(|| loop {
+    let c = controller.clone();
+    spawn_thread(move || loop {
         let mut buffer = Vec::new();
         loop {
             let message = receive_service_message_blocking(mouse_event, &mut buffer).unwrap();
             match message.message {
                 kernel_userspace::service::ServiceMessageType::InterruptEvent => {
-                    controller.lock().mouse.check_interrupts()
+                    c.lock().mouse.check_interrupts()
                 }
                 _ => unimplemented!(),
             }

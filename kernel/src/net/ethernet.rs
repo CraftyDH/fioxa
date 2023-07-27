@@ -183,7 +183,7 @@ pub fn userspace_networking_main() {
         panic!()
     };
 
-    spawn_thread(|| monitor_packets(pcnet));
+    spawn_thread(move || monitor_packets(pcnet));
     loop {
         let mut buf = Vec::new();
         let query = receive_service_message_blocking(sid, &mut buf).unwrap();

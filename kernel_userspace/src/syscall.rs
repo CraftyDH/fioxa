@@ -98,7 +98,7 @@ pub fn yield_now() {
 
 pub fn spawn_process<F>(func: F, args: &[u8], kernel: bool) -> PID
 where
-    F: Fn() + Send + Sync,
+    F: Fn() + Send + Sync + 'static,
 {
     let boxed_func: Box<dyn Fn()> = Box::new(func);
     let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
@@ -121,12 +121,12 @@ where
 
 pub fn spawn_thread<F>(func: F) -> TID
 where
-    F: FnOnce() + Send + Sync,
+    F: FnOnce() + Send + Sync + 'static,
 {
     let boxed_func: Box<dyn FnOnce()> = Box::new(func);
     let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
     let res: u64;
-    unsafe { syscall!(SPAWN_THREAD, raw as usize => res) }
+    unsafe { syscall!(SPAWN_THREAD, raw => res) }
     res.into()
 }
 
