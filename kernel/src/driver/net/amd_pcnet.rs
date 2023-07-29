@@ -10,7 +10,7 @@ use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 use crate::{
-    cpu_localstorage::get_task_mgr_current_pid,
+    cpu_localstorage::CPULocalStorageRW,
     paging::{
         page_allocator::{frame_alloc_exec, Allocated32Page},
         page_table_manager::ident_map_curr_process,
@@ -129,7 +129,7 @@ pub fn amd_pcnet_main() {
             send_service_message(
                 &ServiceMessage {
                     service_id: *PCNET_SID,
-                    sender_pid: get_task_mgr_current_pid(),
+                    sender_pid: CPULocalStorageRW::get_current_pid(),
                     tracking_number: query.tracking_number,
                     destination: SendServiceMessageDest::ToProcess(query.sender_pid),
                     message: resp,
@@ -421,7 +421,7 @@ impl PCNET<'_> {
                     send_service_message(
                         &ServiceMessage {
                             service_id: *PCNET_SID,
-                            sender_pid: get_task_mgr_current_pid(),
+                            sender_pid: CPULocalStorageRW::get_current_pid(),
                             tracking_number: kernel_userspace::service::ServiceTrackingNumber(0),
                             destination:
                                 kernel_userspace::service::SendServiceMessageDest::ToSubscribers,

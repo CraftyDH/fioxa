@@ -21,7 +21,7 @@ use modular_bitfield::{bitfield, specifiers::B48};
 use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::{
-    cpu_localstorage::get_task_mgr_current_pid,
+    cpu_localstorage::CPULocalStorageRW,
     net::arp::{ARP, ARP_TABLE},
     syscall::syssleep,
 };
@@ -138,7 +138,7 @@ pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) -> Option<()> {
     send_and_get_response_service_message(
         &ServiceMessage {
             service_id: service,
-            sender_pid: get_task_mgr_current_pid(),
+            sender_pid: CPULocalStorageRW::get_current_pid(),
             tracking_number: generate_tracking_number(),
             destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
             message: ServiceMessageType::PhysicalNet(
@@ -171,7 +171,7 @@ pub fn userspace_networking_main() {
     let ServiceMessageType::PhysicalNet(kernel_userspace::net::PhysicalNet::MacAddrResp(mac)) = send_and_get_response_service_message(
         &kernel_userspace::service::ServiceMessage {
             service_id: pcnet,
-            sender_pid: get_task_mgr_current_pid(),
+            sender_pid: CPULocalStorageRW::get_current_pid(),
             tracking_number: generate_tracking_number(),
             destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
             message: ServiceMessageType::PhysicalNet(
@@ -207,7 +207,7 @@ pub fn userspace_networking_main() {
         send_service_message(
             &ServiceMessage {
                 service_id: sid,
-                sender_pid: get_task_mgr_current_pid(),
+                sender_pid: CPULocalStorageRW::get_current_pid(),
                 tracking_number: query.tracking_number,
                 destination: SendServiceMessageDest::ToProcess(query.sender_pid),
                 message: resp,
@@ -245,7 +245,7 @@ pub fn lookup_ip(a: u8, b: u8, c: u8, d: u8) -> Option<u64> {
         match send_and_get_response_service_message(
             &kernel_userspace::service::ServiceMessage {
                 service_id: networking,
-                sender_pid: get_task_mgr_current_pid(),
+                sender_pid: CPULocalStorageRW::get_current_pid(),
                 tracking_number: generate_tracking_number(),
                 destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
                 message: ServiceMessageType::Networking(

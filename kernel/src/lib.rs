@@ -11,6 +11,8 @@
 #![feature(const_for)]
 #![feature(pointer_byte_offsets)]
 #![feature(new_uninit)]
+#![feature(asm_const)]
+#![feature(offset_of)]
 
 use bootloader::BootInfo;
 

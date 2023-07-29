@@ -12,9 +12,7 @@ use x86_64::{
 };
 
 use crate::{
-    assembly::registers::Registers,
-    cpu_localstorage::{get_current_cpu_id, is_task_mgr_schedule},
-    scheduling::taskmanager,
+    assembly::registers::Registers, cpu_localstorage::CPULocalStorageRW, scheduling::taskmanager,
     wrap_function_registers,
 };
 
@@ -104,7 +102,7 @@ pub fn is_switching_tasks() -> bool {
 wrap_function_registers!(tick => tick_handler);
 
 extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
-    if get_current_cpu_id() == 0 {
+    if CPULocalStorageRW::get_core_id() == 0 {
         // Get the amount of milliseconds per interrupt
         let freq = 1000 / get_frequency();
         // Increment the uptime counter
@@ -116,7 +114,7 @@ extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
         // match get_task_mgr_current_ticks().checked_sub(1) {
         //     Some(n) => set_task_mgr_current_ticks(n),
         //     None => {
-        if is_task_mgr_schedule() {
+        if !CPULocalStorageRW::get_stay_scheduled() {
             taskmanager::switch_task(stack_frame, regs);
         }
         //     }

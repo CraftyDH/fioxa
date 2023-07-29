@@ -20,7 +20,7 @@ pub mod exceptions;
 pub mod pic;
 
 use crate::{
-    cpu_localstorage::get_task_mgr_current_pid,
+    cpu_localstorage::CPULocalStorageRW,
     gdt::TASK_SWITCH_INDEX,
     service::{self, PUBLIC_SERVICES},
     syscall,
@@ -195,7 +195,7 @@ fn send_int_message(service: ServiceID, send_buffer: &mut Vec<u8>) {
     send_service_message(
         &ServiceMessage {
             service_id: service,
-            sender_pid: get_task_mgr_current_pid(),
+            sender_pid: CPULocalStorageRW::get_current_pid(),
             tracking_number: generate_tracking_number(),
             destination: SendServiceMessageDest::ToSubscribers,
             message: ServiceMessageType::InterruptEvent,

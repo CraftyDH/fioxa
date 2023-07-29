@@ -9,7 +9,7 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
     assembly::registers::Registers,
-    cpu_localstorage::{get_task_mgr_current_pid, get_task_mgr_current_tid},
+    cpu_localstorage::CPULocalStorageRW,
     gdt::TASK_SWITCH_INDEX,
     paging::{
         page_allocator::request_page,
@@ -55,7 +55,7 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
         }
         SERVICE => service_handler(stack_frame, regs),
         READ_ARGS => read_args_handler(regs),
-        GET_PID => regs.rax = get_task_mgr_current_pid().0 as usize,
+        GET_PID => regs.rax = CPULocalStorageRW::get_current_pid().0 as usize,
         _ => println!("Unknown syscall class: {}", regs.rax),
     }
 
@@ -70,7 +70,7 @@ fn echo_handler(regs: &mut Registers) {
 }
 
 fn read_args_handler(regs: &mut Registers) {
-    let pid = get_task_mgr_current_pid();
+    let pid = CPULocalStorageRW::get_current_pid();
     let p = PROCESSES.lock();
     let proc = p.get(&pid).unwrap();
 
@@ -86,15 +86,15 @@ fn read_args_handler(regs: &mut Registers) {
 fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
     match regs.r8 {
         syscall::SERVICE_CREATE => {
-            let pid = get_task_mgr_current_pid();
+            let pid = CPULocalStorageRW::get_current_pid();
             regs.rax = service::new(pid).0 as usize;
         }
         syscall::SERVICE_SUBSCRIBE => {
-            let pid = get_task_mgr_current_pid();
+            let pid = CPULocalStorageRW::get_current_pid();
             service::subscribe(pid, ServiceID(regs.r9 as u64));
         }
         syscall::SERVICE_PUSH => {
-            let pid = get_task_mgr_current_pid();
+            let pid = CPULocalStorageRW::get_current_pid();
 
             let buf = unsafe { core::slice::from_raw_parts(regs.r9 as *const u8, regs.r10) };
 
@@ -108,8 +108,8 @@ fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
             }
         }
         syscall::SERVICE_FETCH => {
-            let pid = get_task_mgr_current_pid();
-            let tid = get_task_mgr_current_tid();
+            let pid = CPULocalStorageRW::get_current_pid();
+            let tid = CPULocalStorageRW::get_current_tid();
 
             match service::find_message(
                 pid,
@@ -124,14 +124,14 @@ fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
         syscall::SERVICE_FETCH_WAIT => service::find_or_wait_message(
             stack_frame,
             regs,
-            get_task_mgr_current_pid(),
-            get_task_mgr_current_tid(),
+            CPULocalStorageRW::get_current_pid(),
+            CPULocalStorageRW::get_current_tid(),
             ServiceID(regs.r9 as u64),
             ServiceTrackingNumber(regs.r10 as u64),
         ),
         syscall::SERVICE_GET => {
-            let pid = get_task_mgr_current_pid();
-            let tid = get_task_mgr_current_tid();
+            let pid = CPULocalStorageRW::get_current_pid();
+            let tid = CPULocalStorageRW::get_current_tid();
 
             let buf = unsafe { core::slice::from_raw_parts_mut(regs.r9 as *mut u8, regs.r10) };
             match service::get_message(pid, tid, buf) {
@@ -146,7 +146,7 @@ fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
 fn mmap_page_handler(regs: &mut Registers) {
     assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
 
-    let pid = get_task_mgr_current_pid();
+    let pid = CPULocalStorageRW::get_current_pid();
     let mut processes = PROCESSES.lock();
 
     let process = processes.get_mut(&pid).unwrap();
@@ -165,7 +165,7 @@ fn mmap_page_handler(regs: &mut Registers) {
 fn unmmap_page_handler(regs: &mut Registers) {
     assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
 
-    let pid = get_task_mgr_current_pid();
+    let pid = CPULocalStorageRW::get_current_pid();
     let mut processes = PROCESSES.lock();
 
     let process = processes.get_mut(&pid).unwrap();

@@ -16,12 +16,103 @@ use crate::{
 pub struct CPULocalStorage {
     core_id: u8,
     stack_top: u64,
-    task_mgr_current_pid: ProcessID,
-    task_mgr_current_tid: ThreadID,
-    task_mgr_ticks_left: u32,
+    current_pid: u64,
+    current_tid: u64,
+    ticks_left: u32,
     // If not set the task should stay scheduled
-    task_mgr_schedule: u32,
+    stay_scheduled: bool,
     // at 0x1000 (1 page down is GDT)
+}
+
+/// Reads the contents of the localstorage struct at offset $value, with given size
+macro_rules! localstorage_read {
+    ($value:tt => $res:ident: u8) =>  { core::arch::asm!("mov {0},   gs:{1}", lateout(reg_byte) $res, const core::mem::offset_of!(CPULocalStorage, $value)) };
+    ($value:tt => $res:ident: u16) => { core::arch::asm!("mov {0:x}, gs:{1}", lateout(reg)      $res, const core::mem::offset_of!(CPULocalStorage, $value)) };
+    ($value:tt => $res:ident: u32) => { core::arch::asm!("mov {0:e}, gs:{1}", lateout(reg)      $res, const core::mem::offset_of!(CPULocalStorage, $value)) };
+    ($value:tt => $res:ident: u64) => { core::arch::asm!("mov {0:r}, gs:{1}", lateout(reg)      $res, const core::mem::offset_of!(CPULocalStorage, $value)) };
+}
+
+/// Writes the contents of the localstorage struct at offset $value, with given size
+macro_rules! localstorage_write {
+    // Convenience arm that makes use of the assumption that in rust a bool is a u8 with false = 0, true = 1
+    ($res:expr => $value:tt: bool) => { localstorage_write!($res as u8 => $value: u8) };
+    ($res:expr => $value:tt: u8)   => { core::arch::asm!("mov gs:{1}, {0}  ", in(reg_byte) $res, const core::mem::offset_of!(CPULocalStorage, $value)) };
+    ($res:expr => $value:tt: u16)  => { core::arch::asm!("mov gs:{1}, {0:x}", in(reg)      $res, const core::mem::offset_of!(CPULocalStorage, $value)) };
+    ($res:expr => $value:tt: u32)  => { core::arch::asm!("mov gs:{1}, {0:e}", in(reg)      $res, const core::mem::offset_of!(CPULocalStorage, $value)) };
+    ($res:expr => $value:tt: u64)  => { core::arch::asm!("mov gs:{1}, {0:r}", in(reg)      $res, const core::mem::offset_of!(CPULocalStorage, $value)) };
+}
+
+/// Creates a value, reads into it and returns the value
+macro_rules! localstorage_read_imm {
+    // Convenience arm that makes use of the assumption that in rust a bool is a u8 with false = 0, true = 1
+    ($value:tt: bool) => {
+        localstorage_read_imm!($value: u8) != 0
+    };
+    ($value:tt: $ty:tt) => {{
+        let val: $ty;
+        localstorage_read!($value => val:$ty);
+        val
+    }};
+}
+
+/// Struct that allows for reading CPULocalStorage runtime values (100% volatile)
+pub struct CPULocalStorageRW {}
+
+impl CPULocalStorageRW {
+    #[inline]
+    pub fn get_core_id() -> u8 {
+        unsafe { localstorage_read_imm!(core_id: u8) }
+    }
+
+    #[inline]
+    pub fn set_core_id(val: u8) {
+        unsafe { localstorage_write!(val => core_id: u8) }
+    }
+
+    #[inline]
+    pub fn get_stack_top() -> u64 {
+        unsafe { localstorage_read_imm!(stack_top: u64) }
+    }
+
+    #[inline]
+    pub fn get_current_pid() -> ProcessID {
+        ProcessID(unsafe { localstorage_read_imm!(current_pid: u64) })
+    }
+
+    #[inline]
+    pub fn set_current_pid(val: ProcessID) {
+        unsafe { localstorage_write!(val.0 => current_pid: u64) }
+    }
+
+    #[inline]
+    pub fn get_current_tid() -> ThreadID {
+        ThreadID(unsafe { localstorage_read_imm!(current_tid: u64) })
+    }
+
+    #[inline]
+    pub fn set_current_tid(val: ThreadID) {
+        unsafe { localstorage_write!(val.0 => current_tid: u64) }
+    }
+
+    #[inline]
+    pub fn get_ticks_left() -> u32 {
+        unsafe { localstorage_read_imm!(ticks_left: u32) }
+    }
+
+    #[inline]
+    pub fn set_ticks_left(val: u32) {
+        unsafe { localstorage_write!(val => ticks_left: u32) }
+    }
+
+    #[inline]
+    pub fn get_stay_scheduled() -> bool {
+        unsafe { localstorage_read_imm!(stay_scheduled: bool) }
+    }
+
+    #[inline]
+    pub fn set_stay_scheduled(val: bool) {
+        unsafe { localstorage_write!(val => stay_scheduled: bool) }
+    }
 }
 
 pub unsafe fn init_core(core_id: u8) -> u64 {
@@ -42,10 +133,10 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
 
     let ls = unsafe { &mut *(vaddr_base as *mut CPULocalStorage) };
     ls.core_id = core_id;
-    ls.task_mgr_current_pid = ProcessID(0);
-    ls.task_mgr_current_tid = ThreadID(core_id as u64);
-    ls.task_mgr_ticks_left = 0;
-    ls.task_mgr_schedule = 1;
+    ls.current_pid = 0;
+    ls.current_tid = core_id as u64;
+    ls.ticks_left = 0;
+    ls.stay_scheduled = true;
 
     crate::gdt::create_gdt_for_core(unsafe { &mut *((vaddr_base + 0x1000) as *mut CPULocalGDT) });
 
@@ -92,52 +183,4 @@ pub unsafe fn new_cpu(core_id: u8) -> u64 {
 
     ls.stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE;
     vaddr
-}
-
-pub fn get_current_cpu_id() -> u8 {
-    let cid: u16;
-    unsafe { core::arch::asm!("mov {:e}, gs:0", lateout(reg) cid) };
-    cid as u8
-}
-
-pub fn get_task_mgr_current_pid() -> ProcessID {
-    let pid: u64;
-    unsafe { core::arch::asm!("mov {}, gs:9", lateout(reg) pid) };
-    ProcessID(pid)
-}
-
-pub fn set_task_mgr_current_pid(pid: ProcessID) {
-    unsafe { core::arch::asm!("mov gs:9, {}", in(reg) pid.0) };
-}
-
-pub fn get_task_mgr_current_tid() -> ThreadID {
-    let tid: u64;
-    unsafe { core::arch::asm!("mov {}, gs:17", lateout(reg) tid) };
-    ThreadID(tid)
-}
-
-pub fn set_task_mgr_current_tid(tid: ThreadID) {
-    unsafe { core::arch::asm!("mov gs:17, {}", in(reg) tid.0) };
-}
-
-pub fn get_task_mgr_current_ticks() -> u8 {
-    let ticks: u16;
-    unsafe { core::arch::asm!("mov {:e}, gs:25", lateout(reg) ticks) };
-    ticks as u8
-}
-
-pub fn set_task_mgr_current_ticks(ticks: u8) {
-    unsafe { core::arch::asm!("mov gs:25, {:e}", in(reg) ticks as u16) };
-}
-
-pub fn is_task_mgr_schedule() -> bool {
-    let ticks: u16;
-    unsafe { core::arch::asm!("mov {:e}, gs:29", lateout(reg) ticks) };
-    // println!("ticks: {ticks}");
-    ticks != 0
-    // true
-}
-
-pub fn set_is_task_mgr_schedule(ticks: bool) {
-    unsafe { core::arch::asm!("mov gs:29, {:e}", in(reg) ticks as u16) };
 }

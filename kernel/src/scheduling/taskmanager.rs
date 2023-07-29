@@ -10,11 +10,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
     assembly::registers::Registers,
-    cpu_localstorage::{
-        get_current_cpu_id, get_task_mgr_current_pid, get_task_mgr_current_tid,
-        set_is_task_mgr_schedule, set_task_mgr_current_pid, set_task_mgr_current_ticks,
-        set_task_mgr_current_tid,
-    },
+    cpu_localstorage::CPULocalStorageRW,
     paging::{
         page_table_manager::{PageLvl4, PageTable},
         virt_addr_for_phys,
@@ -42,7 +38,7 @@ pub fn push_task_queue(val: (ProcessID, ThreadID)) -> Result<(), (ProcessID, Thr
 /// However is does reduce performance when there are actually tasks that could use the time
 pub unsafe fn core_start_multitasking() -> ! {
     // Performs work to keep core working & is preemptible
-    set_is_task_mgr_schedule(true);
+    CPULocalStorageRW::set_stay_scheduled(false);
     core::arch::asm!("sti");
 
     loop {
@@ -104,8 +100,8 @@ pub unsafe fn init(mapper: PageTable<'static, PageLvl4>, core_cnt: u8) {
 }
 
 fn save_current_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) -> Option<()> {
-    let pid = get_task_mgr_current_pid();
-    let tid = get_task_mgr_current_tid();
+    let pid = CPULocalStorageRW::get_current_pid();
+    let tid = CPULocalStorageRW::get_current_tid();
     {
         let mut processes = PROCESSES.lock();
         let thread = get_thread_mut(pid, tid, &mut processes)?;
@@ -119,7 +115,7 @@ fn save_current_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers)
 }
 
 pub fn load_new_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-    let current_cpu = get_current_cpu_id() as usize;
+    let current_cpu = CPULocalStorageRW::get_core_id() as usize;
     // Loop becuase we don't delete tasks from queue when they exit
     loop {
         let (pid, tid) = get_next_task(current_cpu);
@@ -133,9 +129,9 @@ pub fn load_new_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers)
                 );
             }
             thread.restore(stack_frame, reg);
-            set_task_mgr_current_pid(pid);
-            set_task_mgr_current_tid(tid);
-            set_task_mgr_current_ticks(5);
+            CPULocalStorageRW::set_current_pid(pid);
+            CPULocalStorageRW::set_current_tid(tid);
+            CPULocalStorageRW::set_ticks_left(5);
             return;
         }
     }
@@ -147,8 +143,8 @@ pub fn switch_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
 }
 
 pub fn exit_thread(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-    let pid = get_task_mgr_current_pid();
-    let tid = get_task_mgr_current_tid();
+    let pid = CPULocalStorageRW::get_current_pid();
+    let tid = CPULocalStorageRW::get_current_tid();
 
     {
         let mut processes = PROCESSES.lock();
@@ -183,7 +179,7 @@ pub fn spawn_process(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers
 }
 
 pub fn spawn_thread(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-    let pid = get_task_mgr_current_pid();
+    let pid = CPULocalStorageRW::get_current_pid();
     let mut p = PROCESSES.lock();
     let process = p.get_mut(&pid).unwrap();
 

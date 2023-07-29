@@ -20,7 +20,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
     assembly::registers::Registers,
-    cpu_localstorage::get_task_mgr_current_pid,
+    cpu_localstorage::CPULocalStorageRW,
     scheduling::{
         process::{Process, ScheduleStatus},
         taskmanager::{load_new_task, push_task_queue, PROCESSES},
@@ -218,7 +218,7 @@ pub fn get_message(
 pub static PUBLIC_SERVICES: Mutex<BTreeMap<String, ServiceID>> = Mutex::new(BTreeMap::new());
 
 pub fn start_mgmt() {
-    let pid = get_task_mgr_current_pid();
+    let pid = CPULocalStorageRW::get_current_pid();
     let sid = ServiceID(1);
     SERVICES.lock().insert(
         sid,

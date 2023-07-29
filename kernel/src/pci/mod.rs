@@ -1,6 +1,6 @@
 use crate::{
     acpi::FioxaAcpiHandler,
-    cpu_localstorage::get_task_mgr_current_pid,
+    cpu_localstorage::CPULocalStorageRW,
     driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::amd_pcnet_main},
     fs::FSDRIVES,
     pci::mcfg::get_mcfg,
@@ -289,7 +289,7 @@ fn pci_dev_handler(
         send_service_message(
             &ServiceMessage {
                 service_id: sid,
-                sender_pid: get_task_mgr_current_pid(),
+                sender_pid: CPULocalStorageRW::get_current_pid(),
                 tracking_number: req.tracking_number,
                 destination: kernel_userspace::service::SendServiceMessageDest::ToProcess(
                     req.sender_pid,
