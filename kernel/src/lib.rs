@@ -13,6 +13,8 @@
 #![feature(new_uninit)]
 #![feature(asm_const)]
 #![feature(offset_of)]
+#![feature(error_in_core)]
+#![feature(const_try)]
 
 use bootloader::BootInfo;
 

@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    elf::LoadElfError,
     fs::FSServiceMessage,
     ids::{ProcessID, ServiceID},
     input::InputServiceMessage,
@@ -86,7 +87,8 @@ pub enum ServiceMessageType<'a> {
 
     // ELF BINARY | ARGS
     ElfLoader(&'a [u8], &'a [u8]),
-    ElfLoaderResp(ProcessID),
+    #[serde(borrow)]
+    ElfLoaderResp(Result<ProcessID, LoadElfError<'a>>),
 
     InterruptEvent,
 

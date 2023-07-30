@@ -233,7 +233,7 @@ pub extern "C" fn main() {
 
                 println!("SPAWNING...");
 
-                send_and_get_response_service_message(
+                let pid = send_and_get_response_service_message(
                     &ServiceMessage {
                         service_id: elf_loader_sid,
                         sender_pid: *CURRENT_PID,
@@ -247,6 +247,14 @@ pub extern "C" fn main() {
                     &mut buffer,
                 )
                 .unwrap();
+
+                match pid.message {
+                    ServiceMessageType::ElfLoaderResp(resp) => match resp {
+                        Ok(_) => (),
+                        Err(err) => println!("Error spawning: `{err}`"),
+                    },
+                    _ => todo!(),
+                }
 
                 // let pid = load_elf(&contents_buffer.data, args.as_bytes());
                 // while TASKMANAGER.lock().processes.contains_key(&pid) {

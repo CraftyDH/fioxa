@@ -66,7 +66,10 @@ pub fn main(info: *const BootInfo) -> ! {
 
     let boot_info = unsafe { core::ptr::read(info) };
 
-    let font = psf1::load_psf1_font(boot_info.font);
+    let Ok(font) = psf1::load_psf1_font(boot_info.font) else {
+        // We can't do anything because without a font printing is futile
+        loop {}
+    };
 
     gop::WRITER.lock().set_gop(boot_info.gop, font);
     // Test screen colours
@@ -182,7 +185,9 @@ pub fn main(info: *const BootInfo) -> ! {
     log!("Updating font...");
     // Set unicode mapping buffer (for more chacters than ascii)
     // And update font to use new mapping
-    WRITER.lock().update_font(load_psf1_font(boot_info.font));
+    WRITER
+        .lock()
+        .update_font(load_psf1_font(boot_info.font).unwrap());
 
     log!("Loading UEFI runtime table");
     let config_tables = runtime_table.config_table();

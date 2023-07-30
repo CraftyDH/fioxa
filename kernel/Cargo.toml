@@ -18,7 +18,7 @@ conquer-once = {version = "0.4", default-features = false}
 crossbeam-queue = {version = "0.3", default-features = false, features = ["alloc"]}
 acpi = "4.1"
 modular-bitfield = { version = "0.11", default-features = false}
-
+thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
 volatile = "0.3"
 
 [profile.dev]

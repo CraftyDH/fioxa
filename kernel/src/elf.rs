@@ -2,6 +2,7 @@ use core::cmp::{max, min};
 
 use alloc::vec::Vec;
 use kernel_userspace::{
+    elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
     ids::ProcessID,
     service::{
         register_public_service, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
@@ -23,62 +24,11 @@ use crate::{
     },
 };
 
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct Elf64Ehdr {
-    pub e_ident: [u8; 16],
-    pub e_type: u16,
-    pub e_machine: u16,
-    pub e_version: u32,
-    pub e_entry: u64,
-    pub e_phoff: u64,
-    pub e_shoff: u64,
-    pub e_flags: u32,
-    pub e_ehsize: u16,
-    pub e_phentsize: u16,
-    pub e_phnum: u16,
-    pub e_shentsize: u16,
-    pub e_shnum: u16,
-    pub e_shstrndx: u16,
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct Elf64Phdr {
-    pub p_type: u32,
-    pub p_flags: u32,
-    pub p_offset: u64,
-    pub p_vaddr: u64,
-    pub p_paddr: u64,
-    pub p_filesz: u64,
-    pub p_memsz: u64,
-    pub p_align: u64,
-}
-
-// For the ELF Header https://refspecs.linuxfoundation.org/elf/gabi4+/ch4.eheader.html
-const ELFCLASS64: u8 = 2; // 64 BIT
-const ELFDATA2LSB: u8 = 1; // LSB not MSB
-
-const ET_EXEC: u16 = 2; // Executable file
-const EM_X86_64: u16 = 62; // AMD x86-64 architecture
-
-// For the ELF Program Header https://refspecs.linuxbase.org/elf/gabi4+/ch5.pheader.html
-const PT_LOAD: u32 = 1; // A loadable segment
-
-pub fn load_elf(data: &[u8], args: &[u8]) -> ProcessID {
+pub fn load_elf<'a>(data: &'a [u8], args: &[u8]) -> Result<ProcessID, LoadElfError<'a>> {
     // Transpose the header as an elf header
     let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
-    // Ensure that all the header flags are suitable
-    if elf_header.e_ident[0..6] == [0x7F, b'E', b'L', b'F', ELFCLASS64, ELFDATA2LSB]
-        && elf_header.e_type == ET_EXEC
-        && elf_header.e_machine == EM_X86_64
-        && elf_header.e_version == 1
-    {
-        // println!("Elf Header Verified");
-    } else {
-        panic!("Elf Header Invalid")
-    }
+    validate_elf_header(elf_header)?;
 
     let headers = (elf_header.e_phoff..((elf_header.e_phnum * elf_header.e_phentsize).into()))
         .step_by(elf_header.e_phentsize.into());
@@ -98,11 +48,6 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> ProcessID {
     // The size from start to finish
     let size = size - base;
     let pages_count = size / 4096 + 1;
-
-    // println!(
-    //     "Elf size:{size}, base:{base}, entry: {}",
-    //     elf_header.e_entry
-    // );
 
     let mut proc: Process = Process::new(crate::scheduling::process::ProcessPrivilige::USER, args);
     let map = &mut proc.page_mapper;
@@ -144,7 +89,7 @@ pub fn load_elf(data: &[u8], args: &[u8]) -> ProcessID {
         PROCESSES.lock().insert(proc.pid, proc);
     });
     push_task_queue((pid, tid)).unwrap();
-    pid
+    Ok(pid)
 }
 
 pub fn elf_new_process_loader() {
@@ -170,7 +115,7 @@ pub fn elf_new_process_loader() {
                 println!("LOADING...");
 
                 let pid = load_elf(&tmp_prog_buffer, args);
-                ServiceMessageType::ElfLoaderResp(ProcessID(pid.0))
+                ServiceMessageType::ElfLoaderResp(pid)
             }
             _ => ServiceMessageType::UnknownCommand,
         };

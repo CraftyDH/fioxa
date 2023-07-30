@@ -3,9 +3,9 @@
 
 use alloc::vec::Vec;
 use kernel_userspace::{
-    net::Networking,
+    net::{ArpResponse, IPAddr, Networking, NotSameSubnetError},
     service::{generate_tracking_number, get_public_service_id, ServiceMessageType},
-    syscall::{self, exit, read_args, send_and_get_response_service_message, CURRENT_PID},
+    syscall::{exit, read_args, send_and_get_response_service_message, CURRENT_PID},
 };
 
 extern crate alloc;
@@ -28,20 +28,23 @@ pub extern "C" fn main() {
             let b = ip.next().unwrap();
             let c = ip.next().unwrap();
             let d = ip.next().unwrap();
-            let ip = lookup_ip(
+            match lookup_ip(IPAddr::V4(
                 a.parse().unwrap(),
                 b.parse().unwrap(),
                 c.parse().unwrap(),
                 d.parse().unwrap(),
-            );
-            println!("{a}.{b}.{c}.{d} = {ip:#X?}");
+            )) {
+                Ok(Some(mac)) => println!("{a}.{b}.{c}.{d} = {mac:#X?}"),
+                Ok(None) => println!("pending answer, try again later"),
+                Err(e) => println!("Failed to lookup arp because: {e}"),
+            }
         }
         _ => println!("Unknown cmd"),
     }
     exit()
 }
 
-pub fn lookup_ip(a: u8, b: u8, c: u8, d: u8) -> Option<u64> {
+pub fn lookup_ip(ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
     let mut buf = Vec::new();
     let networking = get_public_service_id("NETWORKING", &mut buf).unwrap();
     match send_and_get_response_service_message(
@@ -51,7 +54,7 @@ pub fn lookup_ip(a: u8, b: u8, c: u8, d: u8) -> Option<u64> {
             tracking_number: generate_tracking_number(),
             destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
             message: ServiceMessageType::Networking(kernel_userspace::net::Networking::ArpRequest(
-                a, b, c, d,
+                ip,
             )),
         },
         &mut buf,
@@ -59,14 +62,13 @@ pub fn lookup_ip(a: u8, b: u8, c: u8, d: u8) -> Option<u64> {
     .unwrap()
     .message
     {
-        ServiceMessageType::Networking(Networking::ArpResponse(resp)) => {
-            if let Some(_) = resp {
-                return resp;
-            }
-        }
+        ServiceMessageType::Networking(Networking::ArpResponse(resp)) => match resp {
+            ArpResponse::Mac(mac) => return Ok(Some(mac)),
+            ArpResponse::Pending(pend) => pend?,
+        },
         _ => unimplemented!(),
     }
-    None
+    Ok(None)
 }
 
 #[panic_handler]

@@ -1,5 +1,7 @@
 use core::{mem::size_of, slice};
 
+use thiserror::Error;
+
 use crate::paging::virt_addr_for_phys;
 
 pub const PSF1_MAGIC: [u8; 2] = [0x36, 0x04];
@@ -30,12 +32,16 @@ pub const PSF1_FONT_NULL: PSF1Font = PSF1Font {
 
 const PSF1_HEADER_SIZE: usize = size_of::<PSF1FontHeader>();
 
-pub fn load_psf1_font(file: &[u8]) -> PSF1Font {
+#[derive(Debug, Error)]
+#[error("psf1 font invalid header, expected ({PSF1_MAGIC:?}), found ({0:?})")]
+pub struct LoadFontInvMagic([u8; 2]);
+
+pub fn load_psf1_font(file: &[u8]) -> Result<PSF1Font, LoadFontInvMagic> {
     let psf1_header =
         unsafe { &*(virt_addr_for_phys(file.as_ptr() as u64) as *const PSF1FontHeader) };
 
     if psf1_header.magic != PSF1_MAGIC {
-        panic!("PSF1 FONT not valid");
+        return Err(LoadFontInvMagic(psf1_header.magic));
     }
 
     let mut glyph_buffer_size = (psf1_header.charsize as usize) * 256;
@@ -60,9 +66,9 @@ pub fn load_psf1_font(file: &[u8]) -> PSF1Font {
         )
     };
 
-    PSF1Font {
+    Ok(PSF1Font {
         psf1_header,
         glyph_buffer: psf1_font,
         unicode_buffer: unicode_table_buffer,
-    }
+    })
 }

@@ -6,7 +6,7 @@ use core::{
 use alloc::vec::Vec;
 use kernel_userspace::{
     ids::ServiceID,
-    net::Networking,
+    net::{ArpResponse, IPAddr, Networking, NotSameSubnetError},
     service::{
         generate_tracking_number, get_public_service_id, register_public_service,
         SendServiceMessageDest, ServiceMessage, ServiceMessageType, ServiceTrackingNumber,
@@ -23,12 +23,9 @@ use x86_64::instructions::interrupts::without_interrupts;
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     net::arp::{ARP, ARP_TABLE},
-    syscall::syssleep,
 };
 
 use super::arp::ARPEth;
-
-// pub static RECEIVED_FRAMES_QUEUE: SegQueue<EthernetFrame> = SegQueue::new();
 
 #[bitfield]
 #[derive(Clone, Copy)]
@@ -73,48 +70,12 @@ pub fn handle_ethernet_frame(frame: EthernetFrame) {
         });
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum IPAddr {
-    V4(u8, u8, u8, u8),
-}
-
-impl IPAddr {
-    pub fn ipv4_addr_from_net(ip: u32) -> Self {
-        Self::V4(
-            ip as u8,
-            (ip >> 8) as u8,
-            (ip >> 16) as u8,
-            (ip >> 24) as u8,
-        )
-    }
-
-    pub fn as_net_be(&self) -> u32 {
-        match self {
-            Self::V4(a, b, c, d) => {
-                *a as u32 | (*b as u32) << 8 | (*c as u32) << 16 | (*d as u32) << 24
-            }
-        }
-    }
-
-    pub fn same_subnet(&self, ip2: &IPAddr, subnet: u32) -> bool {
-        match (self, ip2) {
-            (Self::V4(a1, b1, c1, d1), Self::V4(a2, b2, c2, d2)) => {
-                let ip1 = (*a1 as u32) << 24 | (*b1 as u32) << 16 | (*c1 as u32) << 8 | *d1 as u32;
-                let ip2 = (*a2 as u32) << 24 | (*b2 as u32) << 16 | (*c2 as u32) << 8 | *d2 as u32;
-                (ip1 & subnet) == (ip2 & subnet)
-            }
-        }
-    }
-}
 
 const IP_ADDR: IPAddr = IPAddr::V4(10, 0, 2, 15);
 const SUBNET: u32 = 0xFF0000;
 
-pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) -> Option<()> {
-    if !IP_ADDR.same_subnet(&ip, SUBNET) {
-        println!("Not in same subnet: {:?}->{:?}", IP_ADDR, ip);
-        return None;
-    }
+pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) -> Result<(), NotSameSubnetError> {
+    IP_ADDR.same_subnet(&ip, SUBNET)?;
     let mut arp = ARP::new();
     arp.set_hardware_type(1u16.to_be()); // Ethernet
     arp.set_protocol(0x0800u16.to_be()); // ipv4
@@ -148,7 +109,7 @@ pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) -> Option<()> {
         &mut buffer,
     )
     .unwrap();
-    Some(())
+    Ok(())
 }
 
 pub fn userspace_networking_main() {
@@ -189,15 +150,15 @@ pub fn userspace_networking_main() {
         let query = receive_service_message_blocking(sid, &mut buf).unwrap();
         let resp = match query.message {
             ServiceMessageType::Networking(net) => match net {
-                Networking::ArpRequest(a, b, c, d) => {
-                    let ip = IPAddr::V4(a, b, c, d);
+                Networking::ArpRequest(ip) => {
                     let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
 
-                    if mac_addr.is_none() {
-                        send_arp(pcnet, mac, ip);
-                    }
+                    let resp = match mac_addr {
+                        Some(mac) => ArpResponse::Mac(mac),
+                        None => ArpResponse::Pending(send_arp(pcnet, mac, ip)),
+                    };
 
-                    ServiceMessageType::Networking(Networking::ArpResponse(mac_addr))
+                    ServiceMessageType::Networking(Networking::ArpResponse(resp))
                 }
                 _ => ServiceMessageType::UnknownCommand,
             },
@@ -236,36 +197,4 @@ pub fn monitor_packets(pcnet: ServiceID) {
             _ => unimplemented!("{message:?}"),
         }
     }
-}
-
-pub fn lookup_ip(a: u8, b: u8, c: u8, d: u8) -> Option<u64> {
-    let mut buf = Vec::new();
-    let networking = get_public_service_id("NETWORKING", &mut buf).unwrap();
-    for _ in 0..5 {
-        match send_and_get_response_service_message(
-            &kernel_userspace::service::ServiceMessage {
-                service_id: networking,
-                sender_pid: CPULocalStorageRW::get_current_pid(),
-                tracking_number: generate_tracking_number(),
-                destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-                message: ServiceMessageType::Networking(
-                    kernel_userspace::net::Networking::ArpRequest(a, b, c, d),
-                ),
-            },
-            &mut buf,
-        )
-        .unwrap()
-        .message
-        {
-            ServiceMessageType::Networking(Networking::ArpResponse(resp)) => {
-                if let Some(_) = resp {
-                    return resp;
-                }
-            }
-            _ => unimplemented!(),
-        }
-
-        syssleep(1000)
-    }
-    None
 }
