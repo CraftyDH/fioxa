@@ -110,14 +110,17 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
         buffer
     };
 
-    let (runtime_table, mmap) = system_table
-        .exit_boot_services(image_handle, memory_map_buffer)
+    let mut mmap = boot_services.memory_map(memory_map_buffer).unwrap();
+
+    mmap.sort();
+
+    boot_info.mmap_len = mmap.entries().len();
+
+    let (runtime_table, _mmap) = system_table
+        .exit_boot_services();
         // No point printing anything since once we get the GOP buffer the UEFI sdout stops working
-        .unwrap();
 
     boot_info.uefi_runtime_table = runtime_table.get_current_system_table_addr();
-
-    boot_info.mmap_len = mmap.len();
 
     unsafe {
         core::arch::asm!("mov rsp, {}; push 0; jmp {}", in(reg) stack, in (reg) entry_point, in("rdi") boot_info as *const BootInfo)

@@ -50,8 +50,8 @@ use kernel_userspace::syscall::{
     exit, get_pid, receive_service_message_blocking, send_service_message, service_create,
     spawn_process, spawn_thread, yield_now,
 };
-use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
-use uefi::table::{Runtime, SystemTable};
+use bootloader::uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
+use bootloader::uefi::table::{Runtime, SystemTable};
 
 // #[no_mangle]
 entry_point!(main);

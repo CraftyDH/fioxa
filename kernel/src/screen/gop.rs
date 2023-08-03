@@ -237,7 +237,7 @@ pub static WRITER: Lazy<Mutex<Writer>> = Lazy::new(|| {
             horizonal: 0,
             vertical: 0,
             stride: 0,
-            pixel_format: uefi::proto::console::gop::PixelFormat::Rgb,
+            pixel_format: bootloader::uefi::proto::console::gop::PixelFormat::Rgb,
         },
         font: PSF1_FONT_NULL,
         unicode_table: None,

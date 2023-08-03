@@ -9,7 +9,6 @@ edition = "2021"
 bootloader = {path = "../bootloader"}
 kernel_userspace = {path = "../kernel_userspace"}
 input = {path = "../input"}
-uefi = "0.19"
 
 x86_64 = "0.14"
 spin = "0.9"

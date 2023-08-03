@@ -1,4 +1,4 @@
-use uefi::table::boot::MemoryDescriptor;
+use bootloader::uefi::table::boot::MemoryDescriptor;
 
 pub fn get_memory_size_pages(mmap: MemoryMapIter) -> u64 {
     let mut memory_size = 0;
