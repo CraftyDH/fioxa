@@ -69,10 +69,10 @@ pub struct HBAPRDTEntry {
     interrupt_on_completion: bool,
 }
 
-const HBA_PxCMD_ST: u32 = 0x0001;
-const HBA_PxCMD_FRE: u32 = 0x0010;
-const HBA_PxCMD_FR: u32 = 0x4000;
-const HBA_PxCMD_CR: u32 = 0x8000;
+const HBA_PX_CMD_ST: u32 = 0x0001;
+const HBA_PX_CMD_FRE: u32 = 0x0010;
+const HBA_PX_CMD_FR: u32 = 0x4000;
+const HBA_PX_CMD_CR: u32 = 0x8000;
 
 #[repr(C)]
 pub struct HBACommandTable {

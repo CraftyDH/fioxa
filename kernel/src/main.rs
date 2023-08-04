@@ -46,7 +46,7 @@ use bootloader::uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
 use bootloader::uefi::table::{Runtime, SystemTable};
 use kernel_userspace::service::{
     generate_tracking_number, get_public_service_id, register_public_service,
-    SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+    SendServiceMessageDest, ServiceMessage,
 };
 use kernel_userspace::syscall::{
     exit, get_pid, receive_service_message_blocking, send_service_message, service_create,
@@ -302,13 +302,13 @@ fn after_boot() {
         let elf = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
         let pid = get_pid();
 
-        send_service_message(
+        send_service_message::<(&[u8], &[u8])>(
             &ServiceMessage {
                 service_id: elf,
                 sender_pid: pid,
                 tracking_number: generate_tracking_number(),
                 destination: SendServiceMessageDest::ToProvider,
-                message: ServiceMessageType::ElfLoader(TERMINAL_ELF, &[]),
+                message: (TERMINAL_ELF, &[]),
             },
             &mut buffer,
         )
@@ -323,7 +323,8 @@ fn after_boot() {
             let mut buffer = Vec::new();
 
             for i in 0.. {
-                receive_service_message_blocking(sid, &mut buffer).unwrap();
+                let _: ServiceMessage<()> =
+                    receive_service_message_blocking(sid, &mut buffer).unwrap();
                 if i % 10000 == 0 {
                     println!("ACCEPTER: {i}")
                 }

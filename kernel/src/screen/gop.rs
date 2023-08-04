@@ -6,7 +6,7 @@ use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
 use kernel_userspace::service::{
     generate_tracking_number, register_public_service, SendError, SendServiceMessageDest,
-    ServiceMessage, ServiceMessageType,
+    ServiceMessage, Stdout,
 };
 use kernel_userspace::syscall::{get_pid, send_service_message, service_create, spawn_thread};
 
@@ -300,17 +300,14 @@ pub fn monitor_stdout_task() {
         let msg =
             kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buffer).unwrap();
 
-        let m = match msg.message {
-            ServiceMessageType::Stdout(str) => {
+        match msg.message {
+            Stdout::Str(str) => {
                 print!("{str}");
-                ServiceMessageType::Ack
             }
-            ServiceMessageType::StdoutChar(chr) => {
+            Stdout::Char(chr) => {
                 print!("{chr}");
-                ServiceMessageType::Ack
             }
-            _ => ServiceMessageType::UnknownCommand,
-        };
+        }
 
         match send_service_message(
             &ServiceMessage {
@@ -318,7 +315,7 @@ pub fn monitor_stdout_task() {
                 sender_pid: pid,
                 tracking_number: generate_tracking_number(),
                 destination: SendServiceMessageDest::ToProcess(msg.sender_pid),
-                message: m,
+                message: (),
             },
             &mut buffer,
         ) {

@@ -12,3 +12,7 @@ log = "0.4"
 spin = "0.9"
 x86_64 = "0.14"
 modular-bitfield = { version = "0.11", default-features = false}
+
+[profile.release]
+# TODO: fix crash with optimisations
+opt-level = 0

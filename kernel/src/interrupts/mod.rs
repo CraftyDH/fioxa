@@ -4,9 +4,7 @@ use alloc::vec::Vec;
 use conquer_once::spin::Lazy;
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
-    service::{
-        generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
-    },
+    service::{generate_tracking_number, SendServiceMessageDest, ServiceMessage},
     syscall::send_service_message,
 };
 use spin::Mutex;
@@ -208,7 +206,7 @@ fn send_int_message(service: ServiceID, send_buffer: &mut Vec<u8>) {
             sender_pid: CPULocalStorageRW::get_current_pid(),
             tracking_number: generate_tracking_number(),
             destination: SendServiceMessageDest::ToSubscribers,
-            message: ServiceMessageType::InterruptEvent,
+            message: (),
         },
         send_buffer,
     )

@@ -116,9 +116,8 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
 
     boot_info.mmap_len = mmap.entries().len();
 
-    let (runtime_table, _mmap) = system_table
-        .exit_boot_services();
-        // No point printing anything since once we get the GOP buffer the UEFI sdout stops working
+    let (runtime_table, _mmap) = system_table.exit_boot_services();
+    // No point printing anything since once we get the GOP buffer the UEFI sdout stops working
 
     boot_info.uefi_runtime_table = runtime_table.get_current_system_table_addr();
 

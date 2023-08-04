@@ -5,7 +5,6 @@ use kernel_userspace::{
     input::InputServiceMessage,
     service::{
         generate_tracking_number, register_public_service, SendServiceMessageDest, ServiceMessage,
-        ServiceMessageType,
     },
     syscall::{get_pid, send_service_message, service_create},
 };
@@ -217,7 +216,7 @@ impl Mouse {
                 sender_pid: self.current_pid,
                 tracking_number: generate_tracking_number(),
                 destination: SendServiceMessageDest::ToSubscribers,
-                message: ServiceMessageType::Input(InputServiceMessage::MouseEvent(packet)),
+                message: InputServiceMessage::MouseEvent(packet),
             },
             &mut self.send_buffer,
         )

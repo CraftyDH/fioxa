@@ -5,38 +5,32 @@ use kernel_userspace::{
     ids::ServiceID,
     service::{
         generate_tracking_number, get_public_service_id, SendServiceMessageDest, ServiceMessage,
-        ServiceMessageType,
+        Stdout,
     },
     syscall::{send_service_message, try_receive_service_message, yield_now, CURRENT_PID},
 };
 
-use spin::{Mutex, Lazy};
+use spin::{Lazy, Mutex};
 
 pub struct Writer {
     pub pending_response: u8,
-    message_buffer: Vec<u8>
+    message_buffer: Vec<u8>,
 }
 
 pub static WRITER: Mutex<Writer> = Mutex::new(Writer {
     pending_response: 0,
-    message_buffer: Vec::new()
+    message_buffer: Vec::new(),
 });
 
-pub static STDOUT: Lazy<ServiceID> = Lazy::new(|| {
-    get_public_service_id("STDOUT", &mut Vec::new()).unwrap()
-});
+pub static STDOUT: Lazy<ServiceID> =
+    Lazy::new(|| get_public_service_id("STDOUT", &mut Vec::new()).unwrap());
 
 impl Writer {
     // Poll writes results later so that we can send multiple packets and not require as many round trips to send
     pub fn poll_errors(&mut self) {
         loop {
-            while let Some(msg) = try_receive_service_message(*STDOUT, &mut self.message_buffer) {
-                match msg.unwrap().message {
-                    ServiceMessageType::Ack => {
-                        self.pending_response -= 1;
-                    }
-                    _ => todo!(),
-                }
+            while try_receive_service_message::<()>(*STDOUT, &mut self.message_buffer).is_some() {
+                self.pending_response -= 1;
             }
 
             if self.pending_response > 100 {
@@ -49,26 +43,32 @@ impl Writer {
     pub fn write_byte(&mut self, chr: char) {
         self.poll_errors();
         self.pending_response += 1;
-        send_service_message(&ServiceMessage {
-            service_id: *STDOUT,
-            sender_pid: *CURRENT_PID,
-            tracking_number: generate_tracking_number(),
-            destination: SendServiceMessageDest::ToProvider,
-            message: ServiceMessageType::StdoutChar(chr),
-        }, &mut self.message_buffer)
+        send_service_message(
+            &ServiceMessage {
+                service_id: *STDOUT,
+                sender_pid: *CURRENT_PID,
+                tracking_number: generate_tracking_number(),
+                destination: SendServiceMessageDest::ToProvider,
+                message: Stdout::Char(chr),
+            },
+            &mut self.message_buffer,
+        )
         .unwrap();
     }
 
     pub fn write_string(&mut self, s: &str) {
         self.poll_errors();
         self.pending_response += 1;
-        send_service_message(&ServiceMessage {
-            service_id: *STDOUT,
-            sender_pid: *CURRENT_PID,
-            tracking_number: generate_tracking_number(),
-            destination: SendServiceMessageDest::ToProvider,
-            message: ServiceMessageType::Stdout(s),
-        }, &mut self.message_buffer)
+        send_service_message(
+            &ServiceMessage {
+                service_id: *STDOUT,
+                sender_pid: *CURRENT_PID,
+                tracking_number: generate_tracking_number(),
+                destination: SendServiceMessageDest::ToProvider,
+                message: Stdout::Str(s),
+            },
+            &mut self.message_buffer,
+        )
         .unwrap();
     }
 }

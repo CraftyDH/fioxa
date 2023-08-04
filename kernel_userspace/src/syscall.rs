@@ -4,6 +4,7 @@ use alloc::{
     vec::{self, Vec},
 };
 use conquer_once::spin::Lazy;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     ids::{ProcessID, ServiceID},
@@ -140,7 +141,10 @@ pub fn unmmap_page(vmem: usize) {
     unsafe { syscall!(UNMMAP_PAGE, vmem) };
 }
 
-pub fn send_service_message(msg: &ServiceMessage, buffer: &mut Vec<u8>) -> Result<(), SendError> {
+pub fn send_service_message<T: Serialize>(
+    msg: &ServiceMessage<T>,
+    buffer: &mut Vec<u8>,
+) -> Result<(), SendError> {
     // Calulate how big to make the buffer
     let size =
         postcard::serialize_with_flavor(&msg, postcard::ser_flavors::Size::default()).unwrap();
@@ -157,11 +161,13 @@ pub fn send_service_message(msg: &ServiceMessage, buffer: &mut Vec<u8>) -> Resul
     SendError::try_decode(error)
 }
 
-pub fn try_receive_service_message_tracking(
+pub fn try_receive_service_message_tracking<'a, R: Deserialize<'a>>(
     id: ServiceID,
     tracking_number: ServiceTrackingNumber,
-    buffer: &mut Vec<u8>,
-) -> Option<Result<ServiceMessage, postcard::Error>> {
+    buffer: &'a mut Vec<u8>,
+) -> Option<Result<ServiceMessage<R>, postcard::Error>>
+where
+{
     let size = fetch_service_message(id, tracking_number)?;
     buffer.reserve(size);
     unsafe {
@@ -170,18 +176,24 @@ pub fn try_receive_service_message_tracking(
     Some(get_service_message(buffer))
 }
 
-pub fn try_receive_service_message(
+pub fn try_receive_service_message<'a, R>(
     id: ServiceID,
-    buffer: &mut Vec<u8>,
-) -> Option<Result<ServiceMessage, postcard::Error>> {
+    buffer: &'a mut Vec<u8>,
+) -> Option<Result<ServiceMessage<R>, postcard::Error>>
+where
+    R: Deserialize<'a>,
+{
     try_receive_service_message_tracking(id, ServiceTrackingNumber(u64::MAX), buffer)
 }
 
-pub fn receive_service_message_blocking_tracking(
+pub fn receive_service_message_blocking_tracking<'a, R>(
     id: ServiceID,
     tracking_number: ServiceTrackingNumber,
-    buffer: &mut Vec<u8>,
-) -> Result<ServiceMessage, postcard::Error> {
+    buffer: &'a mut Vec<u8>,
+) -> Result<ServiceMessage<R>, postcard::Error>
+where
+    R: Deserialize<'a>,
+{
     let size = fetch_service_message_blocking(id, tracking_number);
     buffer.reserve(size);
     unsafe {
@@ -190,10 +202,10 @@ pub fn receive_service_message_blocking_tracking(
     get_service_message(buffer)
 }
 
-pub fn receive_service_message_blocking(
+pub fn receive_service_message_blocking<'a, R: Deserialize<'a>>(
     id: ServiceID,
-    buffer: &mut Vec<u8>,
-) -> Result<ServiceMessage, postcard::Error> {
+    buffer: &'a mut Vec<u8>,
+) -> Result<ServiceMessage<R>, postcard::Error> {
     receive_service_message_blocking_tracking(id, ServiceTrackingNumber(u64::MAX), buffer)
 }
 
@@ -241,7 +253,10 @@ pub fn fetch_service_message_blocking(
     }
 }
 
-pub fn get_service_message(buf: &mut [u8]) -> Result<ServiceMessage, postcard::Error> {
+pub fn get_service_message<'a, T>(buf: &'a mut [u8]) -> Result<ServiceMessage<T>, postcard::Error>
+where
+    T: Deserialize<'a>,
+{
     unsafe {
         let result: usize;
         syscall!(SERVICE, SERVICE_GET, buf.as_mut_ptr() as usize, buf.len() => result);
@@ -254,10 +269,14 @@ pub fn get_service_message(buf: &mut [u8]) -> Result<ServiceMessage, postcard::E
     }
 }
 
-pub fn send_and_get_response_service_message<'a>(
-    msg: &ServiceMessage,
+pub fn send_and_get_response_service_message<'a, T, R>(
+    msg: &ServiceMessage<T>,
     buffer: &'a mut Vec<u8>,
-) -> Result<ServiceMessage<'a>, SendError> {
+) -> Result<ServiceMessage<R>, SendError>
+where
+    T: Serialize,
+    R: Deserialize<'a>,
+{
     let id = msg.service_id;
     let tracking = msg.tracking_number;
     send_service_message(msg, buffer)?;

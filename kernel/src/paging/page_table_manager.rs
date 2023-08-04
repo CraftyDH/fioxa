@@ -75,10 +75,7 @@ impl<S: PageSize> Copy for Page<S> {}
 
 impl<S: PageSize> Clone for Page<S> {
     fn clone(&self) -> Self {
-        Self {
-            address: self.address,
-            _size: core::marker::PhantomData,
-        }
+        *self
     }
 }
 

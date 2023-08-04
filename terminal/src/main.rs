@@ -2,11 +2,10 @@
 #![no_main]
 
 use kernel_userspace::{
+    elf::LoadElfError,
     fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
-    ids::ServiceID,
-    service::{
-        generate_tracking_number, get_public_service_id, ServiceMessage, ServiceMessageType,
-    },
+    ids::{ProcessID, ServiceID},
+    service::{generate_tracking_number, get_public_service_id, ServiceMessage},
     syscall::{
         exit, receive_service_message_blocking, send_and_get_response_service_message,
         service_subscribe, CURRENT_PID,
@@ -64,32 +63,32 @@ impl Iterator for KBInputDecoder {
                 receive_service_message_blocking(self.service, &mut self.receive_buffer).unwrap();
 
             match msg.message {
-                ServiceMessageType::Input(
-                    kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code),
-                ) => match scan_code {
-                    KeyboardEvent::Up(VirtualKeyCode::Modifier(key)) => match key {
-                        Modifier::LeftShift => self.lshift = false,
-                        Modifier::RightShift => self.rshift = false,
-                        _ => {}
-                    },
-                    KeyboardEvent::Up(_) => {}
-                    KeyboardEvent::Down(VirtualKeyCode::Modifier(key)) => match key {
-                        Modifier::LeftShift => self.lshift = true,
-                        Modifier::RightShift => self.rshift = true,
-                        Modifier::CapsLock => self.caps_lock = !self.caps_lock,
-                        Modifier::NumLock => self.num_lock = !self.num_lock,
-                        _ => {}
-                    },
-                    KeyboardEvent::Down(letter) => {
-                        return Some(input::keyboard::us_keyboard::USKeymap::get_unicode(
-                            letter,
-                            self.lshift,
-                            self.rshift,
-                            self.caps_lock,
-                            self.num_lock,
-                        ));
+                kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code) => {
+                    match scan_code {
+                        KeyboardEvent::Up(VirtualKeyCode::Modifier(key)) => match key {
+                            Modifier::LeftShift => self.lshift = false,
+                            Modifier::RightShift => self.rshift = false,
+                            _ => {}
+                        },
+                        KeyboardEvent::Up(_) => {}
+                        KeyboardEvent::Down(VirtualKeyCode::Modifier(key)) => match key {
+                            Modifier::LeftShift => self.lshift = true,
+                            Modifier::RightShift => self.rshift = true,
+                            Modifier::CapsLock => self.caps_lock = !self.caps_lock,
+                            Modifier::NumLock => self.num_lock = !self.num_lock,
+                            _ => {}
+                        },
+                        KeyboardEvent::Down(letter) => {
+                            return Some(input::keyboard::us_keyboard::USKeymap::get_unicode(
+                                letter,
+                                self.lshift,
+                                self.rshift,
+                                self.caps_lock,
+                                self.num_lock,
+                            ));
+                        }
                     }
-                },
+                }
                 _ => todo!(),
             }
         }
@@ -233,27 +232,23 @@ pub extern "C" fn main() {
 
                 println!("SPAWNING...");
 
-                let pid = send_and_get_response_service_message(
-                    &ServiceMessage {
-                        service_id: elf_loader_sid,
-                        sender_pid: *CURRENT_PID,
-                        tracking_number: generate_tracking_number(),
-                        destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-                        message: kernel_userspace::service::ServiceMessageType::ElfLoader(
-                            contents,
-                            args.as_bytes(),
-                        ),
-                    },
-                    &mut buffer,
-                )
-                .unwrap();
+                let pid: ServiceMessage<Result<ProcessID, LoadElfError<'_>>> =
+                    send_and_get_response_service_message(
+                        &ServiceMessage {
+                            service_id: elf_loader_sid,
+                            sender_pid: *CURRENT_PID,
+                            tracking_number: generate_tracking_number(),
+                            destination:
+                                kernel_userspace::service::SendServiceMessageDest::ToProvider,
+                            message: (contents, args.as_bytes()),
+                        },
+                        &mut buffer,
+                    )
+                    .unwrap();
 
                 match pid.message {
-                    ServiceMessageType::ElfLoaderResp(resp) => match resp {
-                        Ok(_) => (),
-                        Err(err) => println!("Error spawning: `{err}`"),
-                    },
-                    _ => todo!(),
+                    Ok(_) => (),
+                    Err(err) => println!("Error spawning: `{err}`"),
                 }
 
                 // let pid = load_elf(&contents_buffer.data, args.as_bytes());

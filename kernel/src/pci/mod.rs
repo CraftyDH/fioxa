@@ -10,7 +10,7 @@ use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 
 use kernel_userspace::{
     ids::ServiceID,
-    service::{ServiceMessage, ServiceMessageType},
+    service::ServiceMessage,
     syscall::{send_service_message, spawn_process, spawn_thread},
 };
 use spin::Mutex;
@@ -271,20 +271,14 @@ fn pci_dev_handler(
         let req =
             kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buf).unwrap();
         let resp = match req.message {
-            ServiceMessageType::PCIDev(kernel_userspace::pci::PCIDevCmd::Read(offset))
-                if offset <= 256 =>
-            unsafe {
-                ServiceMessageType::PCIDev(kernel_userspace::pci::PCIDevCmd::Data(
-                    device.read_u32(offset),
-                ))
+            kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
+                kernel_userspace::pci::PCIDevCmd::Data(device.read_u32(offset))
             },
-            ServiceMessageType::PCIDev(kernel_userspace::pci::PCIDevCmd::Write(offset, data))
-                if offset <= 256 =>
-            unsafe {
+            kernel_userspace::pci::PCIDevCmd::Write(offset, data) if offset <= 256 => unsafe {
                 device.write_u32(offset, data);
-                ServiceMessageType::Ack
+                kernel_userspace::pci::PCIDevCmd::Ack
             },
-            _ => ServiceMessageType::UnknownCommand,
+            _ => kernel_userspace::pci::PCIDevCmd::UnknownCommand,
         };
         send_service_message(
             &ServiceMessage {

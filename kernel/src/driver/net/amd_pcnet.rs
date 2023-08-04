@@ -18,11 +18,10 @@ use crate::{
 };
 use kernel_userspace::{
     ids::ServiceID,
-    net::PhysicalNet,
+    net::{PhysicalNet, PhysicalNetResp},
     pci::PCIDevice,
     service::{
         get_public_service_id, register_public_service, SendServiceMessageDest, ServiceMessage,
-        ServiceMessageType,
     },
     syscall::{
         read_args_raw, receive_service_message_blocking, send_service_message, service_create,
@@ -94,13 +93,8 @@ pub fn amd_pcnet_main() {
     spawn_thread(move || {
         let mut buffer = Vec::new();
         loop {
-            let message = receive_service_message_blocking(pci_event, &mut buffer).unwrap();
-            match message.message {
-                kernel_userspace::service::ServiceMessageType::InterruptEvent => {
-                    pcnet.lock().interrupt_handler()
-                }
-                _ => unimplemented!(),
-            }
+            receive_service_message_blocking::<()>(pci_event, &mut buffer).unwrap();
+            pcnet.lock().interrupt_handler()
         }
     });
 
@@ -110,20 +104,16 @@ pub fn amd_pcnet_main() {
             let query = receive_service_message_blocking(*PCNET_SID, &mut buffer).unwrap();
 
             let resp = match query.message {
-                ServiceMessageType::PhysicalNet(net) => match net {
-                    PhysicalNet::MacAddrGet => ServiceMessageType::PhysicalNet(
-                        PhysicalNet::MacAddrResp(pcnet2.lock().read_mac_addr()),
-                    ),
-                    PhysicalNet::SendPacket(packet) => {
-                        // Keep trying to send
-                        while pcnet2.lock().send_packet(packet).is_err() {
-                            yield_now()
-                        }
-                        ServiceMessageType::Ack
+                PhysicalNet::MacAddrGet => {
+                    PhysicalNetResp::MacAddrResp(pcnet2.lock().read_mac_addr())
+                }
+                PhysicalNet::SendPacket(packet) => {
+                    // Keep trying to send
+                    while pcnet2.lock().send_packet(packet).is_err() {
+                        yield_now()
                     }
-                    _ => ServiceMessageType::UnknownCommand,
-                },
-                _ => ServiceMessageType::UnknownCommand,
+                    PhysicalNetResp::Ack
+                }
             };
 
             send_service_message(
@@ -425,9 +415,7 @@ impl PCNET<'_> {
                             tracking_number: kernel_userspace::service::ServiceTrackingNumber(0),
                             destination:
                                 kernel_userspace::service::SendServiceMessageDest::ToSubscribers,
-                            message: ServiceMessageType::PhysicalNet(PhysicalNet::ReceivedPacket(
-                                packet,
-                            )),
+                            message: PhysicalNetResp::ReceivedPacket(packet),
                         },
                         &mut Vec::new(),
                     )

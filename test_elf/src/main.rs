@@ -26,7 +26,7 @@ pub extern "C" fn main() {
                 sender_pid: *CURRENT_PID,
                 tracking_number: generate_tracking_number(),
                 destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-                message: kernel_userspace::service::ServiceMessageType::Ack,
+                message: (),
             },
             &mut buffer,
         )

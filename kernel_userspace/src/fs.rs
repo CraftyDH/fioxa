@@ -16,15 +16,21 @@ use crate::{
 pub enum FSServiceMessage<'a> {
     // DiskID | Path
     RunStat(usize, &'a str),
-
-    StatResponse(StatResponse<'a>),
     ReadRequest(ReadRequest),
     ReadFullFileRequest(ReadFullFileRequest),
+
+    GetDisksRequest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FSServiceMessageResp<'a> {
+    ExpectedQuestion,
+
+    StatResponse(StatResponse<'a>),
 
     #[serde(borrow)]
     ReadResponse(Option<&'a [u8]>),
 
-    GetDisksRequest,
     GetDisksResponse(Box<[u64]>),
 }
 
@@ -95,14 +101,14 @@ pub fn stat<'a>(
             sender_pid: *CURRENT_PID,
             tracking_number: generate_tracking_number(),
             destination: crate::service::SendServiceMessageDest::ToProvider,
-            message: crate::service::ServiceMessageType::FS(FSServiceMessage::RunStat(disk, file)),
+            message: FSServiceMessage::RunStat(disk, file),
         },
         buffer,
     )
     .unwrap();
 
     match resp.message {
-        crate::service::ServiceMessageType::FS(FSServiceMessage::StatResponse(resp)) => resp,
+        FSServiceMessageResp::StatResponse(resp) => resp,
         _ => todo!(),
     }
 }
@@ -120,20 +126,18 @@ pub fn read_file_sector(
             sender_pid: *CURRENT_PID,
             tracking_number: generate_tracking_number(),
             destination: crate::service::SendServiceMessageDest::ToProvider,
-            message: crate::service::ServiceMessageType::FS(FSServiceMessage::ReadRequest(
-                ReadRequest {
-                    disk_id: disk,
-                    node_id: node,
-                    sector,
-                },
-            )),
+            message: FSServiceMessage::ReadRequest(ReadRequest {
+                disk_id: disk,
+                node_id: node,
+                sector,
+            }),
         },
         buffer,
     )
     .unwrap();
 
     match resp.message {
-        crate::service::ServiceMessageType::FS(FSServiceMessage::ReadResponse(data)) => data,
+        FSServiceMessageResp::ReadResponse(data) => data,
         _ => todo!(),
     }
 }
@@ -150,19 +154,17 @@ pub fn read_full_file(
             sender_pid: *CURRENT_PID,
             tracking_number: generate_tracking_number(),
             destination: crate::service::SendServiceMessageDest::ToProvider,
-            message: crate::service::ServiceMessageType::FS(FSServiceMessage::ReadFullFileRequest(
-                ReadFullFileRequest {
-                    disk_id: disk,
-                    node_id: node,
-                },
-            )),
+            message: FSServiceMessage::ReadFullFileRequest(ReadFullFileRequest {
+                disk_id: disk,
+                node_id: node,
+            }),
         },
         buffer,
     )
     .unwrap();
 
     match resp.message {
-        crate::service::ServiceMessageType::FS(FSServiceMessage::ReadResponse(data)) => data,
+        FSServiceMessageResp::ReadResponse(data) => data,
         _ => todo!(),
     }
 }
@@ -174,14 +176,14 @@ pub fn get_disks(fs_sid: ServiceID, buffer: &mut Vec<u8>) -> Box<[u64]> {
             sender_pid: *CURRENT_PID,
             tracking_number: generate_tracking_number(),
             destination: crate::service::SendServiceMessageDest::ToProvider,
-            message: crate::service::ServiceMessageType::FS(FSServiceMessage::GetDisksRequest),
+            message: FSServiceMessage::GetDisksRequest,
         },
         buffer,
     )
     .unwrap();
 
     match resp.message {
-        crate::service::ServiceMessageType::FS(FSServiceMessage::GetDisksResponse(d)) => d,
+        FSServiceMessageResp::GetDisksResponse(d) => d,
         _ => todo!(),
     }
 }

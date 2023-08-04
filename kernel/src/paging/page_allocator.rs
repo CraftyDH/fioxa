@@ -7,8 +7,8 @@ use core::{
 
 use bit_field::{BitArray, BitField};
 
-use spin::mutex::Mutex;
 use bootloader::uefi::table::boot::MemoryType;
+use spin::mutex::Mutex;
 
 use crate::{memory::MemoryMapIter, scheduling::without_context_switch};
 

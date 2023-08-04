@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
-    service::get_public_service_id,
+    service::{get_public_service_id, ServiceMessage},
     syscall::{receive_service_message_blocking, service_subscribe, spawn_thread},
 };
 use spin::Mutex;
@@ -39,24 +39,16 @@ pub fn main() {
     spawn_thread(move || loop {
         let mut buffer = Vec::new();
         loop {
-            let message = receive_service_message_blocking(mouse_event, &mut buffer).unwrap();
-            match message.message {
-                kernel_userspace::service::ServiceMessageType::InterruptEvent => {
-                    c.lock().mouse.check_interrupts()
-                }
-                _ => unimplemented!(),
-            }
+            let _: ServiceMessage<()> =
+                receive_service_message_blocking(mouse_event, &mut buffer).unwrap();
+            c.lock().mouse.check_interrupts()
         }
     });
 
     loop {
-        let message = receive_service_message_blocking(kb_event, &mut buffer).unwrap();
-        match message.message {
-            kernel_userspace::service::ServiceMessageType::InterruptEvent => {
-                controller.lock().keyboard.check_interrupts()
-            }
-            _ => unimplemented!(),
-        }
+        let _: ServiceMessage<()> =
+            receive_service_message_blocking(kb_event, &mut buffer).unwrap();
+        controller.lock().keyboard.check_interrupts();
     }
 }
 pub struct PS2Command {

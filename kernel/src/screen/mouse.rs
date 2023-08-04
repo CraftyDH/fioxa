@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use kernel_userspace::{
     input::InputServiceMessage,
-    service::{get_public_service_id, ServiceMessageType},
+    service::get_public_service_id,
     syscall::{service_subscribe, yield_now},
 };
 
@@ -46,12 +46,12 @@ pub fn monitor_cursor_task() {
     let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
 
     loop {
-        let msg = kernel_userspace::syscall::receive_service_message_blocking(mouse_id, &mut buffer).unwrap();
+        let msg =
+            kernel_userspace::syscall::receive_service_message_blocking(mouse_id, &mut buffer)
+                .unwrap();
 
         match msg.message {
-            ServiceMessageType::Input(InputServiceMessage::MouseEvent(packet)) => {
-                print_cursor(&mut mouse_pos, packet)
-            }
+            InputServiceMessage::MouseEvent(packet) => print_cursor(&mut mouse_pos, packet),
             _ => println!("Mouse got non mouse packet"),
         }
     }

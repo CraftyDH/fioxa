@@ -3,12 +3,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ids::ServiceID,
-    service::{generate_tracking_number, ServiceMessage, ServiceMessageType},
+    service::{generate_tracking_number, ServiceMessage},
     syscall::{get_pid, send_and_get_response_service_message},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PCIDevCmd {
+    Ack,
+    UnknownCommand,
     Read(u32),
     Data(u32),
     Write(u32, u32),
@@ -32,19 +34,18 @@ impl PCIDevice {
     }
 
     unsafe fn read_u32(&self, offset: u32) -> u32 {
-        let ServiceMessageType::PCIDev(PCIDevCmd::Data(data)) =
-            send_and_get_response_service_message(
-                &ServiceMessage {
-                    service_id: self.device_service,
-                    sender_pid: get_pid(),
-                    tracking_number: generate_tracking_number(),
-                    destination: crate::service::SendServiceMessageDest::ToProvider,
-                    message: crate::service::ServiceMessageType::PCIDev(PCIDevCmd::Read(offset)),
-                },
-                &mut Vec::new(),
-            )
-            .unwrap()
-            .message
+        let PCIDevCmd::Data(data) = send_and_get_response_service_message(
+            &ServiceMessage {
+                service_id: self.device_service,
+                sender_pid: get_pid(),
+                tracking_number: generate_tracking_number(),
+                destination: crate::service::SendServiceMessageDest::ToProvider,
+                message: PCIDevCmd::Read(offset),
+            },
+            &mut Vec::new(),
+        )
+        .unwrap()
+        .message
         else {
             todo!()
         };
@@ -67,13 +68,13 @@ impl PCIDevice {
     }
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {
-        let ServiceMessageType::Ack = send_and_get_response_service_message(
+        let PCIDevCmd::Ack = send_and_get_response_service_message(
             &ServiceMessage {
                 service_id: self.device_service,
                 sender_pid: get_pid(),
                 tracking_number: generate_tracking_number(),
                 destination: crate::service::SendServiceMessageDest::ToProvider,
-                message: crate::service::ServiceMessageType::PCIDev(PCIDevCmd::Write(offset, data)),
+                message: PCIDevCmd::Write(offset, data),
             },
             &mut Vec::new(),
         )

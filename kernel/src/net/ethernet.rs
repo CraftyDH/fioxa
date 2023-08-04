@@ -6,10 +6,10 @@ use core::{
 use alloc::vec::Vec;
 use kernel_userspace::{
     ids::ServiceID,
-    net::{ArpResponse, IPAddr, Networking, NotSameSubnetError},
+    net::{ArpResponse, IPAddr, Networking, NetworkingResp, NotSameSubnetError},
     service::{
         generate_tracking_number, get_public_service_id, register_public_service,
-        SendServiceMessageDest, ServiceMessage, ServiceMessageType, ServiceTrackingNumber,
+        SendServiceMessageDest, ServiceMessage, ServiceTrackingNumber,
     },
     syscall::{
         receive_service_message_blocking, receive_service_message_blocking_tracking,
@@ -96,15 +96,13 @@ pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) -> Result<(), Not
 
     let mut buffer = Vec::new();
 
-    send_and_get_response_service_message(
+    send_and_get_response_service_message::<_, kernel_userspace::net::PhysicalNetResp>(
         &ServiceMessage {
             service_id: service,
             sender_pid: CPULocalStorageRW::get_current_pid(),
             tracking_number: generate_tracking_number(),
             destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-            message: ServiceMessageType::PhysicalNet(
-                kernel_userspace::net::PhysicalNet::SendPacket(buf),
-            ),
+            message: kernel_userspace::net::PhysicalNet::SendPacket(buf),
         },
         &mut buffer,
     )
@@ -129,18 +127,20 @@ pub fn userspace_networking_main() {
 
     println!("SIDS: {sid:?} {pcnet:?}");
 
-    let ServiceMessageType::PhysicalNet(kernel_userspace::net::PhysicalNet::MacAddrResp(mac)) = send_and_get_response_service_message(
-        &kernel_userspace::service::ServiceMessage {
-            service_id: pcnet,
-            sender_pid: CPULocalStorageRW::get_current_pid(),
-            tracking_number: generate_tracking_number(),
-            destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-            message: ServiceMessageType::PhysicalNet(
-                kernel_userspace::net::PhysicalNet::MacAddrGet,
-            ),
-        },
-        &mut Vec::new(),
-    ).unwrap().message else {
+    let kernel_userspace::net::PhysicalNetResp::MacAddrResp(mac) =
+        send_and_get_response_service_message(
+            &kernel_userspace::service::ServiceMessage {
+                service_id: pcnet,
+                sender_pid: CPULocalStorageRW::get_current_pid(),
+                tracking_number: generate_tracking_number(),
+                destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
+                message: kernel_userspace::net::PhysicalNet::MacAddrGet,
+            },
+            &mut Vec::new(),
+        )
+        .unwrap()
+        .message
+    else {
         panic!()
     };
 
@@ -149,20 +149,16 @@ pub fn userspace_networking_main() {
         let mut buf = Vec::new();
         let query = receive_service_message_blocking(sid, &mut buf).unwrap();
         let resp = match query.message {
-            ServiceMessageType::Networking(net) => match net {
-                Networking::ArpRequest(ip) => {
-                    let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
+            Networking::ArpRequest(ip) => {
+                let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
 
-                    let resp = match mac_addr {
-                        Some(mac) => ArpResponse::Mac(mac),
-                        None => ArpResponse::Pending(send_arp(pcnet, mac, ip)),
-                    };
+                let resp = match mac_addr {
+                    Some(mac) => ArpResponse::Mac(mac),
+                    None => ArpResponse::Pending(send_arp(pcnet, mac, ip)),
+                };
 
-                    ServiceMessageType::Networking(Networking::ArpResponse(resp))
-                }
-                _ => ServiceMessageType::UnknownCommand,
-            },
-            _ => ServiceMessageType::UnknownCommand,
+                NetworkingResp::ArpResponse(resp)
+            }
         };
 
         send_service_message(
@@ -182,13 +178,11 @@ pub fn userspace_networking_main() {
 pub fn monitor_packets(pcnet: ServiceID) {
     loop {
         let mut buf = Vec::new();
-        let message: ServiceMessage<'_> =
+        let message =
             receive_service_message_blocking_tracking(pcnet, ServiceTrackingNumber(0), &mut buf)
                 .unwrap();
         match message.message {
-            ServiceMessageType::PhysicalNet(
-                kernel_userspace::net::PhysicalNet::ReceivedPacket(packet),
-            ) => {
+            kernel_userspace::net::PhysicalNetResp::ReceivedPacket(packet) => {
                 let header = unsafe { *(packet.as_ptr() as *const EthernetFrameHeader) };
                 let data = &packet[size_of::<EthernetFrameHeader>()..];
 

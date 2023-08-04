@@ -4,9 +4,7 @@ use alloc::vec::Vec;
 use kernel_userspace::{
     elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
     ids::ProcessID,
-    service::{
-        register_public_service, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
-    },
+    service::{register_public_service, SendServiceMessageDest, ServiceMessage},
     syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
 };
 
@@ -100,25 +98,22 @@ pub fn elf_new_process_loader() {
     let mut message_buffer = Vec::new();
     let mut tmp_prog_buffer = Vec::new();
     loop {
-        let query = receive_service_message_blocking(sid, &mut message_buffer).unwrap();
+        let query: ServiceMessage<(&[u8], &[u8])> =
+            receive_service_message_blocking(sid, &mut message_buffer).unwrap();
 
-        let resp = match query.message {
-            ServiceMessageType::ElfLoader(elf, args) => {
-                // TODO: FIX
-                // This is a really bad fix to an aligned start address for the buffer
-                // let data = data.to_vec();
-                tmp_prog_buffer.reserve(elf.len());
-                unsafe {
-                    tmp_prog_buffer.set_len(elf.len());
-                }
-                tmp_prog_buffer.copy_from_slice(elf);
-                println!("LOADING...");
+        let (elf, args) = query.message;
 
-                let pid = load_elf(&tmp_prog_buffer, args);
-                ServiceMessageType::ElfLoaderResp(pid)
-            }
-            _ => ServiceMessageType::UnknownCommand,
-        };
+        // TODO: FIX
+        // This is a really bad fix to an aligned start address for the buffer
+        // let data = data.to_vec();
+        tmp_prog_buffer.reserve(elf.len());
+        unsafe {
+            tmp_prog_buffer.set_len(elf.len());
+        }
+        tmp_prog_buffer.copy_from_slice(elf);
+        println!("LOADING...");
+
+        let resp = load_elf(&tmp_prog_buffer, args);
 
         send_service_message(
             &ServiceMessage {

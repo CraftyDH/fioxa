@@ -11,7 +11,7 @@ use kernel_userspace::{
     ids::{ProcessID, ServiceID, ThreadID},
     service::{
         self, PublicServiceMessage, SendError, SendServiceMessageDest, ServiceMessage,
-        ServiceMessageType, ServiceTrackingNumber,
+        ServiceTrackingNumber,
     },
     syscall::{receive_service_message_blocking, send_service_message, spawn_thread},
 };
@@ -56,7 +56,9 @@ pub fn subscribe(pid: ProcessID, id: ServiceID) {
 }
 
 pub fn push(current_pid: ProcessID, msg: Box<[u8]>) -> Result<(), SendError> {
-    let message = service::parse_message(&msg).map_err(|_| SendError::ParseError)?;
+    // Read as () to ensure that we can parse the header of any valid message
+    let message: ServiceMessage<()> =
+        service::parse_message(&msg).map_err(|_| SendError::ParseError)?;
 
     let mut s = SERVICES.lock();
 
@@ -235,22 +237,19 @@ pub fn start_mgmt() {
         let query = receive_service_message_blocking(sid, &mut buffer).unwrap();
 
         let resp = match query.message {
-            ServiceMessageType::PublicService(PublicServiceMessage::Request(name)) => {
+            PublicServiceMessage::Request(name) => {
                 let s = PUBLIC_SERVICES.lock();
 
                 let sid = s.get(name);
 
-                ServiceMessageType::PublicService(PublicServiceMessage::Response(sid.copied()))
+                PublicServiceMessage::Response(sid.copied())
             }
-            ServiceMessageType::PublicService(PublicServiceMessage::RegisterPublicService(
-                name,
-                sid,
-            )) => {
+            PublicServiceMessage::RegisterPublicService(name, sid) => {
                 let mut s = PUBLIC_SERVICES.lock();
                 s.insert(name.to_string(), sid);
-                ServiceMessageType::Ack
+                PublicServiceMessage::Ack
             }
-            _ => ServiceMessageType::UnknownCommand,
+            _ => PublicServiceMessage::UnknownCommand,
         };
 
         send_service_message(

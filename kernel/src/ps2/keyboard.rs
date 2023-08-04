@@ -4,7 +4,6 @@ use kernel_userspace::{
     input::InputServiceMessage,
     service::{
         generate_tracking_number, register_public_service, SendServiceMessageDest, ServiceMessage,
-        ServiceMessageType,
     },
     syscall::{get_pid, send_service_message, service_create},
 };
@@ -95,7 +94,7 @@ impl Keyboard {
                     sender_pid: self.current_pid,
                     tracking_number: generate_tracking_number(),
                     destination: SendServiceMessageDest::ToSubscribers,
-                    message: ServiceMessageType::Input(InputServiceMessage::KeyboardEvent(key)),
+                    message: InputServiceMessage::KeyboardEvent(key),
                 },
                 &mut self.send_buffer,
             )

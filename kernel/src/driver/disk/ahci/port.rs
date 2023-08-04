@@ -19,7 +19,9 @@ use crate::{
     syscall::sleep,
 };
 
-use super::{fis::ReceivedFis, HBAPort, HBA_PxCMD_CR, HBA_PxCMD_FR, HBA_PxCMD_FRE, HBA_PxCMD_ST};
+use super::{
+    fis::ReceivedFis, HBAPort, HBA_PX_CMD_CR, HBA_PX_CMD_FR, HBA_PX_CMD_FRE, HBA_PX_CMD_ST,
+};
 
 #[derive(Debug, PartialEq)]
 pub enum PortType {
@@ -112,22 +114,22 @@ impl Port {
     }
 
     pub fn start_cmd(port: &mut HBAPort) {
-        while port.cmd_sts.read() & HBA_PxCMD_CR > 0 {
+        while port.cmd_sts.read() & HBA_PX_CMD_CR > 0 {
             yield_now();
         }
 
-        port.cmd_sts.update(|v| *v |= HBA_PxCMD_FRE);
-        port.cmd_sts.update(|v| *v |= HBA_PxCMD_ST);
+        port.cmd_sts.update(|v| *v |= HBA_PX_CMD_FRE);
+        port.cmd_sts.update(|v| *v |= HBA_PX_CMD_ST);
     }
 
     pub fn stop_cmd(port: &mut HBAPort) {
         // Stop port
-        port.cmd_sts.update(|x| *x &= !HBA_PxCMD_ST);
+        port.cmd_sts.update(|x| *x &= !HBA_PX_CMD_ST);
         // LIST_ON
-        while port.cmd_sts.read() | HBA_PxCMD_CR == 1 {}
+        while port.cmd_sts.read() | HBA_PX_CMD_CR == 1 {}
 
-        port.cmd_sts.update(|x| *x &= !HBA_PxCMD_FRE);
-        while port.cmd_sts.read() | HBA_PxCMD_FR == 1 {}
+        port.cmd_sts.update(|x| *x &= !HBA_PX_CMD_FRE);
+        while port.cmd_sts.read() | HBA_PX_CMD_FR == 1 {}
     }
 }
 

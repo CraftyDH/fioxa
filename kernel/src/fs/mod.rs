@@ -6,10 +6,10 @@ use core::{fmt::Debug, sync::atomic::AtomicU64};
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use conquer_once::spin::Lazy;
 use kernel_userspace::{
-    fs::{FSServiceMessage, StatResponse, StatResponseFile, StatResponseFolder},
-    service::{
-        register_public_service, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+    fs::{
+        FSServiceMessage, FSServiceMessageResp, StatResponse, StatResponseFile, StatResponseFolder,
     },
+    service::{register_public_service, SendServiceMessageDest, ServiceMessage},
     syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
 };
 use spin::Mutex;
@@ -202,58 +202,50 @@ pub fn file_handler() {
         let query = receive_service_message_blocking(sid, &mut message_buffer).unwrap();
 
         let resp = match query.message {
-            ServiceMessageType::FS(fs) => match fs {
-                FSServiceMessage::RunStat(disk, path) => {
-                    if let Some(file) = get_file_from_path(PartitionId(disk as u64), path) {
-                        let stat = match file.specialized {
-                            VFileSpecialized::Folder(children) => {
-                                c = children;
-                                let keys = c.keys();
-                                StatResponse::Folder(StatResponseFolder {
-                                    node_id: file.location.1,
-                                    children: keys.map(|c| c.as_str()).collect(),
-                                })
-                            }
-                            VFileSpecialized::File(size) => StatResponse::File(StatResponseFile {
+            FSServiceMessage::RunStat(disk, path) => {
+                if let Some(file) = get_file_from_path(PartitionId(disk as u64), path) {
+                    let stat = match file.specialized {
+                        VFileSpecialized::Folder(children) => {
+                            c = children;
+                            let keys = c.keys();
+                            StatResponse::Folder(StatResponseFolder {
                                 node_id: file.location.1,
-                                file_size: size,
-                            }),
-                        };
+                                children: keys.map(|c| c.as_str()).collect(),
+                            })
+                        }
+                        VFileSpecialized::File(size) => StatResponse::File(StatResponseFile {
+                            node_id: file.location.1,
+                            file_size: size,
+                        }),
+                    };
 
-                        ServiceMessageType::FS(FSServiceMessage::StatResponse(stat))
-                    } else {
-                        ServiceMessageType::FS(FSServiceMessage::StatResponse(
-                            StatResponse::NotFound,
-                        ))
-                    }
+                    FSServiceMessageResp::StatResponse(stat)
+                } else {
+                    FSServiceMessageResp::StatResponse(StatResponse::NotFound)
                 }
-                FSServiceMessage::ReadRequest(req) => {
-                    if let Some(len) = read_file_sector(
-                        (PartitionId(req.disk_id as u64), req.node_id),
-                        req.sector as usize,
-                        &mut buffer,
-                    ) {
-                        ServiceMessageType::FS(FSServiceMessage::ReadResponse(Some(
-                            &buffer[0..len],
-                        )))
-                    } else {
-                        ServiceMessageType::FS(FSServiceMessage::ReadResponse(None))
-                    }
+            }
+            FSServiceMessage::ReadRequest(req) => {
+                if let Some(len) = read_file_sector(
+                    (PartitionId(req.disk_id as u64), req.node_id),
+                    req.sector as usize,
+                    &mut buffer,
+                ) {
+                    FSServiceMessageResp::ReadResponse(Some(&buffer[0..len]))
+                } else {
+                    FSServiceMessageResp::ReadResponse(None)
                 }
-                FSServiceMessage::ReadFullFileRequest(req) => {
-                    file_vec = read_file(
-                        (PartitionId(req.disk_id as u64), req.node_id),
-                        &mut read_buffer,
-                    );
-                    ServiceMessageType::FS(FSServiceMessage::ReadResponse(Some(file_vec)))
-                }
-                FSServiceMessage::GetDisksRequest => {
-                    let disks = PARTITION.lock().keys().map(|p| p.0).collect();
-                    ServiceMessageType::FS(FSServiceMessage::GetDisksResponse(disks))
-                }
-                _ => ServiceMessageType::ExpectedQuestion,
-            },
-            _ => ServiceMessageType::UnknownCommand,
+            }
+            FSServiceMessage::ReadFullFileRequest(req) => {
+                file_vec = read_file(
+                    (PartitionId(req.disk_id as u64), req.node_id),
+                    &mut read_buffer,
+                );
+                FSServiceMessageResp::ReadResponse(Some(file_vec))
+            }
+            FSServiceMessage::GetDisksRequest => {
+                let disks = PARTITION.lock().keys().map(|p| p.0).collect();
+                FSServiceMessageResp::GetDisksResponse(disks)
+            }
         };
         send_service_message(
             &ServiceMessage {
