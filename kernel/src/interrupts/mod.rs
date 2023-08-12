@@ -1,4 +1,4 @@
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::AtomicU8;
 
 use alloc::vec::Vec;
 use conquer_once::spin::Lazy;
@@ -22,6 +22,7 @@ pub mod pic;
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     gdt::TASK_SWITCH_INDEX,
+    scheduling::taskmanager::enter_core_mgmt,
     service::{self, PUBLIC_SERVICES},
     syscall,
     time::pit::tick_handler,
@@ -141,23 +142,32 @@ pub fn spurious(s: InterruptStackFrame) {
 //     })
 // }
 
-static KB_INT: AtomicBool = AtomicBool::new(false);
-static MOUSE_INT: AtomicBool = AtomicBool::new(false);
-static PCI_INT: AtomicBool = AtomicBool::new(false);
+/// We pack the interrupts into an atomic because that reduces atomic contention in the highly polled check_interrupts.
+static INT_VEC: AtomicU8 = AtomicU8::new(0);
+
+const KB_INT: u8 = 0;
+const MOUSE_INT: u8 = 1;
+const PCI_INT: u8 = 2;
+
+#[inline(always)]
+fn int_interrupt_handler(vector: u8) {
+    INT_VEC.fetch_or(1 << vector, core::sync::atomic::Ordering::Relaxed);
+    enter_core_mgmt();
+}
 
 interrupt_handler!(kb_interrupt_handler => keyboard_int_handler);
 fn kb_interrupt_handler(_: InterruptStackFrame) {
-    KB_INT.store(true, core::sync::atomic::Ordering::Relaxed)
+    int_interrupt_handler(KB_INT)
 }
 
 interrupt_handler!(mouse_interrupt_handler => mouse_int_handler);
 fn mouse_interrupt_handler(_: InterruptStackFrame) {
-    MOUSE_INT.store(true, core::sync::atomic::Ordering::Relaxed)
+    int_interrupt_handler(MOUSE_INT)
 }
 
 interrupt_handler!(pci_interrupt_handler => pci_int_handler);
 fn pci_interrupt_handler(_: InterruptStackFrame) {
-    PCI_INT.store(true, core::sync::atomic::Ordering::Relaxed)
+    int_interrupt_handler(PCI_INT)
 }
 
 pub static INTERRUPT_HANDLERS: Lazy<[ServiceID; 3]> = Lazy::new(|| {
@@ -174,21 +184,21 @@ pub static INTERRUPT_HANDLERS: Lazy<[ServiceID; 3]> = Lazy::new(|| {
     [kb, mouse, pci]
 });
 
+/// Returns true if there were any interrupt events dispatched
 pub fn check_interrupts(send_buffer: &mut Vec<u8>) -> bool {
-    let mut res = false;
-    if KB_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
-        send_int_message(INTERRUPT_HANDLERS[0], send_buffer);
-        res = true;
+    let interrupts = INT_VEC.swap(0, core::sync::atomic::Ordering::Relaxed);
+    let handlers = INTERRUPT_HANDLERS.as_ref();
+    if interrupts & (1 << KB_INT) > 0 {
+        send_int_message(handlers[KB_INT as usize], send_buffer);
     }
-    if MOUSE_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
-        send_int_message(INTERRUPT_HANDLERS[1], send_buffer);
-        res = true;
+    if interrupts & (1 << MOUSE_INT) > 0 {
+        send_int_message(handlers[MOUSE_INT as usize], send_buffer)
     }
-    if PCI_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
-        send_int_message(INTERRUPT_HANDLERS[2], send_buffer);
-        res = true;
+    if interrupts & (1 << PCI_INT) > 0 {
+        send_int_message(handlers[KB_INT as usize], send_buffer);
     }
-    res
+    // check if at least 1 interrupt occured
+    interrupts != 0
 }
 
 fn send_int_message(service: ServiceID, send_buffer: &mut Vec<u8>) {

@@ -21,7 +21,7 @@ use kernel::boot_aps::boot_aps;
 use kernel::bootfs::TERMINAL_ELF;
 use kernel::cpu_localstorage::init_bsp_task;
 use kernel::fs::{self, FSDRIVES};
-use kernel::interrupts::{self, check_interrupts};
+use kernel::interrupts::{self};
 
 use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::enable_localapic;
@@ -42,6 +42,8 @@ use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
 use kernel::{elf, gdt, paging, ps2, service, BOOT_INFO};
 
+use bootloader::uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
+use bootloader::uefi::table::{Runtime, SystemTable};
 use kernel_userspace::service::{
     generate_tracking_number, get_public_service_id, register_public_service,
     SendServiceMessageDest, ServiceMessage, ServiceMessageType,
@@ -50,8 +52,6 @@ use kernel_userspace::syscall::{
     exit, get_pid, receive_service_message_blocking, send_service_message, service_create,
     spawn_process, spawn_thread, yield_now,
 };
-use bootloader::uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
-use bootloader::uefi::table::{Runtime, SystemTable};
 
 // #[no_mangle]
 entry_point!(main);
@@ -283,10 +283,6 @@ fn after_boot() {
     let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
 
     spawn_process(service::start_mgmt, &[], true);
-    spawn_thread(|| loop {
-        check_interrupts(&mut Vec::new());
-        yield_now();
-    });
     spawn_process(elf::elf_new_process_loader, &[], true);
 
     spawn_process(ps2::main, &[], true);

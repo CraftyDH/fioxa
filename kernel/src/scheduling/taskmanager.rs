@@ -1,6 +1,6 @@
-use core::ptr::slice_from_raw_parts;
+use core::{ptr::slice_from_raw_parts, sync::atomic::AtomicBool};
 
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, vec::Vec};
 
 use conquer_once::noblock::OnceCell;
 use crossbeam_queue::ArrayQueue;
@@ -11,6 +11,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 use crate::{
     assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
+    interrupts::check_interrupts,
     paging::{
         page_table_manager::{PageLvl4, PageTable},
         virt_addr_for_phys,
@@ -28,12 +29,20 @@ static TASK_QUEUE: Lazy<ArrayQueue<(ProcessID, ThreadID)>> = Lazy::new(|| ArrayQ
 
 pub static CORE_COUNT: OnceCell<u8> = OnceCell::uninit();
 
+static GO_INTO_CORE_MGMT: AtomicBool = AtomicBool::new(false);
+
 pub fn push_task_queue(val: (ProcessID, ThreadID)) -> Result<(), (ProcessID, ThreadID)> {
     without_context_switch(|| TASK_QUEUE.push(val))
 }
 
+#[inline(always)]
+pub fn enter_core_mgmt() {
+    GO_INTO_CORE_MGMT.store(true, core::sync::atomic::Ordering::Relaxed);
+}
+
 /// Used for sleeping each core after the task queue becomes empty
 /// Aka the end of the round robin cycle
+/// Or when an async task (like interrupts) need to be in an actual process to dispatch (to avoid deadlocks)
 /// This reduces CPU load normally (doesn't thrash every core to 100%)
 /// However is does reduce performance when there are actually tasks that could use the time
 pub unsafe fn core_start_multitasking() -> ! {
@@ -41,20 +50,24 @@ pub unsafe fn core_start_multitasking() -> ! {
     CPULocalStorageRW::set_stay_scheduled(false);
     core::arch::asm!("sti");
 
+    let mut buf = Vec::new();
     loop {
         // Check interrupts
-        // check_interrupts(&mut send_buffer);
-
-        // kernel_userspace::syscall::yield_now();
-
-        // Use hlt, to drop CPU usage.
-        // However this causes hugely increased latency for dependant tasks.
-        // core::arch::asm!("hlt;");
-        core::arch::asm!("pause");
+        if check_interrupts(&mut buf) {
+            kernel_userspace::syscall::yield_now();
+        } else {
+            // no interrupts to handle so sleep
+            core::arch::asm!("hlt");
+        }
     }
 }
 
 fn get_next_task(core_id: usize) -> (ProcessID, ThreadID) {
+    // if there is a task that needs core mgmt
+    if GO_INTO_CORE_MGMT.swap(false, core::sync::atomic::Ordering::Relaxed) {
+        return (ProcessID(0), ThreadID(core_id as u64));
+    }
+
     // Get a new tasks if available
     if let Some(task) = TASK_QUEUE.pop() {
         return task;
