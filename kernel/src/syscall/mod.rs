@@ -15,7 +15,7 @@ use crate::{
         page_allocator::request_page,
         page_table_manager::{Mapper, Page, Size4KB},
     },
-    scheduling::taskmanager::{self, PROCESSES},
+    scheduling::taskmanager,
     service,
     time::{pit::get_uptime, spin_sleep_ms},
     wrap_function_registers,
@@ -70,9 +70,9 @@ fn echo_handler(regs: &mut Registers) {
 }
 
 fn read_args_handler(regs: &mut Registers) {
-    let pid = CPULocalStorageRW::get_current_pid();
-    let p = PROCESSES.lock();
-    let proc = p.get(&pid).unwrap();
+    let task = CPULocalStorageRW::get_current_task();
+
+    let proc = &task.process;
 
     if regs.r8 == 0 {
         regs.rax = proc.args.len();
@@ -108,12 +108,10 @@ fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
             }
         }
         syscall::SERVICE_FETCH => {
-            let pid = CPULocalStorageRW::get_current_pid();
-            let tid = CPULocalStorageRW::get_current_tid();
+            let thread = CPULocalStorageRW::get_current_task();
 
             match service::find_message(
-                pid,
-                tid,
+                &thread,
                 ServiceID(regs.r9 as u64),
                 ServiceTrackingNumber(regs.r10 as u64),
             ) {
@@ -124,17 +122,15 @@ fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
         syscall::SERVICE_FETCH_WAIT => service::find_or_wait_message(
             stack_frame,
             regs,
-            CPULocalStorageRW::get_current_pid(),
-            CPULocalStorageRW::get_current_tid(),
+            &CPULocalStorageRW::get_current_task(),
             ServiceID(regs.r9 as u64),
             ServiceTrackingNumber(regs.r10 as u64),
         ),
         syscall::SERVICE_GET => {
-            let pid = CPULocalStorageRW::get_current_pid();
-            let tid = CPULocalStorageRW::get_current_tid();
+            let thread = CPULocalStorageRW::get_current_task();
 
             let buf = unsafe { core::slice::from_raw_parts_mut(regs.r9 as *mut u8, regs.r10) };
-            match service::get_message(pid, tid, buf) {
+            match service::get_message(&thread, buf) {
                 Some(_) => regs.rax = 0,
                 None => regs.rax = 1,
             }
@@ -146,43 +142,38 @@ fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
 fn mmap_page_handler(regs: &mut Registers) {
     assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
 
-    let pid = CPULocalStorageRW::get_current_pid();
-    let mut processes = PROCESSES.lock();
-
-    let process = processes.get_mut(&pid).unwrap();
+    let task = CPULocalStorageRW::get_current_task();
 
     let page = request_page().unwrap();
 
-    process
+    let mut memory = task.process.memory.lock();
+
+    memory
         .page_mapper
         .map_memory(Page::<Size4KB>::new(regs.r8 as u64), *page)
         .unwrap()
         .flush();
 
-    process.owned_pages.push(page);
+    memory.owned_pages.push(page);
 }
 
 fn unmmap_page_handler(regs: &mut Registers) {
     assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
 
-    let pid = CPULocalStorageRW::get_current_pid();
-    let mut processes = PROCESSES.lock();
-
-    let process = processes.get_mut(&pid).unwrap();
-
+    let task = CPULocalStorageRW::get_current_task();
     let page = Page::<Size4KB>::new(regs.r8 as u64);
 
-    let phys_page = process.page_mapper.get_phys_addr(page).unwrap();
-    process.page_mapper.unmap_memory(page).unwrap().flush();
+    let mut memory = task.process.memory.lock();
+    let phys_page = memory.page_mapper.get_phys_addr(page).unwrap();
+    memory.page_mapper.unmap_memory(page).unwrap().flush();
 
     // The memory should be freed by the allocated page destructor
-    process.owned_pages.swap_remove(
-        process
-            .owned_pages
-            .iter()
-            .position(|e| e.get_address() == phys_page)
-            .unwrap(),
-    );
+    let pos = memory
+        .owned_pages
+        .iter()
+        .position(|e| e.get_address() == phys_page)
+        .unwrap();
+    memory.owned_pages.swap_remove(pos);
 }
 
 pub fn sleep(ms: usize) {

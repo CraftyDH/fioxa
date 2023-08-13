@@ -1,5 +1,12 @@
+use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::{
+    ids::{ProcessID, ServiceID},
+    service::{generate_tracking_number, SendServiceMessageDest, ServiceMessage},
+    syscall::{get_pid, send_and_get_response_service_message},
+};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -72,4 +79,26 @@ pub enum LoadElfError<'a> {
     EMachine(u16),
     #[error("unsupported elf version, expected 0, found: {0}")]
     ElfVersion(u32),
+}
+
+pub fn spawn_elf_process<'a>(
+    service_id: ServiceID,
+    elf: &[u8],
+    args: &[u8],
+    buffer: &'a mut Vec<u8>,
+) -> Result<ProcessID, LoadElfError<'a>> {
+    let pid = get_pid();
+
+    send_and_get_response_service_message(
+        &ServiceMessage {
+            service_id,
+            sender_pid: pid,
+            tracking_number: generate_tracking_number(),
+            destination: SendServiceMessageDest::ToProvider,
+            message: (elf, args),
+        },
+        buffer,
+    )
+    .unwrap()
+    .message
 }

@@ -78,3 +78,8 @@ pub unsafe fn set_mem_offset(n: u64) {
 pub fn virt_addr_for_phys(phys: u64) -> u64 {
     phys + unsafe { MEM_OFFSET }
 }
+
+pub fn phys_addr_for_virt(virt: u64) -> u64 {
+    virt.checked_sub(unsafe { MEM_OFFSET })
+        .expect("expected virt addr")
+}

@@ -7,7 +7,7 @@ use crate::paging::page_allocator;
 
 use super::{
     get_uefi_active_mapper, page_allocator::request_page, page_directory::PageDirectoryEntry,
-    virt_addr_for_phys,
+    phys_addr_for_virt, virt_addr_for_phys,
 };
 
 #[derive(Debug)]
@@ -226,6 +226,10 @@ impl<L: PageLevel> PageTable<'_, L> {
             table: unsafe { &mut *table },
             level: core::marker::PhantomData,
         }
+    }
+
+    pub fn into_page(&self) -> Page<Size4KB> {
+        Page::new(phys_addr_for_virt(self.table as *const _ as u64))
     }
 }
 

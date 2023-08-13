@@ -1,6 +1,6 @@
 use core::cmp::{max, min};
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
     elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
     ids::ProcessID,
@@ -47,8 +47,7 @@ pub fn load_elf<'a>(data: &'a [u8], args: &[u8]) -> Result<ProcessID, LoadElfErr
     let size = size - base;
     let pages_count = size / 4096 + 1;
 
-    let mut proc: Process = Process::new(crate::scheduling::process::ProcessPrivilige::USER, args);
-    let map = &mut proc.page_mapper;
+    let process = Process::new(crate::scheduling::process::ProcessPrivilige::USER, args);
     println!("ALLOCING MEM...");
     let mut pages = frame_alloc_exec(|c| c.request_cont_pages(pages_count as usize))
         .unwrap()
@@ -57,9 +56,17 @@ pub fn load_elf<'a>(data: &'a [u8], args: &[u8]) -> Result<ProcessID, LoadElfErr
     assert_eq!(pages.len(), pages_count as usize);
     let start = pages.peek().unwrap().get_address();
 
-    for (page, virt_addr) in pages.zip((mem_start..).step_by(0x1000)) {
-        map.map_memory(Page::new(virt_addr), *page).unwrap().flush();
-        proc.owned_pages.push(page);
+    {
+        let mut memory = process.memory.lock();
+
+        for (page, virt_addr) in pages.zip((mem_start..).step_by(0x1000)) {
+            memory
+                .page_mapper
+                .map_memory(Page::new(virt_addr), *page)
+                .unwrap()
+                .flush();
+            memory.owned_pages.push(page);
+        }
     }
 
     println!("COPYING MEM...");
@@ -80,13 +87,13 @@ pub fn load_elf<'a>(data: &'a [u8], args: &[u8]) -> Result<ProcessID, LoadElfErr
         }
     }
     println!("STARTING PROC...");
-    let tid = proc.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
-
-    let pid = proc.pid;
+    let tid = process.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
+    let thread = Arc::downgrade(&tid);
+    let pid = process.pid;
     without_context_switch(|| {
-        PROCESSES.lock().insert(proc.pid, proc);
+        PROCESSES.lock().insert(pid, process);
     });
-    push_task_queue((pid, tid)).unwrap();
+    push_task_queue(thread).unwrap();
     Ok(pid)
 }
 

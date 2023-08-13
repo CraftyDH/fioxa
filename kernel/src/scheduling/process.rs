@@ -3,7 +3,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, VecDeque},
-    sync::Arc,
+    sync::{Arc, Weak},
     vec::Vec,
 };
 use kernel_userspace::{
@@ -11,6 +11,7 @@ use kernel_userspace::{
     service::ServiceTrackingNumber,
     syscall::exit,
 };
+use spin::Mutex;
 use x86_64::{
     structures::{
         gdt::SegmentSelector,
@@ -62,18 +63,34 @@ impl ProcessPrivilige {
 
 pub struct Process {
     pub pid: ProcessID,
-    pub threads: BTreeMap<ThreadID, Thread>,
-    pub page_mapper: PageTable<'static, PageLvl4>,
+    pub threads: Mutex<ProcessThreads>,
     privilege: ProcessPrivilige,
-    thread_next_id: u64,
     pub args: Vec<u8>,
-    pub service_msgs: VecDeque<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>,
-    pub waiting_services: BTreeMap<(ServiceID, ServiceTrackingNumber), Vec<ThreadID>>,
+    pub memory: Mutex<ProcessMemory>,
+    pub service_messages: Mutex<ProcessMessages>,
+}
+
+#[derive(Default)]
+pub struct ProcessThreads {
+    // a reference to the process so that we can clone it for threads (it is weak to avoid a circular chain)
+    proc_reference: Weak<Process>,
+    thread_next_id: u64,
+    pub threads: BTreeMap<ThreadID, Arc<Thread>>,
+}
+
+pub struct ProcessMemory {
+    pub page_mapper: PageTable<'static, PageLvl4>,
     pub owned_pages: Vec<AllocatedPage>,
 }
 
+#[derive(Default)]
+pub struct ProcessMessages {
+    pub queue: VecDeque<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>,
+    pub waiters: BTreeMap<(ServiceID, ServiceTrackingNumber), Vec<ThreadID>>,
+}
+
 impl Process {
-    pub fn new(privilege: ProcessPrivilige, args: &[u8]) -> Self {
+    pub fn new(privilege: ProcessPrivilige, args: &[u8]) -> Arc<Self> {
         let pml4 = request_page().unwrap();
         let mut page_mapper = unsafe { PageTable::<PageLvl4>::from_page(*pml4) };
         let owned_pages = vec![pml4];
@@ -93,41 +110,45 @@ impl Process {
                 .ignore();
         }
 
-        Self {
+        let s = Arc::new(Self {
             pid: generate_next_process_id(),
-            threads: Default::default(),
-            page_mapper,
             privilege,
-            thread_next_id: 0,
             args: args.to_vec(),
-            service_msgs: Default::default(),
-            waiting_services: Default::default(),
-            owned_pages,
-        }
+            memory: Mutex::new(ProcessMemory {
+                page_mapper,
+                owned_pages,
+            }),
+            threads: Default::default(),
+            service_messages: Default::default(),
+        });
+        s.threads.lock().proc_reference = Arc::downgrade(&s);
+        s
     }
 
     pub unsafe fn new_with_page(
         privilege: ProcessPrivilige,
         page_mapper: PageTable<'static, PageLvl4>,
         args: &[u8],
-    ) -> Self {
-        Self {
+    ) -> Arc<Self> {
+        let s = Arc::new(Self {
             pid: generate_next_process_id(),
-            threads: Default::default(),
-            page_mapper,
             privilege,
-            thread_next_id: 0,
             args: args.to_vec(),
-            service_msgs: Default::default(),
-            owned_pages: Vec::new(),
-            waiting_services: Default::default(),
-        }
+            memory: Mutex::new(ProcessMemory {
+                page_mapper,
+                owned_pages: Vec::new(),
+            }),
+            threads: Default::default(),
+            service_messages: Default::default(),
+        });
+        s.threads.lock().proc_reference = Arc::downgrade(&s);
+        s
     }
 
     // A in place thread which data will overriden with the real thread on its context switch out.
-    pub unsafe fn new_overide_thread(&mut self) -> ThreadID {
-        let tid = ThreadID(self.thread_next_id);
-        self.thread_next_id += 1;
+    pub unsafe fn new_overide_thread(&self) -> Arc<Thread> {
+        let mut threads = self.threads.lock();
+        let tid = threads.get_next_id();
 
         let pushed_register_state = InterruptStackFrameValue {
             instruction_pointer: VirtAddr::new(0x8002),
@@ -139,38 +160,45 @@ impl Process {
 
         let register_state = Registers::default();
 
-        let thread = Thread {
+        let thread: Arc<Thread> = Arc::new(Thread {
+            process: threads.proc_reference.upgrade().unwrap(),
             tid,
-            register_state,
-            pushed_register_state,
-            current_message: Default::default(),
-            schedule_status: ScheduleStatus::Scheduled,
-        };
+            context: Mutex::new(ThreadContext {
+                register_state,
+                pushed_register_state,
+                current_message: Default::default(),
+                schedule_status: ScheduleStatus::Scheduled,
+            }),
+        });
 
-        self.threads.insert(tid, thread);
-        tid
+        threads.threads.insert(tid, thread.clone());
+        thread
     }
 
     pub fn new_thread_direct(
-        &mut self,
+        &self,
         entry_point: *const u64,
         register_state: Registers,
-    ) -> ThreadID {
-        let tid = ThreadID(self.thread_next_id);
-        self.thread_next_id += 1;
+    ) -> Arc<Thread> {
+        let mut threads = self.threads.lock();
+        let tid = threads.get_next_id();
 
         // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0 as u64;
 
-        for addr in (stack_base..(stack_base + STACK_SIZE as u64 - 1)).step_by(0x1000) {
-            let page = request_page().unwrap();
+        {
+            let mut memory = self.memory.lock();
+            for addr in (stack_base..(stack_base + STACK_SIZE as u64 - 1)).step_by(0x1000) {
+                let page = request_page().unwrap();
 
-            self.page_mapper
-                .map_memory(Page::new(addr), *page)
-                .unwrap()
-                .flush();
+                memory
+                    .page_mapper
+                    .map_memory(Page::new(addr), *page)
+                    .unwrap()
+                    .flush();
 
-            self.owned_pages.push(page);
+                memory.owned_pages.push(page);
+            }
         }
 
         let pushed_register_state = InterruptStackFrameValue {
@@ -181,19 +209,22 @@ impl Process {
             stack_segment: self.privilege.get_data_segment().0 as u64,
         };
 
-        let thread = Thread {
+        let thread = Arc::new(Thread {
+            process: threads.proc_reference.upgrade().unwrap(),
             tid,
-            register_state,
-            pushed_register_state,
-            current_message: Default::default(),
-            schedule_status: ScheduleStatus::Scheduled,
-        };
+            context: Mutex::new(ThreadContext {
+                register_state,
+                pushed_register_state,
+                current_message: Default::default(),
+                schedule_status: ScheduleStatus::Scheduled,
+            }),
+        });
 
-        self.threads.insert(tid, thread);
-        tid
+        threads.threads.insert(tid, thread.clone());
+        thread
     }
 
-    pub fn new_thread(&mut self, entry_point: usize) -> ThreadID {
+    pub fn new_thread(&self, entry_point: usize) -> Arc<Thread> {
         let register_state = Registers {
             rdi: entry_point,
             ..Default::default()
@@ -203,8 +234,21 @@ impl Process {
     }
 }
 
+impl ProcessThreads {
+    fn get_next_id(&mut self) -> ThreadID {
+        let tid = ThreadID(self.thread_next_id);
+        self.thread_next_id += 1;
+        tid
+    }
+}
+
 pub struct Thread {
+    pub process: Arc<Process>,
     pub tid: ThreadID,
+    pub context: Mutex<ThreadContext>,
+}
+
+pub struct ThreadContext {
     pub register_state: Registers,
     // Rest of the data inclusing rip & rsp
     pub pushed_register_state: InterruptStackFrameValue,
@@ -220,7 +264,7 @@ pub enum ScheduleStatus {
     WaitingOn(ServiceID),
 }
 
-impl Thread {
+impl ThreadContext {
     pub fn save(&mut self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
         self.pushed_register_state.clone_from(stack_frame);
         self.register_state.clone_from(reg);

@@ -44,13 +44,10 @@ use kernel::{elf, gdt, paging, ps2, service, BOOT_INFO};
 
 use bootloader::uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
 use bootloader::uefi::table::{Runtime, SystemTable};
-use kernel_userspace::service::{
-    generate_tracking_number, get_public_service_id, register_public_service,
-    SendServiceMessageDest, ServiceMessage,
-};
+use kernel_userspace::elf::spawn_elf_process;
+use kernel_userspace::service::{get_public_service_id, register_public_service, ServiceMessage};
 use kernel_userspace::syscall::{
-    exit, get_pid, receive_service_message_blocking, send_service_message, service_create,
-    spawn_process, spawn_thread, yield_now,
+    exit, receive_service_message_blocking, service_create, spawn_process, spawn_thread,
 };
 
 // #[no_mangle]
@@ -142,7 +139,6 @@ pub fn main(info: *const BootInfo) -> ! {
             .ignore();
 
         println!("Remapping to higher half");
-        unsafe { set_mem_offset(MemoryLoc::PhysMapOffset as u64) }
 
         unsafe {
             frame_alloc_exec(|f| {
@@ -156,8 +152,9 @@ pub fn main(info: *const BootInfo) -> ! {
                 "add rsp, {}",
                 "mov cr3, {}",
                 in(reg) MemoryLoc::PhysMapOffset as u64,
-                in(reg) map.get_lvl4_addr(),
+                in(reg) map.into_page().get_address(),
             );
+            set_mem_offset(MemoryLoc::PhysMapOffset as u64);
             map.shift_table_to_offset();
         }
     }
@@ -300,19 +297,7 @@ fn after_boot() {
     spawn_thread(|| {
         let mut buffer = Vec::new();
         let elf = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
-        let pid = get_pid();
-
-        send_service_message::<(&[u8], &[u8])>(
-            &ServiceMessage {
-                service_id: elf,
-                sender_pid: pid,
-                tracking_number: generate_tracking_number(),
-                destination: SendServiceMessageDest::ToProvider,
-                message: (TERMINAL_ELF, &[]),
-            },
-            &mut buffer,
-        )
-        .unwrap();
+        spawn_elf_process(elf, TERMINAL_ELF, &[], &mut buffer).unwrap();
     });
 
     // For testing, accepts all inputs

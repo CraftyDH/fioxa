@@ -3,14 +3,19 @@ use crate::paging::MemoryLoc;
 use super::*;
 
 impl PageTable<'_, PageLvl4> {
-    pub fn get_lvl4_addr(&self) -> u64 {
-        self.table as *const PhysPageTable as u64
-    }
-
     pub unsafe fn shift_table_to_offset(&mut self) {
         self.table = &mut *((self.table as *mut PhysPageTable as *mut u8)
             .add(MemoryLoc::PhysMapOffset as usize)
             as *mut PhysPageTable)
+    }
+
+    pub unsafe fn load_into_cr3(&self) {
+        let cr3 = self.into_page().get_address();
+        core::arch::asm!(
+            "mov cr3, {}",
+            in(reg) cr3,
+            options(nostack, preserves_flags)
+        );
     }
 }
 

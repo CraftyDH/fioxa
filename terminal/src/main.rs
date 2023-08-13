@@ -2,7 +2,7 @@
 #![no_main]
 
 use kernel_userspace::{
-    elf::LoadElfError,
+    elf::{spawn_elf_process, LoadElfError},
     fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
     ids::{ProcessID, ServiceID},
     service::{generate_tracking_number, get_public_service_id, ServiceMessage},
@@ -232,21 +232,9 @@ pub extern "C" fn main() {
 
                 println!("SPAWNING...");
 
-                let pid: ServiceMessage<Result<ProcessID, LoadElfError<'_>>> =
-                    send_and_get_response_service_message(
-                        &ServiceMessage {
-                            service_id: elf_loader_sid,
-                            sender_pid: *CURRENT_PID,
-                            tracking_number: generate_tracking_number(),
-                            destination:
-                                kernel_userspace::service::SendServiceMessageDest::ToProvider,
-                            message: (contents, args.as_bytes()),
-                        },
-                        &mut buffer,
-                    )
-                    .unwrap();
+                let pid = spawn_elf_process(elf_loader_sid, contents, args.as_bytes(), &mut buffer);
 
-                match pid.message {
+                match pid {
                     Ok(_) => (),
                     Err(err) => println!("Error spawning: `{err}`"),
                 }

@@ -1,5 +1,6 @@
-use core::mem::size_of;
+use core::mem::{size_of, ManuallyDrop};
 
+use alloc::sync::Arc;
 use kernel_userspace::ids::{ProcessID, ThreadID};
 
 use crate::{
@@ -10,6 +11,7 @@ use crate::{
         page_table_manager::{Mapper, Page},
         virt_addr_for_phys, MemoryLoc,
     },
+    scheduling::process::Thread,
 };
 
 #[repr(C, packed)]
@@ -18,9 +20,11 @@ pub struct CPULocalStorage {
     stack_top: u64,
     current_pid: u64,
     current_tid: u64,
+    current_task_ptr: u64,
     ticks_left: u32,
     // If not set the task should stay scheduled
     stay_scheduled: bool,
+    core_mgmt_task_ptr: u64,
     // at 0x1000 (1 page down is GDT)
 }
 
@@ -112,6 +116,55 @@ impl CPULocalStorageRW {
     #[inline]
     pub fn set_stay_scheduled(val: bool) {
         unsafe { localstorage_write!(val => stay_scheduled: bool) }
+    }
+
+    pub fn get_core_mgmt_task() -> Arc<Thread> {
+        unsafe {
+            let ptr = localstorage_read_imm!(core_mgmt_task_ptr: u64);
+            let arc = Arc::from_raw(ptr as *const Thread);
+
+            // get a new arc and don't drop our reference
+            let result = arc.clone();
+            let _ = ManuallyDrop::new(arc);
+
+            result
+        }
+    }
+
+    pub unsafe fn set_core_mgmt_task(task: Arc<Thread>) {
+        let ptr = Arc::into_raw(task);
+
+        unsafe { localstorage_write!(ptr as u64 => core_mgmt_task_ptr: u64) }
+
+        let _ = task;
+    }
+
+    pub fn get_current_task() -> Arc<Thread> {
+        unsafe {
+            let ptr = localstorage_read_imm!(current_task_ptr: u64);
+            let arc = Arc::from_raw(ptr as *const Thread);
+
+            // get a new arc and don't drop our reference
+            let result = arc.clone();
+            let _ = ManuallyDrop::new(arc);
+
+            result
+        }
+    }
+
+    pub fn set_current_task(task: Arc<Thread>) {
+        unsafe {
+            let ptr = localstorage_read_imm!(current_task_ptr: u64);
+            if ptr != 0 {
+                // drop the old ptr
+                let _ = Arc::from_raw(ptr as *const Thread);
+            }
+            let ptr = Arc::into_raw(task);
+
+            localstorage_write!(ptr as u64 => current_task_ptr: u64);
+
+            let _ = task;
+        }
     }
 }
 
