@@ -72,7 +72,9 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // unsafe { core::arch::asm!("cli") }
     without_context_switch(|| {
         log!("Panic: {}", info);
-        loop {}
+        loop {
+            unsafe { core::arch::asm!("hlt") }
+        }
     })
 }
 

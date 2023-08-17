@@ -56,9 +56,10 @@ pub unsafe fn get_uefi_active_mapper() -> PageTable<'static, PageLvl4> {
 
 pub type MemoryLoc = MemoryLoc64bit48bits;
 
-#[repr(u64)]
 /// First 4 bits need to either be 0xFFFF or 0x0000
 /// (depending on which side the 48th bit is, 0..7 = 0x0000, 8..F = 0xFFFF)
+#[repr(u64)]
+#[allow(clippy::mixed_case_hex_literals)]
 pub enum MemoryLoc64bit48bits {
     EndUserMem = 0x0000_FFFFFFFFFFFF,
     GlobalMapping = 0xffff_A00000000000,

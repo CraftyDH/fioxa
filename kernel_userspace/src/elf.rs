@@ -79,6 +79,8 @@ pub enum LoadElfError<'a> {
     EMachine(u16),
     #[error("unsupported elf version, expected 0, found: {0}")]
     ElfVersion(u32),
+    #[error("internal error")]
+    InternalError,
 }
 
 pub fn spawn_elf_process<'a>(

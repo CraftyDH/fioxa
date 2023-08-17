@@ -110,7 +110,9 @@ fn get_next_task() -> Arc<Thread> {
 }
 
 pub unsafe fn init(mapper: PageTable<'static, PageLvl4>, core_cnt: u8) {
-    CORE_COUNT.try_init_once(|| core_cnt).unwrap();
+    CORE_COUNT
+        .try_init_once(|| core_cnt)
+        .expect("CORE_COUNT shouldn't have been inited yet");
     let process = Process::new_with_page(
         crate::scheduling::process::ProcessPrivilige::KERNEL,
         mapper,
@@ -125,7 +127,7 @@ pub unsafe fn init(mapper: PageTable<'static, PageLvl4>, core_cnt: u8) {
     PROCESSES.lock().insert(pid, process);
 }
 
-fn save_current_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
+fn save_current_task(stack_frame: &InterruptStackFrame, reg: &Registers) {
     let thread = CPULocalStorageRW::get_current_task();
     thread.context.lock().save(stack_frame, reg);
 
@@ -160,7 +162,9 @@ pub fn exit_thread(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
         let thread = CPULocalStorageRW::get_current_task();
         let p = &thread.process;
         let mut t = p.threads.lock();
-        t.threads.remove(&thread.tid).unwrap();
+        t.threads
+            .remove(&thread.tid)
+            .expect("thread should be in thread list");
         if t.threads.is_empty() {
             PROCESSES.lock().remove(&p.pid);
         }

@@ -1,11 +1,9 @@
+pub mod bitfields;
+
 use core::{mem::size_of, slice};
 
 use alloc::{sync::Arc, vec::Vec};
 use conquer_once::spin::Lazy;
-use modular_bitfield::{
-    bitfield,
-    specifiers::{B4, B48},
-};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -29,6 +27,8 @@ use kernel_userspace::{
     },
 };
 
+use self::bitfields::InitBlock;
+
 use super::SendError;
 
 const IP_ADDR: u32 = 100 << 24 | 1 << 16 | 168 << 8 | 192;
@@ -47,21 +47,6 @@ struct BufferDescriptor {
     flags: u32,
     flags_2: u32,
     avail: u32,
-}
-
-#[bitfield]
-struct InitBlock {
-    mode: u16,
-    #[skip]
-    _resv: B4,
-    num_send_buffers: B4,
-    _resv2: B4,
-    num_recv_buffers: B4,
-    physical_address: B48,
-    _resv3: u16,
-    logical_address: u64,
-    recv_buffer_desc_addr: u32,
-    send_buffer_desc_addr: u32,
 }
 
 static PCNET_SID: Lazy<ServiceID> = Lazy::new(|| {
@@ -330,9 +315,7 @@ impl PCNET<'_> {
         println!("PCNET inited");
         Some(this)
     }
-    fn unload(self) -> ! {
-        todo!()
-    }
+
     fn interrupt_handler(&mut self) {
         // Stop interrupts
         let tmp = self.io.read_csr_32(0);

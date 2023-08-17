@@ -20,11 +20,15 @@ impl PageTable<'_, PageLvl4> {
 }
 
 impl Mapper<Size1GB> for PageTable<'_, PageLvl3> {
-    fn map_memory(&mut self, from: Page<Size1GB>, to: Page<Size1GB>) -> Option<Flusher> {
+    fn map_memory(
+        &mut self,
+        from: Page<Size1GB>,
+        to: Page<Size1GB>,
+    ) -> Result<Flusher, MapMemoryError> {
         self.map_memory_inner(from, to)
     }
 
-    fn unmap_memory(&mut self, page: Page<Size1GB>) -> Option<Flusher> {
+    fn unmap_memory(&mut self, page: Page<Size1GB>) -> Result<Flusher, UnMapMemoryError> {
         self.unmap_memory_inner(page)
     }
 
@@ -34,11 +38,15 @@ impl Mapper<Size1GB> for PageTable<'_, PageLvl3> {
 }
 
 impl Mapper<Size2MB> for PageTable<'_, PageLvl2> {
-    fn map_memory(&mut self, from: Page<Size2MB>, to: Page<Size2MB>) -> Option<Flusher> {
+    fn map_memory(
+        &mut self,
+        from: Page<Size2MB>,
+        to: Page<Size2MB>,
+    ) -> Result<Flusher, MapMemoryError> {
         self.map_memory_inner(from, to)
     }
 
-    fn unmap_memory(&mut self, page: Page<Size2MB>) -> Option<Flusher> {
+    fn unmap_memory(&mut self, page: Page<Size2MB>) -> Result<Flusher, UnMapMemoryError> {
         self.unmap_memory_inner(page)
     }
 
@@ -48,11 +56,15 @@ impl Mapper<Size2MB> for PageTable<'_, PageLvl2> {
 }
 
 impl Mapper<Size4KB> for PageTable<'_, PageLvl1> {
-    fn map_memory(&mut self, from: Page<Size4KB>, to: Page<Size4KB>) -> Option<Flusher> {
+    fn map_memory(
+        &mut self,
+        from: Page<Size4KB>,
+        to: Page<Size4KB>,
+    ) -> Result<Flusher, MapMemoryError> {
         self.map_memory_inner(from, to)
     }
 
-    fn unmap_memory(&mut self, page: Page<Size4KB>) -> Option<Flusher> {
+    fn unmap_memory(&mut self, page: Page<Size4KB>) -> Result<Flusher, UnMapMemoryError> {
         self.unmap_memory_inner(page)
     }
 

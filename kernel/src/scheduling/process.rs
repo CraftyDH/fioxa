@@ -161,7 +161,10 @@ impl Process {
         let register_state = Registers::default();
 
         let thread: Arc<Thread> = Arc::new(Thread {
-            process: threads.proc_reference.upgrade().unwrap(),
+            process: threads
+                .proc_reference
+                .upgrade()
+                .expect("process should still be alive"),
             tid,
             context: Mutex::new(ThreadContext {
                 register_state,
@@ -184,11 +187,11 @@ impl Process {
         let tid = threads.get_next_id();
 
         // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
-        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0 as u64;
+        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0;
 
         {
             let mut memory = self.memory.lock();
-            for addr in (stack_base..(stack_base + STACK_SIZE as u64 - 1)).step_by(0x1000) {
+            for addr in (stack_base..(stack_base + STACK_SIZE - 1)).step_by(0x1000) {
                 let page = request_page().unwrap();
 
                 memory
@@ -205,7 +208,7 @@ impl Process {
             instruction_pointer: VirtAddr::from_ptr(entry_point),
             code_segment: self.privilege.get_code_segment().0 as u64,
             cpu_flags: 0x202,
-            stack_pointer: VirtAddr::new(stack_base + STACK_SIZE as u64),
+            stack_pointer: VirtAddr::new(stack_base + STACK_SIZE),
             stack_segment: self.privilege.get_data_segment().0 as u64,
         };
 
@@ -265,7 +268,7 @@ pub enum ScheduleStatus {
 }
 
 impl ThreadContext {
-    pub fn save(&mut self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
+    pub fn save(&mut self, stack_frame: &InterruptStackFrame, reg: &Registers) {
         self.pushed_register_state.clone_from(stack_frame);
         self.register_state.clone_from(reg);
     }

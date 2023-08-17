@@ -52,6 +52,8 @@ pub fn new(owner: ProcessID) -> ServiceID {
 pub fn subscribe(pid: ProcessID, id: ServiceID) {
     if let Some(v) = SERVICES.lock().get_mut(&id) {
         v.subscribers.insert(pid);
+    } else {
+        todo!("Handle no service existing");
     }
 }
 
@@ -102,12 +104,14 @@ fn send_message(
     loop {
         // Try getting the list asking for a specific message, then the list asking for a specific service, this the list asking for anything
         let tid = match waiters.get_mut(&(message.0, message.1)) {
-            Some(t) if t.len() > 0 => t.pop().expect("list should have at least 1 element"),
+            Some(t) if !t.is_empty() => t.pop().expect("list should have at least 1 element"),
             _ => match waiters.get_mut(&(message.0, ServiceTrackingNumber(u64::MAX))) {
-                Some(t) if t.len() > 0 => t.pop().expect("list should have at least 1 element"),
+                Some(t) if !t.is_empty() => t.pop().expect("list should have at least 1 element"),
                 _ => match waiters.get_mut(&(ServiceID(u64::MAX), ServiceTrackingNumber(u64::MAX)))
                 {
-                    Some(t) if t.len() > 0 => t.pop().expect("list should have at least 1 element"),
+                    Some(t) if !t.is_empty() => {
+                        t.pop().expect("list should have at least 1 element")
+                    }
                     _ => break,
                 },
             },
@@ -116,7 +120,7 @@ fn send_message(
         let t = proc.threads.lock();
         let Some(thread) = t.threads.get(&tid) else {
             // thread doesn't exist anymore, try again
-            break;
+            continue;
         };
 
         let mut ctx = thread.context.lock();
@@ -134,6 +138,11 @@ fn send_message(
         return Ok(());
     }
 
+    // try to avoid OOM by restricting max packets in queue.
+    if service_messages.queue.len() >= 0x10000 {
+        println!("queue for {} is full dropping old packets", pid.0);
+        service_messages.queue.pop_front();
+    }
     // otherwise add it to the queue
     service_messages.queue.push_back(message);
     Ok(())

@@ -262,7 +262,7 @@ where
         syscall!(SERVICE, SERVICE_GET, buf.as_mut_ptr() as usize, buf.len() => result);
 
         if result != 0 {
-            panic!("Error getting message")
+            panic!("Error getting message, ensure that fetch was called first & buffer was increased appropriately");
         }
 
         postcard::from_bytes(buf)

@@ -50,7 +50,7 @@ pub fn load_elf<'a>(data: &'a [u8], args: &[u8]) -> Result<ProcessID, LoadElfErr
     let process = Process::new(crate::scheduling::process::ProcessPrivilige::USER, args);
     println!("ALLOCING MEM...");
     let mut pages = frame_alloc_exec(|c| c.request_cont_pages(pages_count as usize))
-        .unwrap()
+        .ok_or(LoadElfError::InternalError)?
         .peekable();
 
     assert_eq!(pages.len(), pages_count as usize);
@@ -63,7 +63,7 @@ pub fn load_elf<'a>(data: &'a [u8], args: &[u8]) -> Result<ProcessID, LoadElfErr
             memory
                 .page_mapper
                 .map_memory(Page::new(virt_addr), *page)
-                .unwrap()
+                .map_err(|_| LoadElfError::InternalError)?
                 .flush();
             memory.owned_pages.push(page);
         }
@@ -78,10 +78,17 @@ pub fn load_elf<'a>(data: &'a [u8], args: &[u8]) -> Result<ProcessID, LoadElfErr
         if program_header.p_type == PT_LOAD {
             unsafe {
                 core::ptr::copy_nonoverlapping::<u8>(
-                    data.as_ptr()
-                        .offset(program_header.p_offset.try_into().unwrap()),
+                    data.as_ptr().offset(
+                        program_header
+                            .p_offset
+                            .try_into()
+                            .map_err(|_| LoadElfError::InternalError)?,
+                    ),
                     virt_addr_for_phys(start + program_header.p_vaddr - mem_start) as *mut u8,
-                    program_header.p_filesz.try_into().unwrap(),
+                    program_header
+                        .p_filesz
+                        .try_into()
+                        .map_err(|_| LoadElfError::InternalError)?,
                 )
             }
         }
@@ -93,7 +100,7 @@ pub fn load_elf<'a>(data: &'a [u8], args: &[u8]) -> Result<ProcessID, LoadElfErr
     without_context_switch(|| {
         PROCESSES.lock().insert(pid, process);
     });
-    push_task_queue(thread).unwrap();
+    push_task_queue(thread).expect("thread should be able enter the queue");
     Ok(pid)
 }
 

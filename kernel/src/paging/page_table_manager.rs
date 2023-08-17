@@ -3,12 +3,28 @@ pub mod walk;
 
 use core::marker::PhantomData;
 
+use thiserror::Error;
+
 use crate::paging::page_allocator;
 
 use super::{
     get_uefi_active_mapper, page_allocator::request_page, page_directory::PageDirectoryEntry,
     phys_addr_for_virt, virt_addr_for_phys,
 };
+
+#[derive(Error, Debug)]
+pub enum MapMemoryError {
+    #[error("cannot map {from:X} to {to:X} because {current:X} is mapped")]
+    MemAlreadyMapped { to: u64, from: u64, current: u64 },
+}
+
+#[derive(Error, Debug)]
+pub enum UnMapMemoryError {
+    #[error("cannot unmap {0} because it is not mapped")]
+    MemNotMapped(u64),
+    #[error("cannot unmap {0} because the page tables don't exist")]
+    PathNotFound(u64),
+}
 
 #[derive(Debug)]
 pub struct Size4KB;
@@ -80,12 +96,12 @@ impl<S: PageSize> Clone for Page<S> {
 }
 
 pub trait Mapper<S: PageSize> {
-    fn map_memory(&mut self, from: Page<S>, to: Page<S>) -> Option<Flusher>;
+    fn map_memory(&mut self, from: Page<S>, to: Page<S>) -> Result<Flusher, MapMemoryError>;
     #[inline]
-    fn identity_map_memory(&mut self, page: Page<S>) -> Option<Flusher> {
+    fn identity_map_memory(&mut self, page: Page<S>) -> Result<Flusher, MapMemoryError> {
         self.map_memory(page, page)
     }
-    fn unmap_memory(&mut self, page: Page<S>) -> Option<Flusher>;
+    fn unmap_memory(&mut self, page: Page<S>) -> Result<Flusher, UnMapMemoryError>;
     fn get_phys_addr(&mut self, page: Page<S>) -> Option<u64>;
 }
 
@@ -197,7 +213,7 @@ impl PhysPageTable {
     }
 
     fn get_table(&self, idx: usize) -> Option<&mut PhysPageTable> {
-        let entry = &self.entries[idx as usize];
+        let entry = &self.entries[idx];
         if entry.larger_pages() {
             panic!("Page Lvl4 cannot contain huge pages")
         }
@@ -260,16 +276,22 @@ impl<S: PageLevel + NextLevel> PageTable<'_, S> {
             .set_table(PageLvl4::calc_idx(address), table.table);
     }
 
-    pub fn unmap_memory_walk_inner<P: PageSize>(&mut self, page: Page<P>) -> Option<Flusher>
+    pub fn unmap_memory_walk_inner<P: PageSize>(
+        &mut self,
+        page: Page<P>,
+    ) -> Result<Flusher, UnMapMemoryError>
     where
         for<'a> PageTable<'a, S::Next>: Mapper<P>,
     {
         self.get_next_table(page).unmap_memory(page).and_then(|r| {
-            let table = self.table.get_table(S::calc_idx(page.get_address()))?;
+            let table = self
+                .table
+                .get_table(S::calc_idx(page.get_address()))
+                .ok_or(UnMapMemoryError::PathNotFound(page.get_address()))?;
             if table.is_empty() {
                 unsafe { self.table.free_table(S::calc_idx(page.get_address())) }
             }
-            Some(r)
+            Ok(r)
         })
     }
 }
@@ -283,14 +305,24 @@ impl<S: PageLevel + LvlSize> PageTable<'_, S> {
         &self.table.entries[S::calc_idx(page.get_address())]
     }
 
-    fn map_memory_inner(&mut self, from: Page<S::Size>, to: Page<S::Size>) -> Option<Flusher> {
+    fn map_memory_inner(
+        &mut self,
+        from: Page<S::Size>,
+        to: Page<S::Size>,
+    ) -> Result<Flusher, MapMemoryError> {
         let entry = self.get_entry_mut(from);
 
         // TODO: Stop overriding exiting mappings
         if entry.present() {
+            // TODO: When the kernel is less buggy by double mapping, assert this whenever it is present
             // Make sure we aren't creating bugs by checking that it only overrides with the same addr
-            assert_eq!(entry.get_address(), to.address)
-            // println!("WARN: overiding mapping");
+            if entry.get_address() != to.address {
+                return Err(MapMemoryError::MemAlreadyMapped {
+                    to: to.get_address(),
+                    from: to.get_address(),
+                    current: entry.get_address(),
+                });
+            }
         }
 
         entry.set_present(true);
@@ -299,23 +331,20 @@ impl<S: PageLevel + LvlSize> PageTable<'_, S> {
         entry.set_read_write(true);
         entry.set_user_super(true);
 
-        Some(Flusher(from.address))
+        Ok(Flusher(from.address))
     }
 
-    fn unmap_memory_inner(&mut self, page: Page<S::Size>) -> Option<Flusher> {
+    fn unmap_memory_inner(&mut self, page: Page<S::Size>) -> Result<Flusher, UnMapMemoryError> {
         let entry = self.get_entry_mut(page);
 
         if !entry.present() {
-            println!(
-                "WARN: attempting to unmap something that is not mapped: {:?}",
-                page._size
-            );
+            return Err(UnMapMemoryError::MemNotMapped(page.get_address()));
         }
 
         entry.set_present(false);
         entry.set_address(0);
 
-        Some(Flusher(page.address))
+        Ok(Flusher(page.address))
     }
 
     fn get_phys_addr_inner(&self, page: Page<S::Size>) -> Option<u64> {

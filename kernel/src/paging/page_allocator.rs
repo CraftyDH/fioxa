@@ -49,7 +49,7 @@ impl AllocatedPage {
     }
 
     pub unsafe fn leak(mut self) -> Page<Size4KB> {
-        self.0.take().unwrap()
+        self.0.take().expect("should always be some")
     }
 }
 
@@ -57,13 +57,13 @@ impl Deref for AllocatedPage {
     type Target = Page<Size4KB>;
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_ref().unwrap()
+        self.0.as_ref().expect("should always be some")
     }
 }
 
 impl DerefMut for AllocatedPage {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut().unwrap()
+        self.0.as_mut().expect("should always be some")
     }
 }
 
@@ -114,11 +114,15 @@ impl Allocated32Page {
     }
 
     pub unsafe fn leak(mut self) -> Page<Size4KB> {
-        self.0.take().unwrap()
+        self.0.take().expect("should always be some")
     }
 
     pub fn get_address(&self) -> u32 {
-        self.0.unwrap().get_address().try_into().unwrap()
+        self.0
+            .expect("should always be some")
+            .get_address()
+            .try_into()
+            .expect("should always be able to fit")
     }
 }
 
@@ -126,13 +130,13 @@ impl Deref for Allocated32Page {
     type Target = Page<Size4KB>;
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_ref().unwrap()
+        self.0.as_ref().expect("should always be some")
     }
 }
 
 impl DerefMut for Allocated32Page {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut().unwrap()
+        self.0.as_mut().expect("should always be some")
     }
 }
 
@@ -368,7 +372,11 @@ impl PageFrameAllocator<'_> {
                     )
                 };
                 self.reserved_16bit_bitmap.set_bit(i, true);
-                return Some(mem_location.try_into().unwrap());
+                return Some(
+                    mem_location
+                        .try_into()
+                        .expect("reserved_16bit_bitmap should only give 32bit results"),
+                );
             }
         }
         None

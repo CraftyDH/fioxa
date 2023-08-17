@@ -19,7 +19,7 @@ pub extern "C" fn main() {
 
     let mut args = args.split_whitespace();
 
-    let cmd = args.next().unwrap();
+    let cmd = args.next().expect("please provide args");
 
     match cmd.to_uppercase().as_str() {
         "ARP" => {

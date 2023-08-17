@@ -7,7 +7,7 @@ use crate::{
     driver::disk::{
         ahci::{
             fis::{FisRegH2D, FISTYPE},
-            HBACommandHeader, HBACommandTable,
+            HBACommandTable,
         },
         DiskDevice,
     },
@@ -20,7 +20,8 @@ use crate::{
 };
 
 use super::{
-    fis::ReceivedFis, HBAPort, HBA_PX_CMD_CR, HBA_PX_CMD_FR, HBA_PX_CMD_FRE, HBA_PX_CMD_ST,
+    bitfields::HBACommandHeader, fis::ReceivedFis, HBAPort, HBA_PX_CMD_CR, HBA_PX_CMD_FR,
+    HBA_PX_CMD_FRE, HBA_PX_CMD_ST,
 };
 
 #[derive(Debug, PartialEq)]
@@ -167,7 +168,7 @@ impl DiskDevice for Port {
 
         if left_align_size > 0 {
             // Align ptr on prev boundary
-            ptr_addr = ptr_addr & !0xFFF;
+            ptr_addr &= !0xFFF;
 
             let phys_addr = mapper
                 .get_phys_addr(Page::<Size4KB>::new(ptr_addr))
@@ -259,7 +260,7 @@ impl DiskDevice for Port {
         Some(())
     }
 
-    fn write(&mut self, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()> {
+    fn write(&mut self, _sector: usize, _sector_count: u32, _buffer: &mut [u8]) -> Option<()> {
         todo!()
     }
 

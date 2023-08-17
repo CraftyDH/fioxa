@@ -198,9 +198,9 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
         "Class: {}, Vendor: {}, Device: {}",
         cls,
         pci_descriptors::get_vendor_name(pci_header.get_vendor_id())
-            .unwrap_or(&format!("Unknown vendor: {:#X}", { pci_header.get_vendor_id() }).as_str()),
+            .unwrap_or(format!("Unknown vendor: {:#X}", { pci_header.get_vendor_id() }).as_str()),
         pci_descriptors::get_device_name(pci_header.get_vendor_id(), pci_header.get_device_id())
-            .unwrap_or(&format!("Unknown device: {:#X}", { pci_header.get_device_id() }).as_str())
+            .unwrap_or(format!("Unknown device: {:#X}", { pci_header.get_device_id() }).as_str())
     );
 
     // Specific drivers

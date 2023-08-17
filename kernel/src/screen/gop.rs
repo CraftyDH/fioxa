@@ -46,7 +46,11 @@ impl Writer {
             if unicode_byte == 0xFFFF {
                 index += 1;
             } else {
-                unicode_table.insert(char::from_u32(unicode_byte.into()).unwrap(), index);
+                unicode_table.insert(
+                    char::from_u32(unicode_byte.into())
+                        .expect("unicode table should only have valid chars"),
+                    index,
+                );
             }
         }
 
@@ -278,13 +282,15 @@ use super::psf1::PSF1Font;
 pub fn _print(args: Arguments) {
     loop {
         // Prevent task from being scheduled away with mutex
-        if let Some(_) = without_context_switch(|| {
+        if without_context_switch(|| {
             if let Some(mut w) = WRITER.try_lock() {
                 w.write_fmt(args).unwrap();
                 return Some(());
             }
             None
-        }) {
+        })
+        .is_some()
+        {
             return;
         }
     }
@@ -320,7 +326,7 @@ pub fn monitor_stdout_task() {
             &mut buffer,
         ) {
             Ok(_) | Err(SendError::TargetNotExists) => (),
-            Err(e) => Err(e).unwrap(),
+            Err(e) => println!("gop send error: {e:?}"),
         }
     }
 }

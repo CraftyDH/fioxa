@@ -7,7 +7,8 @@ use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::V
 use conquer_once::spin::Lazy;
 use kernel_userspace::{
     fs::{
-        FSServiceMessage, FSServiceMessageResp, StatResponse, StatResponseFile, StatResponseFolder,
+        FSServiceError, FSServiceMessage, FSServiceMessageResp, StatResponse, StatResponseFile,
+        StatResponseFolder,
     },
     service::{register_public_service, SendServiceMessageDest, ServiceMessage},
     syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
@@ -87,35 +88,48 @@ impl FSPartitionDisk {
     }
 }
 
-pub fn get_file_by_id(id: VFileID) -> VFile {
+fn with_partition<F, R>(id: PartitionId, f: F) -> Result<R, FSServiceError>
+where
+    F: FnOnce(&mut Box<dyn FileSystemDev>) -> Result<R, FSServiceError>,
+{
     let mut p = PARTITION.lock();
-    let p = p.get_mut(&id.0).unwrap();
-    p.get_file_by_id(id.1)
+    let p = p
+        .get_mut(&id)
+        .ok_or(FSServiceError::NoSuchPartition(id.0))?;
+    f(p)
 }
 
-pub fn read_file(id: VFileID, buffer: &mut Vec<u8>) -> &[u8] {
-    let mut p = PARTITION.lock();
-    let p = p.get_mut(&id.0).unwrap();
-    p.read_file(id.1, buffer)
+pub fn get_file_by_id(id: VFileID) -> Result<VFile, FSServiceError> {
+    with_partition(id.0, |p| p.get_file_by_id(id.1))
 }
 
-pub fn read_file_sector(id: VFileID, sector: usize, buf: &mut [u8; 512]) -> Option<usize> {
-    let mut p = PARTITION.lock();
-    let p = p.get_mut(&id.0).unwrap();
-    p.read_file_sector(id.1, sector, buf)
+pub fn read_file(id: VFileID, buffer: &mut Vec<u8>) -> Result<&[u8], FSServiceError> {
+    with_partition(id.0, |p| p.read_file(id.1, buffer))
+}
+
+pub fn read_file_sector(
+    id: VFileID,
+    sector: usize,
+    buf: &mut [u8; 512],
+) -> Result<Option<usize>, FSServiceError> {
+    with_partition(id.0, |p| p.read_file_sector(id.1, sector, buf))
 }
 
 pub trait FileSystemDev: Send + Sync {
-    fn get_file_by_id(&mut self, file_id: usize) -> VFile;
+    fn get_file_by_id(&mut self, file_id: usize) -> Result<VFile, FSServiceError>;
 
-    fn read_file<'a>(&mut self, file_id: usize, buffer: &'a mut Vec<u8>) -> &'a [u8];
+    fn read_file<'a>(
+        &mut self,
+        file_id: usize,
+        buffer: &'a mut Vec<u8>,
+    ) -> Result<&'a [u8], FSServiceError>;
 
     fn read_file_sector(
         &mut self,
         file_id: usize,
         file_sector: usize,
         buffer: &mut [u8; 512],
-    ) -> Option<usize>;
+    ) -> Result<Option<usize>, FSServiceError>;
 }
 
 impl Debug for dyn FileSystemDev {
@@ -146,8 +160,8 @@ pub enum VFileSpecialized {
     File(usize),
 }
 
-pub fn get_file_from_path(partition_id: PartitionId, path: &str) -> Option<VFile> {
-    let mut file = get_file_by_id((partition_id, 0));
+pub fn get_file_from_path(partition_id: PartitionId, path: &str) -> Result<VFile, FSServiceError> {
+    let mut file = get_file_by_id((partition_id, 0))?;
 
     for sect in path.split('/') {
         if sect.is_empty() {
@@ -156,35 +170,34 @@ pub fn get_file_from_path(partition_id: PartitionId, path: &str) -> Option<VFile
         let folder = match file.specialized {
             VFileSpecialized::Folder(f) => f,
             VFileSpecialized::File(_) => {
-                println!("Not a directory");
-                return None;
+                return Err(FSServiceError::CouldNotFollowPath);
             }
         };
-        let id = folder.get(sect)?;
-        file = get_file_by_id(*id);
+        let id = folder.get(sect).ok_or(FSServiceError::CouldNotFollowPath)?;
+        file = get_file_by_id(*id)?;
     }
-    Some(file)
+    Ok(file)
 }
 
-pub fn tree(folder: VFileID, prefix: String) {
-    let file = get_file_by_id(folder);
+// pub fn tree(folder: VFileID, prefix: String) {
+//     let file = get_file_by_id(folder);
 
-    let folder = match file.specialized {
-        VFileSpecialized::Folder(f) => f,
-        VFileSpecialized::File(_) => return,
-    };
+//     let folder = match file.specialized {
+//         VFileSpecialized::Folder(f) => f,
+//         VFileSpecialized::File(_) => return,
+//     };
 
-    let mut it = folder.into_iter().peekable();
-    while let Some((name, node)) = it.next() {
-        let (t, pref) = match it.peek() {
-            Some(_) => ('├', "│   "),
-            None => ('└', "    "),
-        };
-        println!("{}{}── {}", &prefix, t, name);
+//     let mut it = folder.into_iter().peekable();
+//     while let Some((name, node)) = it.next() {
+//         let (t, pref) = match it.peek() {
+//             Some(_) => ('├', "│   "),
+//             None => ('└', "    "),
+//         };
+//         println!("{}{}── {}", &prefix, t, name);
 
-        tree(node, prefix.clone() + pref);
-    }
-}
+//         tree(node, prefix.clone() + pref);
+//     }
+// }
 
 pub fn file_handler() {
     let sid = service_create();
@@ -192,61 +205,22 @@ pub fn file_handler() {
     register_public_service("FS", sid, &mut Vec::new());
 
     let mut message_buffer = Vec::new();
-    let mut read_buffer = Vec::new();
-    let mut buffer = [0u8; 512];
 
     // A bit of a hack to extend the lifetime
-    let mut file_vec;
-    let mut c;
+    let mut buffer = Vec::new();
+    let mut btree_child_buffer = BTreeMap::new();
+    let mut sec_buf = [0; 512];
+
     loop {
         let query = receive_service_message_blocking(sid, &mut message_buffer).unwrap();
 
-        let resp = match query.message {
-            FSServiceMessage::RunStat(disk, path) => {
-                if let Some(file) = get_file_from_path(PartitionId(disk as u64), path) {
-                    let stat = match file.specialized {
-                        VFileSpecialized::Folder(children) => {
-                            c = children;
-                            let keys = c.keys();
-                            StatResponse::Folder(StatResponseFolder {
-                                node_id: file.location.1,
-                                children: keys.map(|c| c.as_str()).collect(),
-                            })
-                        }
-                        VFileSpecialized::File(size) => StatResponse::File(StatResponseFile {
-                            node_id: file.location.1,
-                            file_size: size,
-                        }),
-                    };
+        let resp = run_fs_query(
+            query.message,
+            &mut buffer,
+            &mut sec_buf,
+            &mut btree_child_buffer,
+        );
 
-                    FSServiceMessageResp::StatResponse(stat)
-                } else {
-                    FSServiceMessageResp::StatResponse(StatResponse::NotFound)
-                }
-            }
-            FSServiceMessage::ReadRequest(req) => {
-                if let Some(len) = read_file_sector(
-                    (PartitionId(req.disk_id as u64), req.node_id),
-                    req.sector as usize,
-                    &mut buffer,
-                ) {
-                    FSServiceMessageResp::ReadResponse(Some(&buffer[0..len]))
-                } else {
-                    FSServiceMessageResp::ReadResponse(None)
-                }
-            }
-            FSServiceMessage::ReadFullFileRequest(req) => {
-                file_vec = read_file(
-                    (PartitionId(req.disk_id as u64), req.node_id),
-                    &mut read_buffer,
-                );
-                FSServiceMessageResp::ReadResponse(Some(file_vec))
-            }
-            FSServiceMessage::GetDisksRequest => {
-                let disks = PARTITION.lock().keys().map(|p| p.0).collect();
-                FSServiceMessageResp::GetDisksResponse(disks)
-            }
-        };
         send_service_message(
             &ServiceMessage {
                 service_id: sid,
@@ -258,5 +232,55 @@ pub fn file_handler() {
             &mut message_buffer,
         )
         .unwrap();
+    }
+}
+
+fn run_fs_query<'a>(
+    query: FSServiceMessage,
+    buffer: &'a mut Vec<u8>,
+    sec_buffer: &'a mut [u8; 512],
+    btree_child_buf: &'a mut BTreeMap<String, VFileID>,
+) -> Result<FSServiceMessageResp<'a>, FSServiceError> {
+    match query {
+        FSServiceMessage::RunStat(disk, path) => {
+            let file = get_file_from_path(PartitionId(disk as u64), path)?;
+            let stat = match file.specialized {
+                VFileSpecialized::Folder(children) => {
+                    *btree_child_buf = children;
+                    let keys = btree_child_buf.keys();
+                    StatResponse::Folder(StatResponseFolder {
+                        node_id: file.location.1,
+                        children: keys.map(|c| c.as_str()).collect(),
+                    })
+                }
+                VFileSpecialized::File(size) => StatResponse::File(StatResponseFile {
+                    node_id: file.location.1,
+                    file_size: size,
+                }),
+            };
+
+            Ok(FSServiceMessageResp::StatResponse(stat))
+        }
+        FSServiceMessage::ReadRequest(req) => {
+            if let Some(len) = read_file_sector(
+                (PartitionId(req.disk_id as u64), req.node_id),
+                req.sector as usize,
+                sec_buffer,
+            )? {
+                Ok(FSServiceMessageResp::ReadResponse(Some(
+                    &sec_buffer[0..len],
+                )))
+            } else {
+                Ok(FSServiceMessageResp::ReadResponse(None))
+            }
+        }
+        FSServiceMessage::ReadFullFileRequest(req) => {
+            let file_vec = read_file((PartitionId(req.disk_id as u64), req.node_id), buffer)?;
+            Ok(FSServiceMessageResp::ReadResponse(Some(file_vec)))
+        }
+        FSServiceMessage::GetDisksRequest => {
+            let disks = PARTITION.lock().keys().map(|p| p.0).collect();
+            Ok(FSServiceMessageResp::GetDisksResponse(disks))
+        }
     }
 }

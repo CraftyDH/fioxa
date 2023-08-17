@@ -1,5 +1,6 @@
 use core::ptr::slice_from_raw_parts_mut;
 
+use alloc::string::String;
 use kernel_userspace::{
     ids::ServiceID,
     service::ServiceTrackingNumber,
@@ -44,13 +45,19 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
         // SLEEP => task_manager.sleep(stack_frame, regs),
         EXIT_THREAD => taskmanager::exit_thread(stack_frame, regs),
         MMAP_PAGE => {
-            mmap_page_handler(regs);
+            if let Err(e) = mmap_page_handler(regs) {
+                println!("{e}");
+                taskmanager::exit_thread(stack_frame, regs);
+            };
             taskmanager::yield_now(stack_frame, regs);
         }
         UNMMAP_PAGE => {
             // ! TODO: THIS IS VERY BAD
             // Another thread can still write to the memory
-            unmmap_page_handler(regs);
+            if let Err(e) = unmmap_page_handler(regs) {
+                println!("{e}");
+                taskmanager::exit_thread(stack_frame, regs);
+            };
             taskmanager::yield_now(stack_frame, regs);
         }
         SERVICE => service_handler(stack_frame, regs),
@@ -79,7 +86,7 @@ fn read_args_handler(regs: &mut Registers) {
     } else {
         let bytes = &proc.args;
         let buf = unsafe { &mut *slice_from_raw_parts_mut(regs.r8 as *mut u8, bytes.len()) };
-        buf.copy_from_slice(&bytes);
+        buf.copy_from_slice(bytes);
     }
 }
 
@@ -139,41 +146,53 @@ fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
     }
 }
 
-fn mmap_page_handler(regs: &mut Registers) {
+fn mmap_page_handler(regs: &Registers) -> Result<(), &'static str> {
     assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
 
     let task = CPULocalStorageRW::get_current_task();
 
-    let page = request_page().unwrap();
+    let page = request_page().ok_or("OOM")?;
 
     let mut memory = task.process.memory.lock();
 
     memory
         .page_mapper
         .map_memory(Page::<Size4KB>::new(regs.r8 as u64), *page)
-        .unwrap()
+        .map_err(|_| "FAULT (failed to map)")?
         .flush();
 
     memory.owned_pages.push(page);
+    Ok(())
 }
 
-fn unmmap_page_handler(regs: &mut Registers) {
+fn unmmap_page_handler(regs: &Registers) -> Result<(), String> {
     assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
 
     let task = CPULocalStorageRW::get_current_task();
     let page = Page::<Size4KB>::new(regs.r8 as u64);
 
     let mut memory = task.process.memory.lock();
-    let phys_page = memory.page_mapper.get_phys_addr(page).unwrap();
-    memory.page_mapper.unmap_memory(page).unwrap().flush();
 
-    // The memory should be freed by the allocated page destructor
+    let phys_page = memory
+        .page_mapper
+        .get_phys_addr(page)
+        .ok_or("SEGFAULT: tried to unmap not mapped page")?;
+
     let pos = memory
         .owned_pages
         .iter()
         .position(|e| e.get_address() == phys_page)
-        .unwrap();
+        .ok_or("SEGFAULT: process tried to unmap not owned memory")?;
+
+    memory
+        .page_mapper
+        .unmap_memory(page)
+        .map_err(|e| format!("SEGFAULT: couldn't unmap memory: {e}"))?
+        .flush();
+
+    // The memory should be freed by the allocated page destructor
     memory.owned_pages.swap_remove(pos);
+    Ok(())
 }
 
 pub fn sleep(ms: usize) {

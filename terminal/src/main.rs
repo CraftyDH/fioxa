@@ -2,14 +2,11 @@
 #![no_main]
 
 use kernel_userspace::{
-    elf::{spawn_elf_process, LoadElfError},
+    elf::spawn_elf_process,
     fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
-    ids::{ProcessID, ServiceID},
-    service::{generate_tracking_number, get_public_service_id, ServiceMessage},
-    syscall::{
-        exit, receive_service_message_blocking, send_and_get_response_service_message,
-        service_subscribe, CURRENT_PID,
-    },
+    ids::ServiceID,
+    service::get_public_service_id,
+    syscall::{exit, receive_service_message_blocking, service_subscribe},
 };
 
 extern crate alloc;
@@ -146,29 +143,34 @@ pub extern "C" fn main() {
                 let c = c.chars().next();
                 if let Some(chr) = c {
                     if let Some(n) = chr.to_digit(10) {
-                        partiton_id = n.into();
+                        match fs::stat(fs_sid, n as usize, "/", &mut buffer) {
+                            Ok(StatResponse::File(_)) => println!("cd: cannot cd into a file"),
+                            Ok(StatResponse::Folder(_)) => {
+                                partiton_id = n.into();
+                            }
+                            Err(e) => println!("cd: fs error: {e:?}"),
+                        };
+
                         continue;
                     }
                 }
 
                 println!("Drives:");
-                for part in get_disks(fs_sid, &mut buffer).iter() {
+                for part in get_disks(fs_sid, &mut buffer).unwrap().iter() {
                     println!("{}:", part)
                 }
             }
             "ls" => {
                 let path = add_path(&cwd, rest);
 
-                let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer);
-
-                match stat {
-                    StatResponse::File(_) => println!("This is a file"),
-                    StatResponse::Folder(c) => {
+                match fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer) {
+                    Ok(StatResponse::File(_)) => println!("This is a file"),
+                    Ok(StatResponse::Folder(c)) => {
                         for child in c.children {
                             println!("{child}")
                         }
                     }
-                    StatResponse::NotFound => println!("Invalid Path"),
+                    Err(e) => println!("Error: {e:?}"),
                 };
             }
             "cd" => cwd = add_path(&cwd, rest),
@@ -176,28 +178,33 @@ pub extern "C" fn main() {
                 for file in rest.split_ascii_whitespace() {
                     let path = add_path(&cwd, file);
 
-                    let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer);
-
-                    let file = match stat {
-                        StatResponse::File(f) => f,
-                        StatResponse::Folder(_) => {
-                            println!("Not a file");
-                            continue;
-                        }
-                        StatResponse::NotFound => {
-                            println!("File not found");
-                            continue;
-                        }
-                    };
+                    let file =
+                        match fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer) {
+                            Ok(StatResponse::File(f)) => f,
+                            Ok(StatResponse::Folder(_)) => {
+                                println!("Not a file");
+                                continue;
+                            }
+                            Err(e) => {
+                                println!("Error: {e:?}");
+                                break;
+                            }
+                        };
 
                     for i in 0..file.file_size / 512 {
-                        let sect = read_file_sector(
+                        let sect = match read_file_sector(
                             fs_sid,
                             partiton_id as usize,
                             file.node_id,
                             i as u32,
                             &mut file_buffer,
-                        );
+                        ) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                println!("Error: {e:?}");
+                                break;
+                            }
+                        };
                         if let Some(data) = sect {
                             print!("{}", String::from_utf8_lossy(data))
                         } else {
@@ -215,20 +222,33 @@ pub extern "C" fn main() {
                 let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer);
 
                 let file = match stat {
-                    StatResponse::File(f) => f,
-                    StatResponse::Folder(_) => {
+                    Ok(StatResponse::File(f)) => f,
+                    Ok(StatResponse::Folder(_)) => {
                         println!("Not a file");
                         continue;
                     }
-                    StatResponse::NotFound => {
-                        println!("File not found");
+                    Err(e) => {
+                        println!("Error: {e:?}");
                         continue;
                     }
                 };
                 println!("READING...");
-                let contents =
-                    read_full_file(fs_sid, partiton_id as usize, file.node_id, &mut file_buffer)
-                        .unwrap();
+                let contents = match read_full_file(
+                    fs_sid,
+                    partiton_id as usize,
+                    file.node_id,
+                    &mut file_buffer,
+                ) {
+                    Ok(Some(c)) => c,
+                    Ok(None) => {
+                        println!("Failed to read file");
+                        continue;
+                    }
+                    Err(e) => {
+                        println!("Error: {e:?}");
+                        continue;
+                    }
+                };
 
                 println!("SPAWNING...");
 
