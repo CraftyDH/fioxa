@@ -9,8 +9,9 @@ use alloc::{
 };
 use hashbrown::HashMap;
 use kernel_userspace::{
+    elf::LoadElfError,
     fs::{self, add_path, read_full_file, StatResponse},
-    ids::ServiceID,
+    ids::{ProcessID, ServiceID},
     service::{generate_tracking_number, get_public_service_id, ServiceMessage},
     syscall::{send_and_get_response_service_message, CURRENT_PID},
 };
@@ -56,12 +57,11 @@ fn execute_binary<'a>(path: String, pos_args: Vec<Expr>, env: &mut Environment<'
         env.partition_id as usize,
         &path,
         env.services_buffer()?,
-    );
+    )?;
 
     let file = match stat {
         StatResponse::File(ref f) => f.clone(),
         StatResponse::Folder(_) => Err(ExecutionErrors::ExecNotAFile)?,
-        StatResponse::NotFound => Err(ExecutionErrors::ExecCouldNotFind)?,
     };
 
     drop(stat);
@@ -72,26 +72,24 @@ fn execute_binary<'a>(path: String, pos_args: Vec<Expr>, env: &mut Environment<'
         env.partition_id as usize,
         file.node_id,
         env.services_buffer()?,
-    )
+    )?
     .ok_or(ExecutionErrors::ReadError)?
     .to_owned();
 
     println!("SPAWNING...");
     let args = args_to_string(pos_args, env)?;
 
-    send_and_get_response_service_message(
-        &ServiceMessage {
-            service_id: elf_loader_sid,
-            sender_pid: *CURRENT_PID,
-            tracking_number: generate_tracking_number(),
-            destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-            message: kernel_userspace::service::ServiceMessageType::ElfLoader(
-                &contents,
-                args.as_bytes(),
-            ),
-        },
-        env.services_buffer()?,
-    )?;
+    let _: ServiceMessage<Result<ProcessID, LoadElfError<'_>>> =
+        send_and_get_response_service_message(
+            &ServiceMessage {
+                service_id: elf_loader_sid,
+                sender_pid: *CURRENT_PID,
+                tracking_number: generate_tracking_number(),
+                destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
+                message: (contents, args.as_bytes()),
+            },
+            env.services_buffer()?,
+        )?;
 
     Ok(())
 }

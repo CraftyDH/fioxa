@@ -4,7 +4,6 @@
 
 use kernel_userspace::{
     ids::ServiceID,
-    service::{get_public_service_id, ServiceMessageType},
     syscall::{exit, receive_service_message_blocking, service_subscribe},
 };
 use terminal::script::{execute, Environment};

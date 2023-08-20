@@ -38,7 +38,7 @@ pub fn disk<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
     let fs_sid = env.services.ok_or(FuncExecError::UninitedService)?.fs;
 
     println!("Drives:");
-    for part in get_disks(fs_sid, env.services_buffer()?).iter() {
+    for part in get_disks(fs_sid, env.services_buffer()?)?.iter() {
         println!("{}:", part)
     }
 
@@ -55,7 +55,7 @@ pub fn ls<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
         env.partition_id as usize,
         path.as_str(),
         env.services_buffer()?,
-    );
+    )?;
 
     match stat {
         StatResponse::File(_) => println!("This is a file"),
@@ -64,7 +64,6 @@ pub fn ls<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
                 println!("{child}")
             }
         }
-        StatResponse::NotFound => println!("Invalid Path"),
     };
 
     Ok(Value::Null)
@@ -88,16 +87,12 @@ pub fn cat<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
             env.partition_id as usize,
             path.as_str(),
             env.services_buffer()?,
-        );
+        )?;
 
         let file = match stat {
             StatResponse::File(f) => f,
             StatResponse::Folder(_) => {
                 println!("Not a file");
-                continue;
-            }
-            StatResponse::NotFound => {
-                println!("File not found");
                 continue;
             }
         };
@@ -109,7 +104,7 @@ pub fn cat<'a>(env: &mut Environment<'a>, args: Vec<Expr>) -> Result<Value> {
                 file.node_id,
                 i as u32,
                 env.services_buffer()?,
-            );
+            )?;
             if let Some(data) = sect {
                 print!("{}", String::from_utf8_lossy(data))
             } else {
