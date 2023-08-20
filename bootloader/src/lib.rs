@@ -9,6 +9,8 @@ pub mod gop;
 pub mod kernel;
 pub mod paging;
 
+pub use uefi;
+
 use core::{mem::size_of, slice};
 
 use uefi::{prelude::BootServices, table::boot::MemoryType};

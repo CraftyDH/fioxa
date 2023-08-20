@@ -1,22 +1,35 @@
+pub mod bitfields;
+
 use core::{mem::size_of, slice};
 
-use alloc::sync::Arc;
-use crossbeam_queue::SegQueue;
-use modular_bitfield::{
-    bitfield,
-    specifiers::{B4, B48},
-};
+use alloc::{sync::Arc, vec::Vec};
+use conquer_once::spin::Lazy;
+use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 use crate::{
-    driver::driver::Driver,
-    net::ethernet::{EthernetFrame, EthernetFrameHeader, RECEIVED_FRAMES_QUEUE},
-    paging::{page_allocator::frame_alloc_exec, page_table_manager::ident_map_curr_process},
-    pci::PCIHeaderCommon,
+    cpu_localstorage::CPULocalStorageRW,
+    paging::{
+        page_allocator::{frame_alloc_exec, Allocated32Page},
+        page_table_manager::ident_map_curr_process,
+    },
 };
-use kernel_userspace::syscall::yield_now;
+use kernel_userspace::{
+    ids::ServiceID,
+    net::{PhysicalNet, PhysicalNetResp},
+    pci::PCIDevice,
+    service::{
+        get_public_service_id, register_public_service, SendServiceMessageDest, ServiceMessage,
+    },
+    syscall::{
+        read_args_raw, receive_service_message_blocking, send_service_message, service_create,
+        service_subscribe, spawn_thread, yield_now,
+    },
+};
 
-use super::{EthernetDriver, SendError};
+use self::bitfields::InitBlock;
+
+use super::SendError;
 
 const IP_ADDR: u32 = 100 << 24 | 1 << 16 | 168 << 8 | 192;
 
@@ -36,19 +49,71 @@ struct BufferDescriptor {
     avail: u32,
 }
 
-#[bitfield]
-struct InitBlock {
-    mode: u16,
-    #[skip]
-    _resv: B4,
-    num_send_buffers: B4,
-    _resv2: B4,
-    num_recv_buffers: B4,
-    physical_address: B48,
-    _resv3: u16,
-    logical_address: u64,
-    recv_buffer_desc_addr: u32,
-    send_buffer_desc_addr: u32,
+static PCNET_SID: Lazy<ServiceID> = Lazy::new(|| {
+    let sid = service_create();
+    register_public_service("PCNET", sid, &mut Vec::new());
+    sid
+});
+
+pub fn amd_pcnet_main() {
+    let args = read_args_raw();
+    let pci_device = u64::from_ne_bytes(args[0..8].try_into().unwrap());
+    let pci_device = ServiceID(pci_device);
+
+    let pcnet = Arc::new(Mutex::new(
+        PCNET::new(PCIDevice {
+            device_service: pci_device,
+        })
+        .unwrap(),
+    ));
+
+    let _ = *PCNET_SID;
+
+    let mut buffer = Vec::new();
+
+    let pci_event = get_public_service_id("INTERRUPTS:PCI", &mut buffer).unwrap();
+    service_subscribe(pci_event);
+
+    let pcnet2 = pcnet.clone();
+    spawn_thread(move || {
+        let mut buffer = Vec::new();
+        loop {
+            receive_service_message_blocking::<()>(pci_event, &mut buffer).unwrap();
+            pcnet.lock().interrupt_handler()
+        }
+    });
+
+    spawn_thread(move || {
+        loop {
+            let mut buffer = Vec::new();
+            let query = receive_service_message_blocking(*PCNET_SID, &mut buffer).unwrap();
+
+            let resp = match query.message {
+                PhysicalNet::MacAddrGet => {
+                    PhysicalNetResp::MacAddrResp(pcnet2.lock().read_mac_addr())
+                }
+                PhysicalNet::SendPacket(packet) => {
+                    // Keep trying to send
+                    while pcnet2.lock().send_packet(packet).is_err() {
+                        yield_now()
+                    }
+                    PhysicalNetResp::Ack
+                }
+            };
+
+            send_service_message(
+                &ServiceMessage {
+                    service_id: *PCNET_SID,
+                    sender_pid: CPULocalStorageRW::get_current_pid(),
+                    tracking_number: query.tracking_number,
+                    destination: SendServiceMessageDest::ToProcess(query.sender_pid),
+                    message: resp,
+                },
+                &mut buffer,
+            )
+            .unwrap();
+        }
+    });
 }
 
 pub struct PCNETIOPort(u16);
@@ -120,24 +185,25 @@ impl PCNETIOPort {
         }
     }
 }
+
+#[allow(dead_code)]
 pub struct PCNET<'b> {
     io: PCNETIOPort,
-
     init_block: &'b mut InitBlock,
-
     send_buffer_desc: &'b mut [BufferDescriptor],
     recv_buffer_desc: &'b mut [BufferDescriptor],
-    recv_frame_location: Option<Arc<SegQueue<EthernetFrame>>>,
+    owned_pages: Vec<Allocated32Page>,
 }
 
-impl Driver for PCNET<'_> {
-    fn new(pci_device: PCIHeaderCommon) -> Option<Self> {
+impl PCNET<'_> {
+    fn new(pci_device: kernel_userspace::pci::PCIDevice) -> Option<Self> {
+        let common_header = kernel_userspace::pci::PCIHeaderCommon { device: pci_device };
         // Ensure device is actually supported
-        if !(pci_device.get_vendor_id() == 0x1022 && pci_device.get_device_id() == 0x2000) {
+        if !(common_header.get_vendor_id() == 0x1022 && common_header.get_device_id() == 0x2000) {
             return None;
         };
 
-        let pci_device = unsafe { pci_device.get_as_header0() };
+        let pci_device = unsafe { common_header.get_as_header0() };
 
         let port_base: u16 = pci_device.get_port_base().unwrap().try_into().unwrap();
         let mut port = PCNETIOPort(port_base);
@@ -151,11 +217,17 @@ impl Driver for PCNET<'_> {
 
         assert!(header_mem_size <= 0x1000);
 
+        let mut owned_pages = Vec::new();
+
         let (init_block, send_buffer_desc, recv_buffer_desc) = unsafe {
             // Allocate page below 4gb location.
-            let mut buffer_start =
-                frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap() as *const u8;
-            ident_map_curr_process(buffer_start as u64, true);
+            let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
+            ident_map_curr_process(*buffer, true);
+
+            let buffer_start = buffer.get_address();
+            owned_pages.push(buffer);
+
+            let mut buffer_start = buffer_start as *const u8;
 
             // Init block
             let init_block = &mut *(buffer_start as *mut InitBlock);
@@ -186,8 +258,12 @@ impl Driver for PCNET<'_> {
         // Alloc buffer each 2 buffer
         for i in (0..SEND_BUFFER_CNT).step_by(2) {
             // Allocate page below 4gb location.
-            let buffer_start = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
-            ident_map_curr_process(buffer_start as u64, true);
+            let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
+            unsafe { ident_map_curr_process(*buffer, true) };
+
+            let buffer_start = buffer.get_address();
+            owned_pages.push(buffer);
+
             send_buffer_desc[i].address = buffer_start;
             send_buffer_desc[i].flags = BUFFER_SIZE_MASK;
             send_buffer_desc[i + 1].address = buffer_start + 2048;
@@ -196,8 +272,12 @@ impl Driver for PCNET<'_> {
         // Alloc buffer each 2 buffer
         for i in (0..RECV_BUFFER_CNT).step_by(2) {
             // Allocate page below 4gb location.
-            let buffer_start = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
-            ident_map_curr_process(buffer_start as u64, true);
+            let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
+            unsafe { ident_map_curr_process(*buffer, true) };
+
+            let buffer_start = buffer.get_address();
+            owned_pages.push(buffer);
+
             recv_buffer_desc[i].address = buffer_start;
             recv_buffer_desc[i].flags = BUFFER_SIZE_MASK | 0x80000000;
             recv_buffer_desc[i + 1].address = buffer_start + 2048;
@@ -211,11 +291,11 @@ impl Driver for PCNET<'_> {
             init_block,
             send_buffer_desc,
             recv_buffer_desc,
-            recv_frame_location: None,
+            owned_pages,
         };
 
         // Write regs
-        this.io.write_csr_32(1, init_block_addr & 0xFFFF_FFFF);
+        this.io.write_csr_32(1, init_block_addr);
         this.io.write_csr_32(2, init_block_addr >> 16);
 
         // Set init
@@ -235,9 +315,7 @@ impl Driver for PCNET<'_> {
         println!("PCNET inited");
         Some(this)
     }
-    fn unload(self) -> ! {
-        todo!()
-    }
+
     fn interrupt_handler(&mut self) {
         // Stop interrupts
         let tmp = self.io.read_csr_32(0);
@@ -274,7 +352,7 @@ impl Driver for PCNET<'_> {
     }
 }
 
-impl EthernetDriver for PCNET<'_> {
+impl PCNET<'_> {
     fn send_packet(&mut self, data: &[u8]) -> Result<(), SendError> {
         for buffer_desc in self.send_buffer_desc.iter_mut() {
             // Find a buffer which we own
@@ -301,36 +379,30 @@ impl EthernetDriver for PCNET<'_> {
         Err(SendError::BufferFull)
     }
 
-    fn register_receive_buffer(&mut self, buffer: Arc<crossbeam_queue::SegQueue<EthernetFrame>>) {
-        self.recv_frame_location = Some(buffer)
-    }
-
     fn read_mac_addr(&mut self) -> u64 {
         self.io.read_mac_addr()
     }
-}
 
-impl PCNET<'_> {
     pub fn receive(&mut self) {
         for buffer_desc in self.recv_buffer_desc.iter_mut() {
             let flags = buffer_desc.flags;
             if flags & 0x80000000 == 0 {
                 if flags & 0x40000000 == 0 && flags & 0x03000000 > 0 {
                     let size: usize = buffer_desc.flags_2 as usize & 0xFFFF;
-                    let header = unsafe { *(buffer_desc.address as *const EthernetFrameHeader) };
-                    let data = unsafe {
-                        slice::from_raw_parts(
-                            (buffer_desc.address as usize + size_of::<EthernetFrameHeader>())
-                                as *const u8,
-                            size - size_of::<EthernetFrameHeader>(),
-                        )
-                    };
-
-                    let frame = EthernetFrame {
-                        header: header.clone(),
-                        data: data.to_vec(),
-                    };
-                    RECEIVED_FRAMES_QUEUE.push(frame);
+                    let packet =
+                        unsafe { slice::from_raw_parts(buffer_desc.address as *const u8, size) };
+                    send_service_message(
+                        &ServiceMessage {
+                            service_id: *PCNET_SID,
+                            sender_pid: CPULocalStorageRW::get_current_pid(),
+                            tracking_number: kernel_userspace::service::ServiceTrackingNumber(0),
+                            destination:
+                                kernel_userspace::service::SendServiceMessageDest::ToSubscribers,
+                            message: PhysicalNetResp::ReceivedPacket(packet),
+                        },
+                        &mut Vec::new(),
+                    )
+                    .unwrap();
                 }
                 buffer_desc.flags = 0x80000000 | BUFFER_SIZE_MASK;
                 buffer_desc.flags_2 = 0;

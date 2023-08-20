@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
-    service::get_public_service_id,
+    service::{get_public_service_id, ServiceMessage},
     syscall::{receive_service_message_blocking, service_subscribe, spawn_thread},
 };
 use spin::Mutex;
@@ -35,27 +35,20 @@ pub fn main() {
 
     let controller = Arc::new(Mutex::new(ps2_controller));
 
-    spawn_thread(|| loop {
+    let c = controller.clone();
+    spawn_thread(move || loop {
         let mut buffer = Vec::new();
         loop {
-            let message = receive_service_message_blocking(mouse_event, &mut buffer).unwrap();
-            match message.message {
-                kernel_userspace::service::ServiceMessageType::InterruptEvent => {
-                    controller.lock().mouse.check_interrupts()
-                }
-                _ => unimplemented!(),
-            }
+            let _: ServiceMessage<()> =
+                receive_service_message_blocking(mouse_event, &mut buffer).unwrap();
+            c.lock().mouse.check_interrupts()
         }
     });
 
     loop {
-        let message = receive_service_message_blocking(kb_event, &mut buffer).unwrap();
-        match message.message {
-            kernel_userspace::service::ServiceMessageType::InterruptEvent => {
-                controller.lock().keyboard.check_interrupts()
-            }
-            _ => unimplemented!(),
-        }
+        let _: ServiceMessage<()> =
+            receive_service_message_blocking(kb_event, &mut buffer).unwrap();
+        controller.lock().keyboard.check_interrupts();
     }
 }
 pub struct PS2Command {
@@ -187,8 +180,8 @@ impl PS2Controller {
         let mouse = mouse.and_then(|_| self.mouse.initialize());
 
         // Now enable interrupts
-        let keyboard = keyboard.and_then(|_| Ok(self.keyboard.receive_interrupts()));
-        let mouse = mouse.and_then(|_| Ok(self.mouse.receive_interrupts()));
+        let keyboard = keyboard.map(|_| self.keyboard.receive_interrupts());
+        let mouse = mouse.map(|_| self.mouse.receive_interrupts());
 
         // If keyboard failed to initalize print the error reason
         if let Err(e) = keyboard {

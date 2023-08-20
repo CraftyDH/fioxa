@@ -1,13 +1,10 @@
+pub mod bitfields;
 pub mod fis;
 pub mod port;
 
 use alloc::{sync::Arc, vec::Vec};
 use bit_field::BitField;
 
-use modular_bitfield::{
-    bitfield,
-    specifiers::{B128, B22, B4, B5, B9},
-};
 use spin::Mutex;
 use volatile::Volatile;
 
@@ -15,12 +12,15 @@ use crate::{
     driver::{disk::DiskDevice, driver::Driver},
     paging::{
         get_uefi_active_mapper,
-        page_table_manager::{page_4kb, Mapper},
+        page_table_manager::{Mapper, Page, Size4KB},
     },
     pci::{PCIHeader0, PCIHeaderCommon},
 };
 
-use self::port::{Port, PortType};
+use self::{
+    bitfields::HBAPRDTEntry,
+    port::{Port, PortType},
+};
 
 use super::DiskBusDriver;
 
@@ -31,48 +31,17 @@ const SATA_SIG_ATA: u32 = 0x00000101;
 const SATA_SIG_SEMB: u32 = 0xC33C0101;
 const SATA_SIG_PM: u32 = 0x96690101;
 
-#[bitfield]
-pub struct HBACommandHeader {
-    command_fis_length: B5,
-    atapi: bool,
-    write: bool,
-    prefetchable: bool,
-
-    reset: bool,
-    bist: bool,
-    clear_busy: bool,
-    #[skip]
-    _rsv0: bool,
-    port_multiplier: B4,
-
-    prdt_length: u16,
-    prdb_count: u32,
-    // Don't think I have to have upper and lower as seperate u32's
-    command_table_base_address: u64,
-    #[skip]
-    _rev1: B128,
-}
+const HBA_PX_CMD_ST: u32 = 0x0001;
+const HBA_PX_CMD_FRE: u32 = 0x0010;
+const HBA_PX_CMD_FR: u32 = 0x4000;
+const HBA_PX_CMD_CR: u32 = 0x8000;
 
 pub struct AHCIDriver {
+    #[allow(dead_code)]
     pci_device: PCIHeader0,
     // abar: HBAMemory,
     ports: [Option<Arc<Mutex<Port>>>; 32],
 }
-
-#[bitfield]
-pub struct HBAPRDTEntry {
-    //* Supposed to be lower + upper u32's
-    data_base_address: u64,
-    _rsv0: u32,
-    byte_count: B22,
-    _rsv1: B9,
-    interrupt_on_completion: bool,
-}
-
-const HBA_PxCMD_ST: u32 = 0x0001;
-const HBA_PxCMD_FRE: u32 = 0x0010;
-const HBA_PxCMD_FR: u32 = 0x4000;
-const HBA_PxCMD_CR: u32 = 0x8000;
 
 #[repr(C)]
 pub struct HBACommandTable {
@@ -163,7 +132,7 @@ impl Driver for AHCIDriver {
         let abar = header0.get_bar(5);
 
         mapper
-            .map_memory(page_4kb(abar as u64), page_4kb(abar as u64))
+            .identity_map_memory(Page::<Size4KB>::new(abar as u64))
             .unwrap()
             .flush();
 
@@ -188,7 +157,7 @@ impl Driver for AHCIDriver {
                     let mut port = Port::new(port);
 
                     // Test read
-                    if let Some(_) = port.read(0, 1, buffer) {
+                    if port.read(0, 1, buffer).is_some() {
                         ahci.ports[i] = Some(Arc::new(Mutex::new(port)));
                     }
                 }
@@ -212,8 +181,8 @@ impl DiskBusDriver for AHCIDriver {
         self.ports
             .clone()
             .into_iter()
-            .filter_map(|a| a)
-            .map(|a| a.clone() as Arc<Mutex<dyn DiskDevice>>)
+            .flatten()
+            .map(|a| a as Arc<Mutex<dyn DiskDevice>>)
             .collect()
     }
 

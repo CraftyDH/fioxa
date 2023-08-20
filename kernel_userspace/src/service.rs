@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    fs::FSServiceMessage,
     ids::{ProcessID, ServiceID},
-    input::InputServiceMessage,
     syscall::{get_pid, send_and_get_response_service_message},
 };
 
@@ -21,14 +19,13 @@ pub fn generate_tracking_number() -> ServiceTrackingNumber {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServiceMessage<'a> {
+pub struct ServiceMessage<T> {
     pub service_id: ServiceID,
     pub sender_pid: ProcessID,
     pub tracking_number: ServiceTrackingNumber,
     pub destination: SendServiceMessageDest,
 
-    #[serde(borrow)]
-    pub message: ServiceMessageType<'a>,
+    pub message: T,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -77,48 +74,60 @@ impl SendError {
 pub type SendResponse = Result<ServiceTrackingNumber, SendError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ServiceMessageType<'a> {
-    Ack,
-    UnknownCommand,
-    ExpectedQuestion,
-    #[serde(borrow)]
-    PublicService(PublicServiceMessage<'a>),
-    Input(InputServiceMessage),
-    Stdout(&'a str),
-    StdoutChar(char),
-
-    #[serde(borrow)]
-    FS(FSServiceMessage<'a>),
-
-    // ELF BINARY | ARGS
-    ElfLoader(&'a [u8], &'a [u8]),
-    ElfLoaderResp(ProcessID),
-
-    InterruptEvent,
+pub enum Stdout<'a> {
+    Char(char),
+    Str(&'a str),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum PublicServiceMessage<'a> {
+    Ack,
+    UnknownCommand,
     Request(&'a str),
     Response(Option<ServiceID>),
+    RegisterPublicService(&'a str, ServiceID),
 }
 
 pub fn get_public_service_id(name: &str, buffer: &mut Vec<u8>) -> Option<ServiceID> {
-    let resp = send_and_get_response_service_message(&ServiceMessage {
-        service_id: ServiceID(1),
-        sender_pid: get_pid(),
-        tracking_number: generate_tracking_number(),
-        destination: SendServiceMessageDest::ToProvider,
-        message: ServiceMessageType::PublicService(PublicServiceMessage::Request(name)),
-    }, buffer)
+    let resp = send_and_get_response_service_message(
+        &ServiceMessage {
+            service_id: ServiceID(1),
+            sender_pid: get_pid(),
+            tracking_number: generate_tracking_number(),
+            destination: SendServiceMessageDest::ToProvider,
+            message: PublicServiceMessage::Request(name),
+        },
+        buffer,
+    )
     .unwrap();
 
     match resp.message {
-        ServiceMessageType::PublicService(PublicServiceMessage::Response(sid)) => sid,
+        PublicServiceMessage::Response(sid) => sid,
         _ => panic!("Didn't get valid response"),
     }
 }
 
-pub fn parse_message(buffer: &[u8]) -> Result<ServiceMessage, postcard::Error> {
+pub fn register_public_service(name: &str, sid: ServiceID, buffer: &mut Vec<u8>) {
+    let PublicServiceMessage::Ack = send_and_get_response_service_message(
+        &ServiceMessage {
+            service_id: ServiceID(1),
+            sender_pid: get_pid(),
+            tracking_number: generate_tracking_number(),
+            destination: SendServiceMessageDest::ToProvider,
+            message: PublicServiceMessage::RegisterPublicService(name, sid),
+        },
+        buffer,
+    )
+    .unwrap()
+    .message
+    else {
+        todo!()
+    };
+}
+
+pub fn parse_message<'a, R>(buffer: &'a [u8]) -> Result<ServiceMessage<R>, postcard::Error>
+where
+    R: Deserialize<'a>,
+{
     postcard::from_bytes(buffer)
 }

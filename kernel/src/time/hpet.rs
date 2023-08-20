@@ -1,9 +1,12 @@
+pub mod bitfields;
+
 use core::{arch::x86_64::_mm_pause, mem::transmute, ptr::read_volatile};
 
 use acpi::HpetInfo;
-use modular_bitfield::{bitfield, specifiers::B5};
 
-use crate::paging::page_table_manager::ident_map_curr_process;
+use crate::paging::page_table_manager::{ident_map_curr_process, Page, Size4KB};
+
+use self::bitfields::CapabilitiesIDRegister;
 
 const FEMPTOSECOND: u64 = 10u64.pow(15);
 const MILLISECOND: u64 = 10u64.pow(3);
@@ -15,7 +18,7 @@ pub struct HPET {
 
 impl HPET {
     pub fn new(hpet: HpetInfo) -> Self {
-        ident_map_curr_process(hpet.base_address as u64, true);
+        unsafe { ident_map_curr_process(Page::<Size4KB>::new(hpet.base_address as u64), true) };
         let x = unsafe { core::ptr::read_volatile(hpet.base_address as *const u64) };
         let capabilities: CapabilitiesIDRegister = unsafe { transmute(x) };
 
@@ -44,17 +47,4 @@ impl HPET {
             unsafe { _mm_pause() };
         }
     }
-}
-
-#[bitfield]
-#[derive(Debug)]
-struct CapabilitiesIDRegister {
-    rev_id: u8,
-    timer_cnt: B5,
-    can_64_bit: bool,
-    #[skip]
-    _resv: bool,
-    legacy_replacement_cap: bool,
-    vendor_id: u16,
-    counter_tick_period: u32,
 }

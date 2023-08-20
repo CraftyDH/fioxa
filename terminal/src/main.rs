@@ -62,32 +62,32 @@ impl Iterator for KBInputDecoder {
                 receive_service_message_blocking(self.service, &mut self.receive_buffer).unwrap();
 
             match msg.message {
-                ServiceMessageType::Input(
-                    kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code),
-                ) => match scan_code {
-                    KeyboardEvent::Up(VirtualKeyCode::Modifier(key)) => match key {
-                        Modifier::LeftShift => self.lshift = false,
-                        Modifier::RightShift => self.rshift = false,
-                        _ => {}
-                    },
-                    KeyboardEvent::Up(_) => {}
-                    KeyboardEvent::Down(VirtualKeyCode::Modifier(key)) => match key {
-                        Modifier::LeftShift => self.lshift = true,
-                        Modifier::RightShift => self.rshift = true,
-                        Modifier::CapsLock => self.caps_lock = !self.caps_lock,
-                        Modifier::NumLock => self.num_lock = !self.num_lock,
-                        _ => {}
-                    },
-                    KeyboardEvent::Down(letter) => {
-                        return Some(input::keyboard::us_keyboard::USKeymap::get_unicode(
-                            letter.clone(),
-                            self.lshift,
-                            self.rshift,
-                            self.caps_lock,
-                            self.num_lock,
-                        ));
+                kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code) => {
+                    match scan_code {
+                        KeyboardEvent::Up(VirtualKeyCode::Modifier(key)) => match key {
+                            Modifier::LeftShift => self.lshift = false,
+                            Modifier::RightShift => self.rshift = false,
+                            _ => {}
+                        },
+                        KeyboardEvent::Up(_) => {}
+                        KeyboardEvent::Down(VirtualKeyCode::Modifier(key)) => match key {
+                            Modifier::LeftShift => self.lshift = true,
+                            Modifier::RightShift => self.rshift = true,
+                            Modifier::CapsLock => self.caps_lock = !self.caps_lock,
+                            Modifier::NumLock => self.num_lock = !self.num_lock,
+                            _ => {}
+                        },
+                        KeyboardEvent::Down(letter) => {
+                            return Some(input::keyboard::us_keyboard::USKeymap::get_unicode(
+                                letter,
+                                self.lshift,
+                                self.rshift,
+                                self.caps_lock,
+                                self.num_lock,
+                            ));
+                        }
                     }
-                },
+                }
                 _ => todo!(),
             }
         }
@@ -129,7 +129,7 @@ pub extern "C" fn main() {
                 println!();
                 break;
             } else if c == '\x08' {
-                if let Some(_) = curr_line.pop() {
+                if curr_line.pop().is_some() {
                     print!("\x08");
                 }
             } else {

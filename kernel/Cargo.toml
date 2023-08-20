@@ -9,18 +9,17 @@ edition = "2021"
 bootloader = {path = "../bootloader"}
 kernel_userspace = {path = "../kernel_userspace"}
 input = {path = "../input"}
-uefi = "0.19"
 
 x86_64 = "0.14"
-lazy_static = {version = "1.4", features = ["spin_no_std"]}
 spin = "0.9"
 bit_field = "0.10"
 conquer-once = {version = "0.4", default-features = false}
 crossbeam-queue = {version = "0.3", default-features = false, features = ["alloc"]}
 acpi = "4.1"
 modular-bitfield = { version = "0.11", default-features = false}
-
+thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
 volatile = "0.3"
+serde = { version = "1.0.*", default-features = false, features = ["derive"] }
 
 [profile.dev]
 # Increase speed by 1000% since there are lots of hot loops / "zero cost" abstrations that need optimising

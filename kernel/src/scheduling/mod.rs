@@ -1,7 +1,4 @@
-use crate::{
-    cpu_localstorage::{is_task_mgr_schedule, set_is_task_mgr_schedule},
-    time::pit::is_switching_tasks,
-};
+use crate::{cpu_localstorage::CPULocalStorageRW, time::pit::is_switching_tasks};
 
 pub mod process;
 pub mod taskmanager;
@@ -13,18 +10,14 @@ where
     // Check if we are switching tasks
     if is_switching_tasks() {
         // get current status
-        let current = is_task_mgr_schedule();
-        // if set, unset
-        if current {
-            set_is_task_mgr_schedule(false);
-        }
+        let initial = CPULocalStorageRW::get_stay_scheduled();
+        // prevent thread from being scheduled away
+        CPULocalStorageRW::set_stay_scheduled(true);
 
         let tmp = f();
 
-        // reenable if needed
-        if current {
-            set_is_task_mgr_schedule(true);
-        }
+        // reset to what it was
+        CPULocalStorageRW::set_stay_scheduled(initial);
 
         tmp
     } else {

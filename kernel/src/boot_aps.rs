@@ -12,9 +12,9 @@ use crate::{
     ioapic::Madt,
     lapic::{enable_localapic, LAPIC_ADDR},
     paging::{
-        self, get_uefi_active_mapper,
+        get_uefi_active_mapper,
         page_allocator::frame_alloc_exec,
-        page_table_manager::{ident_map_curr_process, new_page_table_from_phys, page_4kb, Mapper},
+        page_table_manager::{Mapper, Page, PageTable, Size4KB},
         MemoryLoc, KERNEL_MAP,
     },
     scheduling::taskmanager::{self, core_start_multitasking},
@@ -25,7 +25,12 @@ pub fn boot_aps(madt: &Madt) {
     // Get current core id
     let bsp_addr = (unsafe { __cpuid(1) }.ebx >> 24) as u8;
     frame_alloc_exec(|m| m.lock_reserved_16bit_page(0x8000)).unwrap();
-    ident_map_curr_process(0x8000, true);
+
+    KERNEL_MAP
+        .lock()
+        .identity_map_memory(Page::<Size4KB>::new(0x8000))
+        .unwrap()
+        .flush();
 
     let bspdone;
     let aprunning;
@@ -39,8 +44,10 @@ pub fn boot_aps(madt: &Madt) {
         let end = 0x8000 + AP_TRAMPOLINE.len();
         bspdone = (end) as *mut u32;
         aprunning = &mut *((end + 4) as *mut AtomicU32);
-        *((end + 8) as *mut u32) = (KERNEL_MAP.lock().get_lvl4_addr()
-            - paging::MemoryLoc::PhysMapOffset as u64)
+        *((end + 8) as *mut u32) = KERNEL_MAP
+            .lock()
+            .into_page()
+            .get_address()
             .try_into()
             .expect("KERNEL MAP SHOULD BE 32bits for AP BOOT");
         *((end + 16) as *mut u64) = ap_startup_f as u64;
@@ -114,17 +121,14 @@ pub fn boot_aps(madt: &Madt) {
     }
 
     unsafe {
-        let mapper = new_page_table_from_phys(
-            KERNEL_MAP.lock().get_lvl4_addr() - paging::MemoryLoc::PhysMapOffset as u64,
-        );
+        let mapper = PageTable::from_page(KERNEL_MAP.lock().into_page());
+
         taskmanager::init(mapper, n_cores.try_into().unwrap());
     }
 
-    ident_map_curr_process(0x1000, true);
-
     KERNEL_MAP
         .lock()
-        .unmap_memory(page_4kb(0x8000))
+        .unmap_memory(Page::<Size4KB>::new(0x8000))
         .unwrap()
         .flush();
 }

@@ -3,12 +3,12 @@ use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     input::InputServiceMessage,
     service::{
-        generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+        generate_tracking_number, register_public_service, SendServiceMessageDest, ServiceMessage,
     },
     syscall::{get_pid, send_service_message, service_create},
 };
 
-use crate::{ioapic::mask_entry, service::PUBLIC_SERVICES};
+use crate::ioapic::mask_entry;
 
 use super::{
     scancode::{set2::ScancodeSet2, Scancode},
@@ -26,7 +26,7 @@ pub struct Keyboard {
 impl Keyboard {
     pub fn new(command: PS2Command) -> Self {
         let keyboard_service = service_create();
-        PUBLIC_SERVICES.lock().insert("INPUT:KB", keyboard_service);
+        register_public_service("INPUT:KB", keyboard_service, &mut Vec::new());
 
         Self {
             command,
@@ -52,7 +52,7 @@ impl Keyboard {
             }
             return Ok(());
         }
-        return Err("Keyboard required too many command resends");
+        Err("Keyboard required too many command resends")
     }
 
     pub fn initialize(&mut self) -> Result<(), &'static str> {
@@ -88,13 +88,16 @@ impl Keyboard {
 
         let res = self.decoder.add_byte(scancode);
         if let Some(key) = res {
-            send_service_message(&ServiceMessage {
-                service_id: self.keyboard_service,
-                sender_pid: self.current_pid,
-                tracking_number: generate_tracking_number(),
-                destination: SendServiceMessageDest::ToSubscribers,
-                message: ServiceMessageType::Input(InputServiceMessage::KeyboardEvent(key)),
-            }, &mut self.send_buffer)
+            send_service_message(
+                &ServiceMessage {
+                    service_id: self.keyboard_service,
+                    sender_pid: self.current_pid,
+                    tracking_number: generate_tracking_number(),
+                    destination: SendServiceMessageDest::ToSubscribers,
+                    message: InputServiceMessage::KeyboardEvent(key),
+                },
+                &mut self.send_buffer,
+            )
             .unwrap()
         }
     }

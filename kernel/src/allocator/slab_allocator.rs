@@ -4,8 +4,8 @@ use crate::{
     locked_mutex::Locked,
     paging::{
         get_uefi_active_mapper,
-        page_allocator::{free_page, request_page},
-        page_table_manager::{page_4kb, Mapper},
+        page_allocator::{self, request_page},
+        page_table_manager::{Mapper, Page, Size4KB},
     },
     scheduling::without_context_switch,
 };
@@ -54,16 +54,13 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                         // No block exists in list => allocate new block
                         let block_size = SLAB_SIZES[index];
                         // Only works if all blocks are powers of 2
-                        let frame = request_page().unwrap();
+                        let frame = request_page().unwrap().leak();
 
                         let base = allocator.base_address;
                         allocator.base_address += 0x1000;
 
                         let mut mapper = get_uefi_active_mapper();
-                        mapper
-                            .map_memory(page_4kb(base), page_4kb(frame))
-                            .unwrap()
-                            .flush();
+                        mapper.map_memory(Page::new(base), frame).unwrap().flush();
 
                         let mut current_node = None;
                         for block in (base..(base + 0x1000)).step_by(block_size) {
@@ -86,12 +83,9 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
 
                     let mut mapper = get_uefi_active_mapper();
                     for page in (base..(base + length)).step_by(0x1000) {
-                        let frame = request_page().unwrap();
+                        let frame = request_page().unwrap().leak();
 
-                        mapper
-                            .map_memory(page_4kb(page), page_4kb(frame))
-                            .unwrap()
-                            .flush();
+                        mapper.map_memory(Page::new(page), frame).unwrap().flush();
                     }
                     base as *mut u8
                 }
@@ -118,12 +112,18 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                 }
                 None => {
                     let base = ptr as u64;
+                    let length = ((max_size + 0xFFF) & !0xFFF) as u64;
+
                     let mut mapper = get_uefi_active_mapper();
                     // We assume that we allocted cont pages
-                    for page in (base..(base + max_size as u64)).step_by(0x1000) {
-                        let phys_page = mapper.get_phys_addr(page_4kb(page)).unwrap();
-                        free_page(phys_page);
-                        mapper.unmap_memory(page_4kb(page)).unwrap().flush();
+                    for page in (base..(base + length)).step_by(0x1000) {
+                        let phys_page =
+                            Page::new(mapper.get_phys_addr(Page::<Size4KB>::new(page)).unwrap());
+                        mapper
+                            .unmap_memory(Page::<Size4KB>::new(page))
+                            .unwrap()
+                            .flush();
+                        page_allocator::frame_alloc_exec(|a| a.free_page(phys_page));
                     }
                 }
             }

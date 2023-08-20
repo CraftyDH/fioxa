@@ -11,6 +11,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use kernel_userspace::fs::FSServiceError;
 
 use super::{next_partition_id, FSPartitionDisk, FileSystemDev, PartitionId, PARTITION};
 
@@ -109,6 +110,7 @@ pub struct FAT {
     pub fat_ebr: FatExtendedBootRecord,
     pub disk: FSPartitionDisk,
     pub file_id_lookup: BTreeMap<usize, FATFile>,
+    pub cluster_chain_buffer: BTreeMap<u32, Box<[u8]>>,
 }
 
 pub fn next_file_id() -> usize {
@@ -173,7 +175,7 @@ impl FAT {
 
     // pub fn get_cluster_from_sector()
 
-    pub fn get_next_cluster(&self, cluster: u32) -> u32 {
+    pub fn get_next_cluster(&mut self, cluster: u32) -> u32 {
         let fat_size = match self.fat_ebr {
             FatExtendedBootRecord::FAT16(_) => 2,
             FatExtendedBootRecord::FAT32(_) => 4,
@@ -182,17 +184,24 @@ impl FAT {
 
         let fat_buf_offset = cluster / (512 / fat_size) + bpb.reserved_sectors as u32;
 
-        let fat_buffer = &mut [0u8; 512];
+        let fat_buffer = match self.cluster_chain_buffer.get(&fat_buf_offset) {
+            Some(b) => b,
+            None => {
+                let mut buf = unsafe { Box::new_uninit_slice(512).assume_init() };
 
-        self.disk.read(fat_buf_offset as usize, 1, fat_buffer);
+                self.disk.read(fat_buf_offset as usize, 1, &mut buf);
+
+                self.cluster_chain_buffer.insert(fat_buf_offset, buf);
+                self.cluster_chain_buffer.get(&fat_buf_offset).unwrap()
+            }
+        };
 
         let idx = cluster % (512 / fat_size);
 
         if fat_size == 4 {
-            return unsafe { *(fat_buffer.as_ptr() as *const u32).add(idx as usize) };
+            unsafe { read_volatile((fat_buffer.as_ptr() as *const u32).add(idx as usize)) }
         } else if fat_size == 2 {
-            return unsafe { read_volatile((fat_buffer.as_ptr() as *const u16).add(idx as usize)) }
-                as u32;
+            unsafe { read_volatile((fat_buffer.as_ptr() as *const u16).add(idx as usize)) as u32 }
         } else {
             todo!()
         }
@@ -243,8 +252,8 @@ impl FAT {
                 let lfn: &LongFileName = unsafe { transmute(entry) };
                 let iter = { lfn.chars_1 }
                     .into_iter()
-                    .chain({ lfn.chars_2 }.into_iter())
-                    .chain({ lfn.chars_3 }.into_iter());
+                    .chain(lfn.chars_2)
+                    .chain(lfn.chars_3);
 
                 // The name is null terminated
                 let iter = iter.take_while(|b| *b != 0);
@@ -282,19 +291,18 @@ impl FAT {
             let cluster = (entry.first_cluster_hi as u32) << 8 | entry.first_cluster_low as u32;
 
             let file_id = next_file_id();
-            let file;
             // Directory
-            if entry.attributes & 0x10 == 0x10 {
-                file = FATFile {
+            let file = if entry.attributes & 0x10 == 0x10 {
+                FATFile {
                     cluster,
                     entry_type: FATFileType::Folder(None),
-                };
+                }
             } else {
-                file = FATFile {
+                FATFile {
                     cluster,
                     entry_type: FATFileType::File(entry.size),
-                };
-            }
+                }
+            };
             dir_entries.insert(name, file_id);
             self.file_id_lookup.insert(file_id, file);
         }
@@ -302,8 +310,8 @@ impl FAT {
     }
 
     fn enumerate_root(&mut self) -> BTreeMap<String, usize> {
-        if let Some(_) = self.file_id_lookup.get(&0) {
-            todo!();
+        if self.file_id_lookup.get(&0).is_some() {
+            panic!("enumerate root should only be called once")
         }
 
         let mut children;
@@ -336,8 +344,14 @@ impl FAT {
             cluster: 0,
             entry_type: FATFileType::Folder(Some(children.clone())),
         };
-        self.file_id_lookup.insert(0, folder.clone());
+        self.file_id_lookup.insert(0, folder);
         children
+    }
+
+    fn get_fat_file(&self, file_id: usize) -> Result<&FATFile, FSServiceError> {
+        self.file_id_lookup
+            .get(&file_id)
+            .ok_or(FSServiceError::FileNotFound)
     }
 }
 
@@ -368,6 +382,7 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
             fat_ebr: FatExtendedBootRecord::FAT16(fat16ext),
             file_id_lookup: BTreeMap::new(),
             disk,
+            cluster_chain_buffer: Default::default(),
         };
     } else {
         let fat32ext =
@@ -378,29 +393,34 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
             fat_ebr: FatExtendedBootRecord::FAT32(fat32ext),
             file_id_lookup: BTreeMap::new(),
             disk,
+            cluster_chain_buffer: Default::default(),
         };
     }
 
-    let root = fat.enumerate_root();
+    fat.enumerate_root();
     PARTITION.lock().insert(partition_id, Box::new(fat));
 }
 
 impl FileSystemDev for FAT {
-    fn get_file_by_id(&mut self, file_id: usize) -> super::VFile {
-        let mut fat_file = self.file_id_lookup.get(&file_id).unwrap().clone();
+    fn get_file_by_id(&mut self, file_id: usize) -> Result<super::VFile, FSServiceError> {
+        let mut fat_file = self.get_fat_file(file_id)?.clone();
         let res;
         let mut update = false;
         match &mut fat_file.entry_type {
             FATFileType::Folder(f) => {
-                if let None = f {
-                    *f = Some(self.read_directory(fat_file.cluster));
+                let file;
+                let mut tmp;
+                if let Some(f) = f {
+                    file = f;
+                } else {
+                    tmp = self.read_directory(fat_file.cluster);
+                    file = &mut tmp;
                     update = true;
                 }
                 res = super::VFile {
                     location: (self.partition_id, file_id),
                     specialized: super::VFileSpecialized::Folder(
-                        f.clone()
-                            .unwrap()
+                        file.clone()
                             .into_iter()
                             .map(|(a, b)| (a, (self.partition_id, b)))
                             .collect(),
@@ -408,20 +428,27 @@ impl FileSystemDev for FAT {
                 };
             }
             FATFileType::File(f) => {
-                return super::VFile {
+                return Ok(super::VFile {
                     location: (self.partition_id, file_id),
                     specialized: super::VFileSpecialized::File(*f as usize),
-                }
+                })
             }
         }
         if update {
             self.file_id_lookup.insert(file_id, fat_file);
         }
-        res
+        Ok(res)
     }
 
-    fn read_file<'a>(&mut self, file_id: usize, buffer: &'a mut Vec<u8>) -> &'a [u8] {
-        let fat_file = self.file_id_lookup.get(&file_id).unwrap();
+    fn read_file<'a>(
+        &mut self,
+        file_id: usize,
+        buffer: &'a mut Vec<u8>,
+    ) -> Result<&'a [u8], FSServiceError> {
+        let fat_file = self
+            .file_id_lookup
+            .get(&file_id)
+            .ok_or(FSServiceError::FileNotFound)?;
 
         let length = match fat_file.entry_type {
             FATFileType::Folder(_) => todo!(),
@@ -435,28 +462,43 @@ impl FileSystemDev for FAT {
 
         buffer.resize(buffer_size, 0);
 
-        println!("READING FROM DISK");
+        let mut sectors: Vec<(u32, u32)> = Vec::new();
+
+        let sectors_per_cluster = self.bios_parameter_block.sectors_per_cluster as u32;
 
         while sectors_to_read > 0 {
-            let read_amount = core::cmp::min(
-                sectors_to_read,
-                self.bios_parameter_block.sectors_per_cluster as u32,
-            );
-
+            let read_amount = core::cmp::min(sectors_to_read, sectors_per_cluster);
             let file_sector = self.get_start_sector_of_cluster(cluster);
 
-            self.disk.read(
-                file_sector as usize,
-                read_amount as u32,
-                &mut buffer[buffer_offset..],
-            );
+            match sectors.last_mut() {
+                Some((start, len)) => {
+                    if *start + *len == file_sector {
+                        *len += read_amount
+                    } else {
+                        sectors.push((file_sector, read_amount))
+                    }
+                }
+                None => sectors.push((file_sector, read_amount)),
+            }
+
             sectors_to_read -= read_amount;
-            buffer_offset += read_amount as usize * 512;
 
             cluster = self.get_next_cluster(cluster);
         }
-        println!("FIN READING FROM DISK");
-        &buffer[..length as usize]
+
+        for (mut sector, mut len) in sectors {
+            while len > 0 {
+                let read_amount = core::cmp::min(len, 56);
+
+                self.disk
+                    .read(sector as usize, read_amount, &mut buffer[buffer_offset..]);
+                sector += read_amount;
+                len -= read_amount;
+                buffer_offset += read_amount as usize * 512;
+            }
+        }
+
+        Ok(&buffer[..length as usize])
     }
 
     fn read_file_sector(
@@ -464,8 +506,8 @@ impl FileSystemDev for FAT {
         file_id: usize,
         file_sector: usize,
         buffer: &mut [u8; 512],
-    ) -> Option<usize> {
-        let fat_file = self.file_id_lookup.get(&file_id).unwrap();
+    ) -> Result<Option<usize>, FSServiceError> {
+        let fat_file = self.get_fat_file(file_id)?;
 
         let length = match fat_file.entry_type {
             FATFileType::Folder(_) => todo!(),
@@ -475,7 +517,7 @@ impl FileSystemDev for FAT {
         let sectors_to_read = (length + 511) / 512;
 
         if file_sector == sectors_to_read as usize {
-            return None;
+            return Ok(None);
         }
         let length = if file_sector + 1 == sectors_to_read as usize {
             (length % 512) as usize
@@ -491,6 +533,6 @@ impl FileSystemDev for FAT {
             + file_sector as u32 % self.bios_parameter_block.sectors_per_cluster as u32;
 
         self.disk.read(file_sector as usize, 1, buffer);
-        Some(length)
+        Ok(Some(length))
     }
 }

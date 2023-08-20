@@ -1,9 +1,11 @@
 use alloc::collections::BTreeMap;
+use conquer_once::spin::Lazy;
+use kernel_userspace::net::IPAddr;
 use modular_bitfield::{bitfield, specifiers::B48};
 
 use spin::mutex::Mutex;
 
-use super::ethernet::{EthernetFrameHeader, IPAddr};
+use super::ethernet::EthernetFrameHeader;
 
 #[bitfield]
 pub struct ARP {
@@ -25,6 +27,5 @@ pub struct ARPEth {
     pub arp: ARP,
 }
 
-lazy_static::lazy_static! {
-    pub static ref ARP_TABLE: Mutex<BTreeMap<IPAddr, u64>> = Mutex::new(BTreeMap::new());
-}
+pub static ARP_TABLE: Lazy<Mutex<BTreeMap<IPAddr, u64>>> =
+    Lazy::new(|| Mutex::new(BTreeMap::new()));

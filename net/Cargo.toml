@@ -1,5 +1,5 @@
 [package]
-name = "terminal"
+name = "net"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,11 +9,6 @@ edition = "2021"
 userspace_slaballoc = { path = "../userspace_slaballoc" }
 userspace = { path = "../userspace" }
 kernel_userspace = { path = "../kernel_userspace" }
-input = { path = "../input" }
-
-thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
-hashbrown = "0.14"
 
 [profile.dev]
 strip = true
-opt-level = 1

@@ -7,9 +7,9 @@ edition = "2021"
 
 [dependencies]
 postcard = { version = "1.0.4", features = ["alloc"] }
-serde = { version = "1.0.*", default-features = false }
+serde = { version = "1.0.*", default-features = false, features = ["derive"] }
 input = { path = "../input" }
 lazy_static = { version = "1.4", features = ["spin_no_std"] }
 
+conquer-once = {version = "0.4", default-features = false}
 thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
-conquer-once = { version = "0.4", default-features = false }

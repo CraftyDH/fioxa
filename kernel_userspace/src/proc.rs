@@ -1,9 +1,9 @@
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct PID(pub u64);
 
-impl Into<u64> for PID {
-    fn into(self) -> u64 {
-        self.0
+impl From<PID> for u64 {
+    fn from(val: PID) -> Self {
+        val.0
     }
 }
 
@@ -16,9 +16,9 @@ impl From<u64> for PID {
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub struct TID(pub u64);
 
-impl Into<u64> for TID {
-    fn into(self) -> u64 {
-        self.0
+impl From<TID> for u64 {
+    fn from(val: TID) -> Self {
+        val.0
     }
 }
 

@@ -1,23 +1,29 @@
 use core::sync::atomic::AtomicU64;
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec, boxed::Box};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use kernel_userspace::{
-    ids::{ProcessID, ServiceID, ThreadID},
+    ids::{ProcessID, ServiceID},
     service::{
-        PublicServiceMessage, SendError, SendServiceMessageDest, ServiceMessage,
-        ServiceMessageType, ServiceTrackingNumber, self,
+        self, PublicServiceMessage, SendError, SendServiceMessageDest, ServiceMessage,
+        ServiceTrackingNumber,
     },
-    syscall::{receive_service_message_blocking, send_service_message},
+    syscall::{receive_service_message_blocking, send_service_message, spawn_thread},
 };
 use spin::Mutex;
 use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
     assembly::registers::Registers,
-    cpu_localstorage::get_task_mgr_current_pid,
+    cpu_localstorage::CPULocalStorageRW,
     scheduling::{
-        process::{Process, ScheduleStatus},
-        taskmanager::{load_new_task, PROCESSES, TASK_QUEUE},
+        process::{ProcessMessages, ScheduleStatus, Thread},
+        taskmanager::{load_new_task, push_task_queue, PROCESSES},
     },
 };
 
@@ -26,7 +32,7 @@ pub static SERVICES: Mutex<BTreeMap<ServiceID, ServiceInfo>> = Mutex::new(BTreeM
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ServiceInfo {
     pub owner: ProcessID,
-    pub subscribers: Vec<ProcessID>,
+    pub subscribers: BTreeSet<ProcessID>,
 }
 
 pub fn new(owner: ProcessID) -> ServiceID {
@@ -36,22 +42,25 @@ pub fn new(owner: ProcessID) -> ServiceID {
     SERVICES.lock().insert(
         id,
         ServiceInfo {
-            owner: owner,
-            subscribers: Vec::new(),
+            owner,
+            subscribers: Default::default(),
         },
     );
-    id.clone()
+    id
 }
 
 pub fn subscribe(pid: ProcessID, id: ServiceID) {
-    SERVICES
-        .lock()
-        .get_mut(&id)
-        .and_then(|v| Some(v.subscribers.push(pid)));
+    if let Some(v) = SERVICES.lock().get_mut(&id) {
+        v.subscribers.insert(pid);
+    } else {
+        todo!("Handle no service existing");
+    }
 }
 
 pub fn push(current_pid: ProcessID, msg: Box<[u8]>) -> Result<(), SendError> {
-    let message = service::parse_message(&msg).map_err(|_| SendError::ParseError)?;
+    // Read as () to ensure that we can parse the header of any valid message
+    let message: ServiceMessage<()> =
+        service::parse_message(&msg).map_err(|_| SendError::ParseError)?;
 
     let mut s = SERVICES.lock();
 
@@ -83,173 +92,189 @@ fn send_message(
     pid: ProcessID,
     message: Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>,
 ) -> Result<(), SendError> {
-    let mut p = PROCESSES.lock();
-    let proc = p.get_mut(&pid).ok_or(SendError::TargetNotExists)?;
+    let proc = PROCESSES
+        .lock()
+        .get(&pid)
+        .ok_or(SendError::TargetNotExists)?
+        .clone();
 
-    let waiters = &mut proc.waiting_services;
+    let mut service_messages = proc.service_messages.lock();
+    let waiters = &mut service_messages.waiters;
 
-    // Try getting the list asking for a specific message, then the list asking for a specific service, this the list asking for anything
-    let tids = match waiters.get_mut(&(message.0, message.1)) {
-        Some(t) => Some(t),
-        None => match waiters.get_mut(&(message.0, ServiceTrackingNumber(u64::MAX))) {
-            Some(t) => Some(t),
-            None => waiters.get_mut(&(ServiceID(u64::MAX), ServiceTrackingNumber(u64::MAX))),
-        },
-    };
+    loop {
+        // Try getting the list asking for a specific message, then the list asking for a specific service, this the list asking for anything
+        let tid = match waiters.get_mut(&(message.0, message.1)) {
+            Some(t) if !t.is_empty() => t.pop().expect("list should have at least 1 element"),
+            _ => match waiters.get_mut(&(message.0, ServiceTrackingNumber(u64::MAX))) {
+                Some(t) if !t.is_empty() => t.pop().expect("list should have at least 1 element"),
+                _ => match waiters.get_mut(&(ServiceID(u64::MAX), ServiceTrackingNumber(u64::MAX)))
+                {
+                    Some(t) if !t.is_empty() => {
+                        t.pop().expect("list should have at least 1 element")
+                    }
+                    _ => break,
+                },
+            },
+        };
 
-    if let Some(tids) = tids {
-        if let Some(tid) = tids.pop() {
-            let t = proc
-                .threads
-                .get_mut(&tid)
-                .ok_or(SendError::TargetNotExists)?;
+        let t = proc.threads.lock();
+        let Some(thread) = t.threads.get(&tid) else {
+            // thread doesn't exist anymore, try again
+            continue;
+        };
 
-            assert!(
-                t.schedule_status == ScheduleStatus::WaitingOn(message.0)
-                    || t.schedule_status == ScheduleStatus::WaitingOn(ServiceID(u64::MAX))
-            );
-            assert!(t.current_message.is_none());
+        let mut ctx = thread.context.lock();
 
-            t.register_state.rax = message.2.len();
-            t.current_message = Some(message);
-            t.schedule_status = ScheduleStatus::Scheduled;
-            TASK_QUEUE.push((proc.pid, tid)).unwrap();
-            return Ok(());
-        }
+        assert!(
+            ctx.schedule_status == ScheduleStatus::WaitingOn(message.0)
+                || ctx.schedule_status == ScheduleStatus::WaitingOn(ServiceID(u64::MAX))
+        );
+        assert!(ctx.current_message.is_none());
+
+        ctx.register_state.rax = message.2.len();
+        ctx.current_message = Some(message);
+        ctx.schedule_status = ScheduleStatus::Scheduled;
+        push_task_queue(Arc::downgrade(thread)).unwrap();
+        return Ok(());
     }
 
+    // try to avoid OOM by restricting max packets in queue.
+    if service_messages.queue.len() >= 0x10000 {
+        println!("queue for {} is full dropping old packets", pid.0);
+        service_messages.queue.pop_front();
+    }
     // otherwise add it to the queue
-    proc.service_msgs.push_back(message);
+    service_messages.queue.push_back(message);
     Ok(())
 }
 
 pub fn try_find_message(
-    current_thread: ThreadID,
+    thread: &Thread,
     narrow_by_sid: ServiceID,
     narrow_by_tracking: ServiceTrackingNumber,
-    proc: &mut Process,
+    messages: &mut ProcessMessages,
 ) -> Option<usize> {
-    let msg;
-
-    if narrow_by_sid.0 == u64::MAX {
-        msg = proc.service_msgs.pop_front()?;
+    let msg = if narrow_by_sid.0 == u64::MAX {
+        messages.queue.pop_front()?
     } else {
-        let mut iter = proc.service_msgs.iter();
+        let mut iter = messages.queue.iter();
         let index = if narrow_by_tracking.0 == u64::MAX {
             iter.position(|x| x.0 == narrow_by_sid)?
         } else {
             iter.position(|x| x.0 == narrow_by_sid && x.1 == narrow_by_tracking)?
         };
-        msg = proc.service_msgs.remove(index)?;
-    }
+        messages.queue.remove(index)?
+    };
 
     let length = msg.2.len();
 
-    proc.threads
-        .get_mut(&current_thread)
-        .unwrap()
-        .current_message = Some(msg);
+    thread.context.lock().current_message = Some(msg);
 
     Some(length)
 }
 
 pub fn find_message(
-    current_pid: ProcessID,
-    current_thread: ThreadID,
+    thread: &Thread,
     narrow_by_sid: ServiceID,
     narrow_by_tracking: ServiceTrackingNumber,
 ) -> Option<usize> {
-    let mut processes = PROCESSES.lock();
-    let proc = processes.get_mut(&current_pid).unwrap();
-    try_find_message(current_thread, narrow_by_sid, narrow_by_tracking, proc)
+    try_find_message(
+        thread,
+        narrow_by_sid,
+        narrow_by_tracking,
+        &mut thread.process.service_messages.lock(),
+    )
 }
 
 pub fn find_or_wait_message(
     stack_frame: &mut InterruptStackFrame,
     reg: &mut Registers,
-    current_pid: ProcessID,
-    current_thread: ThreadID,
+    current_thread: &Thread,
     narrow_by_sid: ServiceID,
     narrow_by_tracking: ServiceTrackingNumber,
 ) {
-    let mut processes = PROCESSES.lock();
-    let proc = processes.get_mut(&current_pid).unwrap();
+    let mut messages = current_thread.process.service_messages.lock();
 
-    if let Some(msg) = try_find_message(current_thread, narrow_by_sid, narrow_by_tracking, proc) {
+    if let Some(msg) = try_find_message(
+        current_thread,
+        narrow_by_sid,
+        narrow_by_tracking,
+        &mut messages,
+    ) {
         reg.rax = msg;
     } else {
         let key = (narrow_by_sid, narrow_by_tracking);
-        match proc.waiting_services.get_mut(&key) {
-            Some(vec) => vec.push(current_thread),
+        match messages.waiters.get_mut(&key) {
+            Some(vec) => vec.push(current_thread.tid),
             None => {
-                proc.waiting_services.insert(key, vec![current_thread]);
+                messages.waiters.insert(key, vec![current_thread.tid]);
             }
         }
         reg.rax = 0;
-        let t = proc.threads.get_mut(&current_thread).unwrap();
-        t.schedule_status = ScheduleStatus::WaitingOn(narrow_by_sid);
-        t.save(stack_frame, reg);
+        {
+            let threads = current_thread.process.threads.lock();
+            let t = threads.threads.get(&current_thread.tid).unwrap();
+            let mut ctx = t.context.lock();
+            ctx.schedule_status = ScheduleStatus::WaitingOn(narrow_by_sid);
+            ctx.save(stack_frame, reg);
+        }
 
-        drop(processes);
         load_new_task(stack_frame, reg);
     }
 }
 
-pub fn get_message(
-    current_pid: ProcessID,
-    current_thread: ThreadID,
-    buffer: &mut [u8],
-) -> Option<()> {
-    let mut processes = PROCESSES.lock();
-    let proc = processes.get_mut(&current_pid).unwrap();
-    let msg = proc
-        .threads
-        .get_mut(&current_thread)?
-        .current_message
-        .take()?;
+pub fn get_message(thread: &Thread, buffer: &mut [u8]) -> Option<()> {
+    let msg = thread.context.lock().current_message.take()?;
 
     buffer.copy_from_slice(&msg.2);
     Some(())
 }
 
-pub static PUBLIC_SERVICES: Mutex<BTreeMap<&str, ServiceID>> = Mutex::new(BTreeMap::new());
+pub static PUBLIC_SERVICES: Mutex<BTreeMap<String, ServiceID>> = Mutex::new(BTreeMap::new());
 
 pub fn start_mgmt() {
-    let pid = get_task_mgr_current_pid();
+    let pid = CPULocalStorageRW::get_current_pid();
     let sid = ServiceID(1);
     SERVICES.lock().insert(
         sid,
         ServiceInfo {
             owner: pid,
-            subscribers: Vec::new(),
+            subscribers: Default::default(),
         },
     );
 
     let pid = ProcessID(pid.0);
 
     let mut buffer = Vec::new();
-
-    loop {
+    spawn_thread(move || loop {
         let query = receive_service_message_blocking(sid, &mut buffer).unwrap();
 
         let resp = match query.message {
-            ServiceMessageType::PublicService(PublicServiceMessage::Request(name)) => {
+            PublicServiceMessage::Request(name) => {
                 let s = PUBLIC_SERVICES.lock();
 
                 let sid = s.get(name);
 
-                ServiceMessageType::PublicService(PublicServiceMessage::Response(sid.copied()))
+                PublicServiceMessage::Response(sid.copied())
             }
-            _ => ServiceMessageType::UnknownCommand,
+            PublicServiceMessage::RegisterPublicService(name, sid) => {
+                let mut s = PUBLIC_SERVICES.lock();
+                s.insert(name.to_string(), sid);
+                PublicServiceMessage::Ack
+            }
+            _ => PublicServiceMessage::UnknownCommand,
         };
 
-        send_service_message(&ServiceMessage {
-            service_id: sid,
-            sender_pid: pid,
-            tracking_number: query.tracking_number,
-            destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-            message: resp,
-        }, &mut buffer)
+        send_service_message(
+            &ServiceMessage {
+                service_id: sid,
+                sender_pid: pid,
+                tracking_number: query.tracking_number,
+                destination: SendServiceMessageDest::ToProcess(query.sender_pid),
+                message: resp,
+            },
+            &mut buffer,
+        )
         .unwrap();
-    }
+    });
 }

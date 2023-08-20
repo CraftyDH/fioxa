@@ -12,12 +12,7 @@ use x86_64::{
 };
 
 use crate::{
-    assembly::registers::Registers,
-    cpu_localstorage::{
-        get_current_cpu_id, get_task_mgr_current_ticks, is_task_mgr_schedule,
-        set_task_mgr_current_ticks,
-    },
-    scheduling::taskmanager,
+    assembly::registers::Registers, cpu_localstorage::CPULocalStorageRW, scheduling::taskmanager,
     wrap_function_registers,
 };
 
@@ -89,7 +84,7 @@ pub fn get_uptime() -> u64 {
 }
 
 pub fn get_frequency() -> u64 {
-    return PIT_BASE_FREQUENCY / PIT_DIVISOR.load(Ordering::Acquire) as u64;
+    PIT_BASE_FREQUENCY / PIT_DIVISOR.load(Ordering::Acquire) as u64
 }
 
 pub fn start_switching_tasks() {
@@ -107,7 +102,7 @@ pub fn is_switching_tasks() -> bool {
 wrap_function_registers!(tick => tick_handler);
 
 extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
-    if get_current_cpu_id() == 0 {
+    if CPULocalStorageRW::get_core_id() == 0 {
         // Get the amount of milliseconds per interrupt
         let freq = 1000 / get_frequency();
         // Increment the uptime counter
@@ -116,14 +111,14 @@ extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
 
     // If timer is used for switching tasks switch task
     if SWITCH_TASK.load(Ordering::Acquire) {
-        match get_task_mgr_current_ticks().checked_sub(1) {
-            Some(n) => set_task_mgr_current_ticks(n),
-            None => {
-                if is_task_mgr_schedule() {
-                    Some(taskmanager::switch_task(stack_frame, regs));
-                }
-            }
+        // match get_task_mgr_current_ticks().checked_sub(1) {
+        //     Some(n) => set_task_mgr_current_ticks(n),
+        //     None => {
+        if !CPULocalStorageRW::get_stay_scheduled() {
+            taskmanager::switch_task(stack_frame, regs);
         }
+        //     }
+        // }
     }
     // Ack interrupt
     unsafe { *(0xfee000b0 as *mut u32) = 0 }

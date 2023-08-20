@@ -1,14 +1,13 @@
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::AtomicU8;
 
 use alloc::vec::Vec;
+use conquer_once::spin::Lazy;
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
-    service::{
-        generate_tracking_number, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
-    },
+    service::{generate_tracking_number, SendServiceMessageDest, ServiceMessage},
     syscall::send_service_message,
 };
-use spin::mutex::Mutex;
+use spin::Mutex;
 use x86_64::{
     instructions::interrupts::without_interrupts,
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame},
@@ -18,10 +17,10 @@ pub mod exceptions;
 // pub mod hardware;
 pub mod pic;
 
-use lazy_static::lazy_static;
-
 use crate::{
+    cpu_localstorage::CPULocalStorageRW,
     gdt::TASK_SWITCH_INDEX,
+    scheduling::taskmanager::enter_core_mgmt,
     service::{self, PUBLIC_SERVICES},
     syscall,
     time::pit::tick_handler,
@@ -58,30 +57,28 @@ pub enum HardwareInterruptOffset {
     ATASecondary,
 }
 
-impl Into<u8> for HardwareInterruptOffset {
-    fn into(self) -> u8 {
-        self as u8
+impl From<HardwareInterruptOffset> for u8 {
+    fn from(val: HardwareInterruptOffset) -> Self {
+        val as u8
     }
 }
 
-impl Into<usize> for HardwareInterruptOffset {
-    fn into(self) -> usize {
-        self as usize
+impl From<HardwareInterruptOffset> for usize {
+    fn from(val: HardwareInterruptOffset) -> Self {
+        val as usize
     }
 }
 
-lazy_static! {
-    pub static ref IDT: Mutex<InterruptDescriptorTable> = {
-        let mut idt = InterruptDescriptorTable::new();
-        // Set idt table
-        exceptions::set_exceptions_idt(&mut idt);
-        // hardware::set_hardware_idt(&mut idt);
-        pic::set_spurious_interrupts(&mut idt);
-        syscall::set_syscall_idt(&mut idt);
+pub static IDT: Lazy<Mutex<InterruptDescriptorTable>> = Lazy::new(|| {
+    let mut idt = InterruptDescriptorTable::new();
+    // Set idt table
+    exceptions::set_exceptions_idt(&mut idt);
+    // hardware::set_hardware_idt(&mut idt);
+    pic::set_spurious_interrupts(&mut idt);
+    syscall::set_syscall_idt(&mut idt);
 
-        Mutex::new(idt)
-    };
-}
+    Mutex::new(idt)
+});
 
 #[macro_export]
 macro_rules! interrupt_handler {
@@ -92,13 +89,13 @@ macro_rules! interrupt_handler {
             // println!("Core: {y} received int");
             $fn(i);
             // Finish int
-            unsafe { core::ptr::write_volatile(0xfee000B0 as *mut u32, 0) }
+            unsafe { core::ptr::write_volatile(0xfee000b0 as *mut u32, 0) }
         }
     };
 }
 
 pub fn set_irq_handler(irq: usize, func: extern "x86-interrupt" fn(InterruptStackFrame)) {
-    assert!(irq >= IRQ_OFFSET && irq <= 255);
+    assert!((IRQ_OFFSET..=255).contains(&irq));
     IDT.lock()[irq].set_handler_fn(func);
 }
 
@@ -143,63 +140,75 @@ pub fn spurious(s: InterruptStackFrame) {
 //     })
 // }
 
-static KB_INT: AtomicBool = AtomicBool::new(false);
-static MOUSE_INT: AtomicBool = AtomicBool::new(false);
-static PCI_INT: AtomicBool = AtomicBool::new(false);
+/// We pack the interrupts into an atomic because that reduces atomic contention in the highly polled check_interrupts.
+static INT_VEC: AtomicU8 = AtomicU8::new(0);
+
+const KB_INT: u8 = 0;
+const MOUSE_INT: u8 = 1;
+const PCI_INT: u8 = 2;
+
+#[inline(always)]
+fn int_interrupt_handler(vector: u8) {
+    INT_VEC.fetch_or(1 << vector, core::sync::atomic::Ordering::Relaxed);
+    enter_core_mgmt();
+}
 
 interrupt_handler!(kb_interrupt_handler => keyboard_int_handler);
 fn kb_interrupt_handler(_: InterruptStackFrame) {
-    KB_INT.store(true, core::sync::atomic::Ordering::Relaxed)
+    int_interrupt_handler(KB_INT)
 }
 
 interrupt_handler!(mouse_interrupt_handler => mouse_int_handler);
 fn mouse_interrupt_handler(_: InterruptStackFrame) {
-    MOUSE_INT.store(true, core::sync::atomic::Ordering::Relaxed)
+    int_interrupt_handler(MOUSE_INT)
 }
 
 interrupt_handler!(pci_interrupt_handler => pci_int_handler);
 fn pci_interrupt_handler(_: InterruptStackFrame) {
-    PCI_INT.store(true, core::sync::atomic::Ordering::Relaxed)
+    int_interrupt_handler(PCI_INT)
 }
 
-lazy_static! {
-    pub static ref INTERRUPT_HANDLERS: [ServiceID; 3] = {
-        let kb = service::new(ProcessID(0));
-        let mouse = service::new(ProcessID(0));
-        let pci = service::new(ProcessID(0));
+pub static INTERRUPT_HANDLERS: Lazy<[ServiceID; 3]> = Lazy::new(|| {
+    let kb = service::new(ProcessID(0));
+    let mouse = service::new(ProcessID(0));
+    let pci = service::new(ProcessID(0));
 
-        PUBLIC_SERVICES.lock().insert("INTERRUPTS:KB", kb);
-        PUBLIC_SERVICES.lock().insert("INTERRUPTS:MOUSE", mouse);
-        PUBLIC_SERVICES.lock().insert("INTERRUPTS:PCI", pci);
+    PUBLIC_SERVICES.lock().insert("INTERRUPTS:KB".into(), kb);
+    PUBLIC_SERVICES
+        .lock()
+        .insert("INTERRUPTS:MOUSE".into(), mouse);
+    PUBLIC_SERVICES.lock().insert("INTERRUPTS:PCI".into(), pci);
 
-        [kb, mouse, pci]
-    };
-}
+    [kb, mouse, pci]
+});
 
+/// Returns true if there were any interrupt events dispatched
 pub fn check_interrupts(send_buffer: &mut Vec<u8>) -> bool {
-    let mut res = false;
-    if KB_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
-        send_int_message(INTERRUPT_HANDLERS[0], send_buffer);
-        res = true;
+    let interrupts = INT_VEC.swap(0, core::sync::atomic::Ordering::Relaxed);
+    let handlers = INTERRUPT_HANDLERS.as_ref();
+    if interrupts & (1 << KB_INT) > 0 {
+        send_int_message(handlers[KB_INT as usize], send_buffer);
     }
-    if MOUSE_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
-        send_int_message(INTERRUPT_HANDLERS[1], send_buffer);
-        res = true;
+    if interrupts & (1 << MOUSE_INT) > 0 {
+        send_int_message(handlers[MOUSE_INT as usize], send_buffer)
     }
-    if PCI_INT.swap(false, core::sync::atomic::Ordering::Relaxed) {
-        send_int_message(INTERRUPT_HANDLERS[2], send_buffer);
-        res = true;
+    if interrupts & (1 << PCI_INT) > 0 {
+        send_int_message(handlers[KB_INT as usize], send_buffer);
     }
-    res
+    // check if at least 1 interrupt occured
+    interrupts != 0
 }
 
 fn send_int_message(service: ServiceID, send_buffer: &mut Vec<u8>) {
-    send_service_message(&ServiceMessage {
-        service_id: service,
-        sender_pid: ProcessID(0),
-        tracking_number: generate_tracking_number(),
-        destination: SendServiceMessageDest::ToSubscribers,
-        message: ServiceMessageType::InterruptEvent,
-    }, send_buffer)
+    send_service_message(
+        &ServiceMessage {
+            service_id: service,
+            sender_pid: CPULocalStorageRW::get_current_pid(),
+            tracking_number: generate_tracking_number(),
+            destination: SendServiceMessageDest::ToSubscribers,
+            message: (),
+        },
+        send_buffer,
+    )
     .unwrap()
 }

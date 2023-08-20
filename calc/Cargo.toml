@@ -11,4 +11,4 @@ userspace = { path = "../userspace" }
 kernel_userspace = { path = "../kernel_userspace" }
 
 [profile.dev]
-#strip = true
+strip = true

@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(pointer_byte_offsets)]
 
+#[allow(unused_imports)]
 #[macro_use]
 extern crate alloc;
 
@@ -25,10 +26,10 @@ use kernel::interrupts::{self};
 use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::enable_localapic;
 use kernel::memory::MemoryMapIter;
-use kernel::net::ethernet::{ethernet_task, lookup_ip};
+use kernel::net::ethernet::userspace_networking_main;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
-use kernel::paging::page_allocator::{frame_alloc_exec, free_page, request_page};
-use kernel::paging::page_table_manager::{page_4kb, Mapper};
+use kernel::paging::page_allocator::{frame_alloc_exec, request_page};
+use kernel::paging::page_table_manager::{Mapper, Page, Size4KB};
 use kernel::paging::{
     get_uefi_active_mapper, set_mem_offset, virt_addr_for_phys, MemoryLoc, KERNEL_MAP,
 };
@@ -36,22 +37,18 @@ use kernel::pci::enumerate_pci;
 use kernel::scheduling::taskmanager::core_start_multitasking;
 use kernel::screen::gop::{self, WRITER};
 use kernel::screen::psf1::{self, load_psf1_font};
-use kernel::service::PUBLIC_SERVICES;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
-use kernel::{allocator, elf, gdt, paging, ps2, service, BOOT_INFO};
+use kernel::{elf, gdt, paging, ps2, service, BOOT_INFO};
 
-use kernel_userspace::service::{
-    generate_tracking_number, get_public_service_id, SendServiceMessageDest, ServiceMessage,
-    ServiceMessageType,
-};
+use bootloader::uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
+use bootloader::uefi::table::{Runtime, SystemTable};
+use kernel_userspace::elf::spawn_elf_process;
+use kernel_userspace::service::{get_public_service_id, register_public_service, ServiceMessage};
 use kernel_userspace::syscall::{
-    exit, get_pid, receive_service_message_blocking, send_service_message, service_create,
-    spawn_process, spawn_thread,
+    exit, receive_service_message_blocking, service_create, spawn_process, spawn_thread,
 };
-use uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
-use uefi::table::{Runtime, SystemTable};
 
 // #[no_mangle]
 entry_point!(main);
@@ -66,7 +63,10 @@ pub fn main(info: *const BootInfo) -> ! {
 
     let boot_info = unsafe { core::ptr::read(info) };
 
-    let font = psf1::load_psf1_font(boot_info.font);
+    let Ok(font) = psf1::load_psf1_font(boot_info.font) else {
+        // We can't do anything because without a font printing is futile
+        loop {}
+    };
 
     gop::WRITER.lock().set_gop(boot_info.gop, font);
     // Test screen colours
@@ -115,24 +115,30 @@ pub fn main(info: *const BootInfo) -> ! {
 
         // Remap this threads stack
         for page in ((rsp & !0xFFF) as u64..(rsp + 1024 * 1024 * 5) as u64).step_by(0x1000) {
-            map.map_memory(page_4kb(page), page_4kb(page))
+            map.identity_map_memory(Page::<Size4KB>::new(page))
                 .unwrap()
                 .ignore();
         }
 
         // create_offset_map(&mut map.get_lvl3(0), mmap.clone());
-        create_offset_map(&mut map.get_lvl3(MemoryLoc::PhysMapOffset as u64), mmap);
-        create_kernel_map(&mut map.get_lvl3(MemoryLoc::KernelStart as u64));
+        create_offset_map(
+            &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::PhysMapOffset as u64)),
+            mmap,
+        );
+        create_kernel_map(
+            &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::KernelStart as u64)),
+        );
         map_gop(&mut map);
 
-        let page = page_4kb((info as u64) & !0xFFF);
-        map.map_memory(page, page).unwrap().ignore();
+        map.identity_map_memory(Page::<Size4KB>::containing(info as u64))
+            .unwrap()
+            .ignore();
 
-        let page = page_4kb(boot_info.uefi_runtime_table & !0xFFF);
-        map.map_memory(page, page).unwrap().ignore();
+        map.identity_map_memory(Page::<Size4KB>::containing(boot_info.uefi_runtime_table))
+            .unwrap()
+            .ignore();
 
         println!("Remapping to higher half");
-        unsafe { set_mem_offset(MemoryLoc::PhysMapOffset as u64) }
 
         unsafe {
             frame_alloc_exec(|f| {
@@ -146,8 +152,9 @@ pub fn main(info: *const BootInfo) -> ! {
                 "add rsp, {}",
                 "mov cr3, {}",
                 in(reg) MemoryLoc::PhysMapOffset as u64,
-                in(reg) map.get_lvl4_addr(),
+                in(reg) map.into_page().get_address(),
             );
+            set_mem_offset(MemoryLoc::PhysMapOffset as u64);
             map.shift_table_to_offset();
         }
     }
@@ -156,13 +163,9 @@ pub fn main(info: *const BootInfo) -> ! {
 
     unsafe {
         let frame = request_page().unwrap();
-        let page = page_4kb(0x400000000000);
-        KERNEL_MAP
-            .lock()
-            .map_memory(page, page_4kb(frame as u64))
-            .unwrap()
-            .flush();
-        let f = virt_addr_for_phys(frame) as *mut u64;
+        let page = Page::new(0x400000000000);
+        KERNEL_MAP.lock().map_memory(page, *frame).unwrap().flush();
+        let f = virt_addr_for_phys(frame.get_address()) as *mut u64;
 
         println!("Page test");
         *f = 4493;
@@ -171,7 +174,6 @@ pub fn main(info: *const BootInfo) -> ! {
             "Paging test failed"
         );
         KERNEL_MAP.lock().unmap_memory(page).unwrap().flush();
-        free_page(frame);
     }
 
     // log!("Initializing HEAP...");
@@ -180,7 +182,9 @@ pub fn main(info: *const BootInfo) -> ! {
     log!("Updating font...");
     // Set unicode mapping buffer (for more chacters than ascii)
     // And update font to use new mapping
-    WRITER.lock().update_font(load_psf1_font(boot_info.font));
+    WRITER
+        .lock()
+        .update_font(load_psf1_font(boot_info.font).unwrap());
 
     log!("Loading UEFI runtime table");
     let config_tables = runtime_table.config_table();
@@ -193,7 +197,7 @@ pub fn main(info: *const BootInfo) -> ! {
     {
         KERNEL_MAP
             .lock()
-            .map_memory(page_4kb(page), page_4kb(page))
+            .identity_map_memory(Page::<Size4KB>::new(page))
             .unwrap()
             .ignore();
     }
@@ -221,7 +225,7 @@ pub fn main(info: *const BootInfo) -> ! {
     enable_apic(&madt, &mut KERNEL_MAP.lock());
 
     boot_aps(&madt);
-    spawn_process(after_boot, "", true);
+    spawn_process(after_boot, &[], true);
 
     // Disable interrupts so when we enable switching this core can finish init.
     unsafe { core::arch::asm!("cli") };
@@ -243,8 +247,9 @@ fn after_boot() {
 
     let mut map = unsafe { get_uefi_active_mapper() };
 
-    let page = page_4kb(boot_info.uefi_runtime_table & !0xFFF);
-    map.map_memory(page, page).unwrap().ignore();
+    map.identity_map_memory(Page::<Size4KB>::containing(boot_info.uefi_runtime_table))
+        .unwrap()
+        .ignore();
 
     let runtime_table =
         unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
@@ -257,7 +262,7 @@ fn after_boot() {
         + size_of::<ConfigTableEntry>() as u64 * config_tables.len() as u64)
         .step_by(0x1000)
     {
-        map.map_memory(page_4kb(page), page_4kb(page))
+        map.identity_map_memory(Page::<Size4KB>::new(page))
             .unwrap()
             .ignore();
     }
@@ -274,63 +279,54 @@ fn after_boot() {
 
     let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
 
-    spawn_process(service::start_mgmt, "", true);
-    spawn_process(elf::elf_new_process_loader, "", true);
+    spawn_process(service::start_mgmt, &[], true);
+    spawn_process(elf::elf_new_process_loader, &[], true);
 
-    spawn_process(ps2::main, "", true);
-    spawn_process(gop::gop_entry, "", true);
+    spawn_process(ps2::main, &[], true);
+    spawn_process(gop::gop_entry, &[], true);
     spawn_thread(fs::file_handler);
 
     log!("Enumnerating PCI...");
 
     enumerate_pci(acpi_tables);
-    spawn_thread(|| kernel::pci::poll_interrupts());
 
-    spawn_thread(ethernet_task);
+    spawn_process(userspace_networking_main, &[], true);
 
     spawn_thread(|| FSDRIVES.lock().identify());
 
     spawn_thread(|| {
-        for i in 0..5 {
-            println!(
-                "10.0.2.{i} = {:#X?}",
-                lookup_ip(kernel::net::ethernet::IPAddr::V4(10, 0, 2, i))
-            );
-        }
-    });
-
-    spawn_thread(|| {
         let mut buffer = Vec::new();
         let elf = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
-        let pid = get_pid();
-
-        send_service_message(&ServiceMessage {
-            service_id: elf,
-            sender_pid: pid,
-            tracking_number: generate_tracking_number(),
-            destination: SendServiceMessageDest::ToProvider,
-            message: ServiceMessageType::ElfLoader(TERMINAL_ELF, &[]),
-        }, &mut buffer)
-        .unwrap();
+        spawn_elf_process(elf, TERMINAL_ELF, &[], &mut buffer).unwrap();
     });
 
     // For testing, accepts all inputs
     spawn_process(
         || {
             let sid = service_create();
-            PUBLIC_SERVICES.lock().insert("ACCEPTER", sid);
+            register_public_service("ACCEPTER", sid, &mut Vec::new());
             let mut buffer = Vec::new();
 
             for i in 0.. {
-                receive_service_message_blocking(sid, &mut buffer).unwrap();
+                let _: ServiceMessage<()> =
+                    receive_service_message_blocking(sid, &mut buffer).unwrap();
                 if i % 10000 == 0 {
                     println!("ACCEPTER: {i}")
                 }
             }
         },
-        "",
+        &[],
         false,
     );
+
+    // spawn_thread(|| {
+    //     for i in 0.. {
+    //         request_page();
+    //         if i % 10000 == 0 {
+    //             println!("PAGE: {i} {}mb", i * 0x1000 / 1024 / 1024)
+    //         }
+    //     }
+    // });
 
     exit();
 }

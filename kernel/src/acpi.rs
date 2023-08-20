@@ -4,12 +4,11 @@ use acpi::{AcpiError, AcpiHandler, AcpiTables, PhysicalMapping};
 
 use crate::paging::{
     get_uefi_active_mapper,
-    page_table_manager::{ident_map_curr_process, page_4kb, Mapper},
+    page_table_manager::{ident_map_curr_process, Mapper, Page, Size4KB},
 };
 
 pub fn prepare_acpi(rsdp: usize) -> Result<AcpiTables<FioxaAcpiHandler>, AcpiError> {
-    // let handler = FioxaAcpiHandler::new(frame_allocator);
-    ident_map_curr_process((rsdp as u64) & !0xFFF, false);
+    unsafe { ident_map_curr_process(Page::<Size4KB>::containing(rsdp as u64), false) };
 
     let root_acpi_handler = unsafe { acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, rsdp) }?;
 
@@ -36,7 +35,7 @@ impl AcpiHandler for FioxaAcpiHandler {
 
         for page in (start..end).step_by(0x1000) {
             mapper
-                .map_memory(page_4kb(page as u64), page_4kb(page as u64))
+                .identity_map_memory(Page::<Size4KB>::new(page as u64))
                 .unwrap()
                 .flush();
         }
@@ -56,7 +55,10 @@ impl AcpiHandler for FioxaAcpiHandler {
         for page in (region.physical_start()..(region.physical_start() + region.mapped_length()))
             .step_by(0x1000)
         {
-            mapper.unmap_memory(page_4kb(page as u64)).unwrap().flush();
+            mapper
+                .unmap_memory(Page::<Size4KB>::new(page as u64))
+                .unwrap()
+                .flush();
         }
     }
 }

@@ -1,15 +1,17 @@
 use crate::{
     acpi::FioxaAcpiHandler,
-    driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::PCNET},
+    cpu_localstorage::CPULocalStorageRW,
+    driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::amd_pcnet_main},
     fs::FSDRIVES,
-    net::ethernet::ETHERNET,
     pci::mcfg::get_mcfg,
 };
 
 use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
+
 use kernel_userspace::{
-    service::get_public_service_id,
-    syscall::{receive_service_message_blocking, service_subscribe},
+    ids::ServiceID,
+    service::ServiceMessage,
+    syscall::{send_service_message, spawn_process, spawn_thread},
 };
 use spin::Mutex;
 mod express;
@@ -19,32 +21,7 @@ mod pci_descriptors;
 
 pub type PCIDriver = Arc<Mutex<dyn Driver + Send>>;
 
-lazy_static::lazy_static! {
-    pub static ref PCI_INTERRUPT_DEVICES: Mutex<Vec<PCIDriver>> = Mutex::new(Vec::new());
-}
-
-pub fn poll_interrupts() {
-    let mut buffer = Vec::new();
-    let pci_event = get_public_service_id("INTERRUPTS:PCI", &mut buffer).unwrap();
-    service_subscribe(pci_event);
-
-    loop {
-        let message = receive_service_message_blocking(pci_event, &mut buffer).unwrap();
-        match message.message {
-            kernel_userspace::service::ServiceMessageType::InterruptEvent => {
-                // For each device check if it had the interrupt
-                let mut d = PCI_INTERRUPT_DEVICES.lock();
-                for device in d.iter_mut() {
-                    let mut d = device.lock();
-                    d.interrupt_handler();
-                }
-            }
-            _ => unimplemented!(),
-        }
-    }
-}
-
-pub trait PCIDevice {
+pub trait PCIDevice: Send + Sync {
     unsafe fn read_u8(&self, offset: u32) -> u8;
     unsafe fn read_u16(&self, offset: u32) -> u16;
     unsafe fn read_u32(&self, offset: u32) -> u32;
@@ -131,7 +108,7 @@ impl PCIHeader0 {
     pub fn get_port_base(&self) -> Option<u32> {
         for i in 0..5 {
             let bar = self.get_bar(i);
-            let address = (bar & 0xFFFFFFFC).try_into().unwrap();
+            let address = bar & 0xFFFFFFFC;
             if address > 0 && bar & 1 == 1 {
                 return Some(address);
             }
@@ -199,7 +176,7 @@ fn enumerate_device(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: u8
         return;
     }
     for function in 0..8 {
-        enumerate_function(pci_bus, segment, bus, device, function)
+        enumerate_function(pci_bus, segment, bus, device, function);
     }
 }
 
@@ -211,20 +188,19 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
     }
 
     let class = pci_header.get_class() as usize;
-    let cls;
-    if class < pci_descriptors::DEVICE_CLASSES.len() {
-        cls = pci_descriptors::DEVICE_CLASSES[class]
+    let cls = if class < pci_descriptors::DEVICE_CLASSES.len() {
+        pci_descriptors::DEVICE_CLASSES[class]
     } else {
-        cls = "Unknown";
-    }
+        "Unknown"
+    };
 
     println!(
         "Class: {}, Vendor: {}, Device: {}",
         cls,
         pci_descriptors::get_vendor_name(pci_header.get_vendor_id())
-            .unwrap_or(&format!("Unknown vendor: {:#X}", { pci_header.get_vendor_id() }).as_str()),
+            .unwrap_or(format!("Unknown vendor: {:#X}", { pci_header.get_vendor_id() }).as_str()),
         pci_descriptors::get_device_name(pci_header.get_vendor_id(), pci_header.get_device_id())
-            .unwrap_or(&format!("Unknown device: {:#X}", { pci_header.get_device_id() }).as_str())
+            .unwrap_or(format!("Unknown device: {:#X}", { pci_header.get_device_id() }).as_str())
     );
 
     // Specific drivers
@@ -234,9 +210,8 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
             // AM79c973
             0x2000 => {
                 println!("AMD PCnet");
-                let driv = Arc::new(Mutex::new(PCNET::new(pci_header).unwrap()));
-                PCI_INTERRUPT_DEVICES.lock().push(driv.clone());
-                ETHERNET.lock().new_device(driv);
+                let sid = pci_dev_handler(pci_bus, segment, bus, device, function);
+                spawn_process(amd_pcnet_main, &sid.0.to_ne_bytes(), true);
                 return;
             }
             _ => (),
@@ -272,4 +247,53 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
 
 trait PCIBus {
     fn get_device(&mut self, segment: u16, bus: u8, device: u8, function: u8) -> PCIHeaderCommon;
+    fn get_device_raw(
+        &mut self,
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Box<dyn PCIDevice>;
+}
+
+fn pci_dev_handler(
+    pci_bus: &mut impl PCIBus,
+    segment: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
+) -> ServiceID {
+    let mut device = pci_bus.get_device_raw(segment, bus, device, function);
+    let sid = kernel_userspace::syscall::service_create();
+
+    spawn_thread(move || loop {
+        let mut buf = Vec::new();
+        let req =
+            kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buf).unwrap();
+        let resp = match req.message {
+            kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
+                kernel_userspace::pci::PCIDevCmd::Data(device.read_u32(offset))
+            },
+            kernel_userspace::pci::PCIDevCmd::Write(offset, data) if offset <= 256 => unsafe {
+                device.write_u32(offset, data);
+                kernel_userspace::pci::PCIDevCmd::Ack
+            },
+            _ => kernel_userspace::pci::PCIDevCmd::UnknownCommand,
+        };
+        send_service_message(
+            &ServiceMessage {
+                service_id: sid,
+                sender_pid: CPULocalStorageRW::get_current_pid(),
+                tracking_number: req.tracking_number,
+                destination: kernel_userspace::service::SendServiceMessageDest::ToProcess(
+                    req.sender_pid,
+                ),
+                message: resp,
+            },
+            &mut buf,
+        )
+        .unwrap();
+    });
+
+    sid
 }

@@ -15,7 +15,7 @@ use crate::{
     },
     paging::{
         get_uefi_active_mapper,
-        page_table_manager::{page_4kb, Mapper, Page, PageLvl4, PageTable, Size4KB},
+        page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
     },
 };
 
@@ -26,8 +26,10 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
 
     for apic in &io_apics {
         println!("APIC: {:?}", apic);
-        let page = page_4kb(apic.apic_addr.into());
-        mapper.map_memory(page, page).unwrap().flush();
+        mapper
+            .identity_map_memory(Page::<Size4KB>::new(apic.apic_addr.into()))
+            .unwrap()
+            .flush();
     }
 
     let apic = io_apics.first().unwrap();
@@ -59,11 +61,11 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
 
 pub fn send_ipi_to(apic_id: u8, vector: u8) {
     // Check no IPI pending
-    while unsafe { *((0xfee00000u64 + 0x300) as *const u32) & (1 << 12) > 0 } {}
+    while unsafe { read_volatile((0xfee00000u64 + 0x300) as *const u32) & (1 << 12) > 0 } {}
     // Target
-    unsafe { *((0xfee00000u64 + 0x310) as *mut u32) = (apic_id as u32) << 24 };
+    unsafe { write_volatile((0xfee00000u64 + 0x310) as *mut u32, (apic_id as u32) << 24) };
     // Send interrupt
-    unsafe { *((0xfee00000u64 + 0x300) as *mut u32) = vector as u32 | 1 << 14 };
+    unsafe { write_volatile((0xfee00000u64 + 0x300) as *mut u32, vector as u32 | 1 << 14) };
 }
 
 fn set_redirect_entry(apic_base: u32, processor: u32, irq: u8, vector: u8, enable: bool) {
@@ -97,7 +99,7 @@ pub fn mask_entry(irq: u8, enable: bool) {
 
     let page = Page::<Size4KB>::new(apic_base as u64);
 
-    mapper.map_memory(page, page).unwrap().flush();
+    mapper.identity_map_memory(page).unwrap().flush();
     let mut low = read_ioapic_register(apic_base, 0x10 + 2 * irq);
 
     low.set_bit(16, !enable);
@@ -109,7 +111,7 @@ pub fn mask_entry(irq: u8, enable: bool) {
 fn write_ioapic_register(apic_base: u32, offset: u8, val: u32) {
     unsafe {
         write_volatile(apic_base as *mut u32, offset as u32);
-        write_volatile((apic_base + 0x10) as *mut u32, val as u32);
+        write_volatile((apic_base + 0x10) as *mut u32, val);
     }
 }
 

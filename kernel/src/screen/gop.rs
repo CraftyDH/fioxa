@@ -1,13 +1,14 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use bootloader::gop::GopInfo;
+use conquer_once::spin::Lazy;
 use core::fmt::Write;
 use core::sync::atomic::AtomicPtr;
 use kernel_userspace::service::{
-    generate_tracking_number, SendError, SendServiceMessageDest, ServiceMessage, ServiceMessageType,
+    generate_tracking_number, register_public_service, SendError, SendServiceMessageDest,
+    ServiceMessage, Stdout,
 };
 use kernel_userspace::syscall::{get_pid, send_service_message, service_create, spawn_thread};
-use lazy_static::lazy_static;
 
 #[derive(Clone, Copy)]
 pub struct Pos {
@@ -45,7 +46,11 @@ impl Writer {
             if unicode_byte == 0xFFFF {
                 index += 1;
             } else {
-                unicode_table.insert(char::from_u32(unicode_byte.into()).unwrap(), index);
+                unicode_table.insert(
+                    char::from_u32(unicode_byte.into())
+                        .expect("unicode table should only have valid chars"),
+                    index,
+                );
             }
         }
 
@@ -227,8 +232,8 @@ impl core::fmt::Write for Writer {
         Ok(())
     }
 }
-lazy_static! {
-    pub static ref WRITER: Mutex<Writer> = Mutex::new(Writer {
+pub static WRITER: Lazy<Mutex<Writer>> = Lazy::new(|| {
+    Mutex::new(Writer {
         pos: Pos { x: 0, y: 0 },
         gop: GopInfo {
             buffer: AtomicPtr::default(),
@@ -236,14 +241,14 @@ lazy_static! {
             horizonal: 0,
             vertical: 0,
             stride: 0,
-            pixel_format: uefi::proto::console::gop::PixelFormat::Rgb
+            pixel_format: bootloader::uefi::proto::console::gop::PixelFormat::Rgb,
         },
         font: PSF1_FONT_NULL,
         unicode_table: None,
         fg_colour: 0xFF_FF_FF,
         bg_colour: 0x00_00_00,
-    });
-}
+    })
+});
 
 #[macro_export]
 macro_rules! println {
@@ -267,7 +272,6 @@ use crate::paging::get_uefi_active_mapper;
 use crate::paging::offset_map::map_gop;
 use crate::scheduling::without_context_switch;
 use crate::screen::psf1::PSF1_FONT_NULL;
-use crate::service::PUBLIC_SERVICES;
 use core::fmt::Arguments;
 use spin::mutex::Mutex;
 
@@ -278,13 +282,15 @@ use super::psf1::PSF1Font;
 pub fn _print(args: Arguments) {
     loop {
         // Prevent task from being scheduled away with mutex
-        if let Some(_) = without_context_switch(|| {
+        if without_context_switch(|| {
             if let Some(mut w) = WRITER.try_lock() {
                 w.write_fmt(args).unwrap();
                 return Some(());
             }
             None
-        }) {
+        })
+        .is_some()
+        {
             return;
         }
     }
@@ -293,33 +299,34 @@ pub fn _print(args: Arguments) {
 pub fn monitor_stdout_task() {
     let sid = service_create();
     let pid = get_pid();
-    PUBLIC_SERVICES.lock().insert("STDOUT", sid);
+    register_public_service("STDOUT", sid, &mut Vec::new());
 
     let mut buffer = Vec::new();
     loop {
-        let msg = kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buffer).unwrap();
+        let msg =
+            kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buffer).unwrap();
 
-        let m = match msg.message {
-            ServiceMessageType::Stdout(str) => {
+        match msg.message {
+            Stdout::Str(str) => {
                 print!("{str}");
-                ServiceMessageType::Ack
             }
-            ServiceMessageType::StdoutChar(chr) => {
+            Stdout::Char(chr) => {
                 print!("{chr}");
-                ServiceMessageType::Ack
             }
-            _ => ServiceMessageType::UnknownCommand,
-        };
+        }
 
-        match send_service_message(&ServiceMessage {
-            service_id: sid,
-            sender_pid: pid,
-            tracking_number: generate_tracking_number(),
-            destination: SendServiceMessageDest::ToProcess(msg.sender_pid),
-            message: m,
-        }, &mut buffer) {
+        match send_service_message(
+            &ServiceMessage {
+                service_id: sid,
+                sender_pid: pid,
+                tracking_number: generate_tracking_number(),
+                destination: SendServiceMessageDest::ToProcess(msg.sender_pid),
+                message: (),
+            },
+            &mut buffer,
+        ) {
             Ok(_) | Err(SendError::TargetNotExists) => (),
-            Err(e) => Err(e).unwrap(),
+            Err(e) => println!("gop send error: {e:?}"),
         }
     }
 }

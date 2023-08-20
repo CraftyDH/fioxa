@@ -4,7 +4,7 @@
 use alloc::vec::Vec;
 use kernel_userspace::{
     service::{generate_tracking_number, get_public_service_id, ServiceMessage},
-    syscall::{send_service_message, CURRENT_PID},
+    syscall::{exit, send_service_message, CURRENT_PID},
 };
 
 extern crate alloc;
@@ -26,7 +26,7 @@ pub extern "C" fn main() {
                 sender_pid: *CURRENT_PID,
                 tracking_number: generate_tracking_number(),
                 destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-                message: kernel_userspace::service::ServiceMessageType::Ack,
+                message: (),
             },
             &mut buffer,
         )
@@ -40,5 +40,5 @@ pub extern "C" fn main() {
 #[panic_handler]
 fn panic(i: &core::panic::PanicInfo) -> ! {
     println!("{}", i);
-    loop {}
+    exit()
 }
