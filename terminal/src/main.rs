@@ -1,13 +1,14 @@
 #![no_std]
 #![no_main]
+#![feature(error_in_core)]
 
 use kernel_userspace::{
-    elf::spawn_elf_process,
-    fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
     ids::ServiceID,
-    service::get_public_service_id,
     syscall::{exit, receive_service_message_blocking, service_subscribe},
 };
+use terminal::script::{execute, Environment};
+
+mod fns;
 
 extern crate alloc;
 #[macro_use]
@@ -94,22 +95,30 @@ impl Iterator for KBInputDecoder {
 
 #[export_name = "_start"]
 pub extern "C" fn main() {
-    let mut cwd: String = String::from("/");
-    let mut partiton_id = 0u64;
+    let mut env = Environment::new(String::from("/"), 0);
 
-    let mut buffer = Vec::new();
-    let mut file_buffer = Vec::new();
+    let fs_sid = env.add_service("FS").unwrap();
+    let keyboard_sid = env.add_service("INPUT:KB").unwrap();
+    let elf_loader_sid = env.add_service("ELF_LOADER").unwrap();
 
-    let fs_sid = get_public_service_id("FS", &mut buffer).unwrap();
-    let keyboard_sid = get_public_service_id("INPUT:KB", &mut buffer).unwrap();
-    let elf_loader_sid = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
+    env.services = Some(execute::Services {
+        fs: fs_sid,
+        keyboard: keyboard_sid,
+        elf_loader: elf_loader_sid,
+    });
+
+    env.add_internal_fn("pwd", &fns::pwd);
+    env.add_internal_fn("echo", &fns::echo);
+    env.add_internal_fn("disk", &fns::disk);
+    env.add_internal_fn("ls", &fns::ls);
+    env.add_internal_fn("cd", &fns::cd);
+    env.add_internal_fn("cat", &fns::cat);
 
     service_subscribe(keyboard_sid);
-
     let mut input: KBInputDecoder = KBInputDecoder::new(keyboard_sid);
 
     loop {
-        print!("{partiton_id}:/ ");
+        print!("{}:{} ", env.partition_id, env.cwd);
 
         let mut curr_line = String::new();
 
@@ -128,153 +137,10 @@ pub extern "C" fn main() {
             }
         }
 
-        let (command, rest) = curr_line
-            .trim()
-            .split_once(' ')
-            .unwrap_or((curr_line.as_str(), ""));
-        match command {
-            "" => (),
-            "pwd" => println!("{}", cwd.to_string()),
-            "echo" => {
-                print!("ECHO!");
-            }
-            "disk" => {
-                let c = rest.trim();
-                let c = c.chars().next();
-                if let Some(chr) = c {
-                    if let Some(n) = chr.to_digit(10) {
-                        match fs::stat(fs_sid, n as usize, "/", &mut buffer) {
-                            Ok(StatResponse::File(_)) => println!("cd: cannot cd into a file"),
-                            Ok(StatResponse::Folder(_)) => {
-                                partiton_id = n.into();
-                            }
-                            Err(e) => println!("cd: fs error: {e:?}"),
-                        };
-
-                        continue;
-                    }
-                }
-
-                println!("Drives:");
-                for part in get_disks(fs_sid, &mut buffer).unwrap().iter() {
-                    println!("{}:", part)
-                }
-            }
-            "ls" => {
-                let path = add_path(&cwd, rest);
-
-                match fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer) {
-                    Ok(StatResponse::File(_)) => println!("This is a file"),
-                    Ok(StatResponse::Folder(c)) => {
-                        for child in c.children {
-                            println!("{child}")
-                        }
-                    }
-                    Err(e) => println!("Error: {e:?}"),
-                };
-            }
-            "cd" => cwd = add_path(&cwd, rest),
-            "cat" => {
-                for file in rest.split_ascii_whitespace() {
-                    let path = add_path(&cwd, file);
-
-                    let file =
-                        match fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer) {
-                            Ok(StatResponse::File(f)) => f,
-                            Ok(StatResponse::Folder(_)) => {
-                                println!("Not a file");
-                                continue;
-                            }
-                            Err(e) => {
-                                println!("Error: {e:?}");
-                                break;
-                            }
-                        };
-
-                    for i in 0..file.file_size / 512 {
-                        let sect = match read_file_sector(
-                            fs_sid,
-                            partiton_id as usize,
-                            file.node_id,
-                            i as u32,
-                            &mut file_buffer,
-                        ) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                println!("Error: {e:?}");
-                                break;
-                            }
-                        };
-                        if let Some(data) = sect {
-                            print!("{}", String::from_utf8_lossy(data))
-                        } else {
-                            print!("Error reading");
-                            break;
-                        }
-                    }
-                }
-            }
-            "exec" => {
-                let (prog, args) = rest.split_once(' ').unwrap_or((rest, ""));
-
-                let path = add_path(&cwd, prog);
-
-                let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer);
-
-                let file = match stat {
-                    Ok(StatResponse::File(f)) => f,
-                    Ok(StatResponse::Folder(_)) => {
-                        println!("Not a file");
-                        continue;
-                    }
-                    Err(e) => {
-                        println!("Error: {e:?}");
-                        continue;
-                    }
-                };
-                println!("READING...");
-                let contents = match read_full_file(
-                    fs_sid,
-                    partiton_id as usize,
-                    file.node_id,
-                    &mut file_buffer,
-                ) {
-                    Ok(Some(c)) => c,
-                    Ok(None) => {
-                        println!("Failed to read file");
-                        continue;
-                    }
-                    Err(e) => {
-                        println!("Error: {e:?}");
-                        continue;
-                    }
-                };
-
-                println!("SPAWNING...");
-
-                let pid = spawn_elf_process(elf_loader_sid, contents, args.as_bytes(), &mut buffer);
-
-                match pid {
-                    Ok(_) => (),
-                    Err(err) => println!("Error spawning: `{err}`"),
-                }
-
-                // let pid = load_elf(&contents_buffer.data, args.as_bytes());
-                // while TASKMANAGER.lock().processes.contains_key(&pid) {
-                //     yield_now();
-                // }
-            }
-            // "uptime" => {
-            //     let mut uptime = time::uptime() / 1000;
-            //     let seconds = uptime % 60;
-            //     uptime /= 60;
-            //     let minutes = uptime % 60;
-            //     uptime /= 60;
-            //     println!("Up: {:02}:{:02}:{:02}", uptime, minutes, seconds)
-            // }
-            _ => {
-                println!("{command}: command not found")
-            }
+        curr_line.push('\n');
+        match execute(&curr_line, &mut env) {
+            Ok(_) => {}
+            Err(error) => println!("{}", error.to_string()),
         }
     }
 }

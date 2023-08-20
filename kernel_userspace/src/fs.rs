@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use alloc::{
     boxed::Box,
@@ -22,10 +23,13 @@ pub enum FSServiceMessage<'a> {
     GetDisksRequest,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Error)]
 pub enum FSServiceError {
+    #[error("No such partition: {0}")]
     NoSuchPartition(u64),
+    #[error("Could not follow path")]
     CouldNotFollowPath,
+    #[error("File not found")]
     FileNotFound,
 }
 

@@ -2,6 +2,7 @@ use core::sync::atomic::AtomicU64;
 
 use alloc::vec::Vec;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::{
     ids::{ProcessID, ServiceID},
@@ -37,13 +38,19 @@ pub enum SendServiceMessageDest {
     ToSubscribers,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Error)]
 pub enum SendError {
+    #[error("TODO")]
     Ok,
+    #[error("TODO")]
     ParseError,
+    #[error("TODO")]
     NoSuchService,
+    #[error("TODO")]
     NotYourPID,
+    #[error("TODO")]
     TargetNotExists,
+    #[error("TODO")]
     FailedToDecodeResponse,
 }
 

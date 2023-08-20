@@ -95,6 +95,12 @@ fn qemu() -> Result<()> {
     } else if system_code.exists() && system_vars.exists() {
         println!("Using system OVFM");
 
+        // We need to ensure that ovmf folder exists
+        DirBuilder::new()
+            .recursive(true)
+            .create("ovmf")
+            .context("Failed to create ovmf folder")?;
+
         // QEMU will make changes to this file, so we need a local copy. We do
         // not want to overwrite it every build
         if !local_vars.exists() {
