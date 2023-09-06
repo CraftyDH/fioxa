@@ -22,8 +22,10 @@ const SYSTEM_EFI_VARS: &'static str = "/usr/share/OVMF/OVMF_VARS.fd";
 const TO_BUILD: &[(&'static str, &'static str)] = &[
     ("bootloader", "EFI/BOOT/BOOTx64.efi"),
     ("test_elf", "elf.elf"),
+    ("amd_pcnet", "amd_pcnet.driver"),
     ("calc", "calc.elf"),
     ("net", "net.elf"),
+    ("ps2", "ps2.driver"),
     ("terminal", "terminal.elf"),
     // ! MUST BE LAST
     ("kernel", "fioxa.elf"),

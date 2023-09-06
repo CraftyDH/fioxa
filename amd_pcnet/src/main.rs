@@ -1,3 +1,11 @@
+#![no_std]
+#![no_main]
+
+extern crate alloc;
+#[macro_use]
+extern crate userspace;
+extern crate userspace_slaballoc;
+
 pub mod bitfields;
 
 use core::{mem::size_of, slice};
@@ -7,13 +15,6 @@ use conquer_once::spin::Lazy;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
-use crate::{
-    cpu_localstorage::CPULocalStorageRW,
-    paging::{
-        page_allocator::{frame_alloc_exec, Allocated32Page},
-        page_table_manager::ident_map_curr_process,
-    },
-};
 use kernel_userspace::{
     ids::ServiceID,
     net::{PhysicalNet, PhysicalNetResp},
@@ -22,14 +23,16 @@ use kernel_userspace::{
         get_public_service_id, register_public_service, SendServiceMessageDest, ServiceMessage,
     },
     syscall::{
-        read_args_raw, receive_service_message_blocking, send_service_message, service_create,
-        service_subscribe, spawn_thread, yield_now,
+        exit, mmap_page32, read_args_raw, receive_service_message_blocking, send_service_message,
+        service_create, service_subscribe, spawn_thread, yield_now, CURRENT_PID,
     },
 };
 
 use self::bitfields::InitBlock;
 
-use super::SendError;
+pub enum SendError {
+    BufferFull,
+}
 
 const IP_ADDR: u32 = 100 << 24 | 1 << 16 | 168 << 8 | 192;
 
@@ -55,9 +58,14 @@ static PCNET_SID: Lazy<ServiceID> = Lazy::new(|| {
     sid
 });
 
-pub fn amd_pcnet_main() {
+#[export_name = "_start"]
+pub extern "C" fn main() {
     let args = read_args_raw();
-    let pci_device = u64::from_ne_bytes(args[0..8].try_into().unwrap());
+    let pci_device = u64::from_ne_bytes(
+        args[0..8]
+            .try_into()
+            .expect("first 8 bytes of args should be service id of the PCNET PCI handle"),
+    );
     let pci_device = ServiceID(pci_device);
 
     let pcnet = Arc::new(Mutex::new(
@@ -67,53 +75,47 @@ pub fn amd_pcnet_main() {
         .unwrap(),
     ));
 
-    let _ = *PCNET_SID;
-
-    let mut buffer = Vec::new();
-
-    let pci_event = get_public_service_id("INTERRUPTS:PCI", &mut buffer).unwrap();
-    service_subscribe(pci_event);
-
     let pcnet2 = pcnet.clone();
+
     spawn_thread(move || {
         let mut buffer = Vec::new();
+
+        let pci_event = get_public_service_id("INTERRUPTS:PCI", &mut buffer).unwrap();
+        service_subscribe(pci_event);
+
         loop {
             receive_service_message_blocking::<()>(pci_event, &mut buffer).unwrap();
-            pcnet.lock().interrupt_handler()
+            pcnet2.lock().interrupt_handler()
         }
     });
 
-    spawn_thread(move || {
-        loop {
-            let mut buffer = Vec::new();
-            let query = receive_service_message_blocking(*PCNET_SID, &mut buffer).unwrap();
+    loop {
+        let mut buffer = Vec::new();
+        let query = receive_service_message_blocking(*PCNET_SID, &mut buffer).unwrap();
 
-            let resp = match query.message {
-                PhysicalNet::MacAddrGet => {
-                    PhysicalNetResp::MacAddrResp(pcnet2.lock().read_mac_addr())
+        let resp = match query.message {
+            PhysicalNet::MacAddrGet => PhysicalNetResp::MacAddrResp(pcnet.lock().read_mac_addr()),
+            PhysicalNet::SendPacket(packet) => {
+                // Keep trying to send
+                while pcnet.lock().send_packet(packet).is_err() {
+                    yield_now()
                 }
-                PhysicalNet::SendPacket(packet) => {
-                    // Keep trying to send
-                    while pcnet2.lock().send_packet(packet).is_err() {
-                        yield_now()
-                    }
-                    PhysicalNetResp::Ack
-                }
-            };
+                PhysicalNetResp::Ack
+            }
+        };
 
-            send_service_message(
-                &ServiceMessage {
-                    service_id: *PCNET_SID,
-                    sender_pid: CPULocalStorageRW::get_current_pid(),
-                    tracking_number: query.tracking_number,
-                    destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-                    message: resp,
-                },
-                &mut buffer,
-            )
-            .unwrap();
-        }
-    });
+        send_service_message(
+            &ServiceMessage {
+                service_id: *PCNET_SID,
+                sender_pid: *CURRENT_PID,
+                tracking_number: query.tracking_number,
+                destination: SendServiceMessageDest::ToProcess(query.sender_pid),
+                message: resp,
+            },
+            &mut buffer,
+        )
+        .unwrap();
+    }
 }
 
 pub struct PCNETIOPort(u16);
@@ -192,7 +194,7 @@ pub struct PCNET<'b> {
     init_block: &'b mut InitBlock,
     send_buffer_desc: &'b mut [BufferDescriptor],
     recv_buffer_desc: &'b mut [BufferDescriptor],
-    owned_pages: Vec<Allocated32Page>,
+    owned_pages: Vec<u32>,
 }
 
 impl PCNET<'_> {
@@ -221,10 +223,11 @@ impl PCNET<'_> {
 
         let (init_block, send_buffer_desc, recv_buffer_desc) = unsafe {
             // Allocate page below 4gb location.
-            let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
-            ident_map_curr_process(*buffer, true);
+            // let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
+            // ident_map_curr_process(*buffer, true);
+            let buffer = mmap_page32();
 
-            let buffer_start = buffer.get_address();
+            let buffer_start = buffer;
             owned_pages.push(buffer);
 
             let mut buffer_start = buffer_start as *const u8;
@@ -258,29 +261,23 @@ impl PCNET<'_> {
         // Alloc buffer each 2 buffer
         for i in (0..SEND_BUFFER_CNT).step_by(2) {
             // Allocate page below 4gb location.
-            let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
-            unsafe { ident_map_curr_process(*buffer, true) };
-
-            let buffer_start = buffer.get_address();
+            let buffer = mmap_page32();
             owned_pages.push(buffer);
 
-            send_buffer_desc[i].address = buffer_start;
+            send_buffer_desc[i].address = buffer;
             send_buffer_desc[i].flags = BUFFER_SIZE_MASK;
-            send_buffer_desc[i + 1].address = buffer_start + 2048;
+            send_buffer_desc[i + 1].address = buffer + 2048;
             send_buffer_desc[i + 1].flags = BUFFER_SIZE_MASK;
         }
         // Alloc buffer each 2 buffer
         for i in (0..RECV_BUFFER_CNT).step_by(2) {
             // Allocate page below 4gb location.
-            let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
-            unsafe { ident_map_curr_process(*buffer, true) };
-
-            let buffer_start = buffer.get_address();
+            let buffer = mmap_page32();
             owned_pages.push(buffer);
 
-            recv_buffer_desc[i].address = buffer_start;
+            recv_buffer_desc[i].address = buffer;
             recv_buffer_desc[i].flags = BUFFER_SIZE_MASK | 0x80000000;
-            recv_buffer_desc[i + 1].address = buffer_start + 2048;
+            recv_buffer_desc[i + 1].address = buffer + 2048;
             recv_buffer_desc[i + 1].flags = BUFFER_SIZE_MASK | 0x80000000;
         }
 
@@ -394,7 +391,7 @@ impl PCNET<'_> {
                     send_service_message(
                         &ServiceMessage {
                             service_id: *PCNET_SID,
-                            sender_pid: CPULocalStorageRW::get_current_pid(),
+                            sender_pid: *CURRENT_PID,
                             tracking_number: kernel_userspace::service::ServiceTrackingNumber(0),
                             destination:
                                 kernel_userspace::service::SendServiceMessageDest::ToSubscribers,
@@ -409,4 +406,10 @@ impl PCNET<'_> {
             }
         }
     }
+}
+
+#[panic_handler]
+fn panic(i: &core::panic::PanicInfo) -> ! {
+    println!("{}", i);
+    exit()
 }

@@ -87,6 +87,7 @@ pub fn spawn_elf_process<'a>(
     service_id: ServiceID,
     elf: &[u8],
     args: &[u8],
+    kernel: bool,
     buffer: &'a mut Vec<u8>,
 ) -> Result<ProcessID, LoadElfError<'a>> {
     let pid = get_pid();
@@ -97,7 +98,7 @@ pub fn spawn_elf_process<'a>(
             sender_pid: pid,
             tracking_number: generate_tracking_number(),
             destination: SendServiceMessageDest::ToProvider,
-            message: (elf, args),
+            message: (elf, args, kernel),
         },
         buffer,
     )

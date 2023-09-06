@@ -1,12 +1,18 @@
+#![no_std]
+#![no_main]
+
+extern crate alloc;
+#[macro_use]
+extern crate userspace;
+extern crate userspace_slaballoc;
+
 use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
     service::{get_public_service_id, ServiceMessage},
-    syscall::{receive_service_message_blocking, service_subscribe, spawn_thread},
+    syscall::{exit, receive_service_message_blocking, service_subscribe, spawn_thread},
 };
 use spin::Mutex;
 use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
-
-use crate::log;
 
 use self::{keyboard::Keyboard, mouse::Mouse};
 
@@ -15,12 +21,13 @@ pub mod mouse;
 pub mod scancode;
 pub mod translate;
 
-pub fn main() {
-    log!("Initalizing PS2 devices...");
+#[export_name = "_start"]
+pub extern "C" fn main() {
+    println!("Initalizing PS2 devices...");
     let mut ps2_controller = PS2Controller::new();
 
     if let Err(e) = ps2_controller.initialize() {
-        log!("PS2 Controller failed to init because: {}", e);
+        panic!("PS2 Controller failed to init because: {}", e);
     }
 
     let mut buffer = Vec::new();
@@ -179,10 +186,6 @@ impl PS2Controller {
         // Initialize mouse if test passed
         let mouse = mouse.and_then(|_| self.mouse.initialize());
 
-        // Now enable interrupts
-        let keyboard = keyboard.map(|_| self.keyboard.receive_interrupts());
-        let mouse = mouse.map(|_| self.mouse.receive_interrupts());
-
         // If keyboard failed to initalize print the error reason
         if let Err(e) = keyboard {
             println!("Keyboard failed to init because: {}", e)
@@ -197,4 +200,10 @@ impl PS2Controller {
         // And use the working one
         Ok(())
     }
+}
+
+#[panic_handler]
+fn panic(i: &core::panic::PanicInfo) -> ! {
+    println!("{}", i);
+    exit()
 }

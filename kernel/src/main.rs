@@ -18,7 +18,7 @@ use acpi::sdt::Signature;
 use alloc::vec::Vec;
 use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
-use kernel::bootfs::TERMINAL_ELF;
+use kernel::bootfs::{PS2_DRIVER, TERMINAL_ELF};
 use kernel::cpu_localstorage::init_bsp_task;
 use kernel::fs::{self, FSDRIVES};
 use kernel::interrupts::{self};
@@ -40,7 +40,7 @@ use kernel::screen::psf1::{self, load_psf1_font};
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
-use kernel::{elf, gdt, paging, ps2, service, BOOT_INFO};
+use kernel::{elf, gdt, paging, service, BOOT_INFO};
 
 use bootloader::uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
 use bootloader::uefi::table::{Runtime, SystemTable};
@@ -282,7 +282,6 @@ fn after_boot() {
     spawn_process(service::start_mgmt, &[], true);
     spawn_process(elf::elf_new_process_loader, &[], true);
 
-    spawn_process(ps2::main, &[], true);
     spawn_process(gop::gop_entry, &[], true);
     spawn_thread(fs::file_handler);
 
@@ -297,7 +296,9 @@ fn after_boot() {
     spawn_thread(|| {
         let mut buffer = Vec::new();
         let elf = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
-        spawn_elf_process(elf, TERMINAL_ELF, &[], &mut buffer).unwrap();
+        // TODO: Use IO permissions instead of kernel
+        spawn_elf_process(elf, PS2_DRIVER, &[], true, &mut buffer).unwrap();
+        spawn_elf_process(elf, TERMINAL_ELF, &[], false, &mut buffer).unwrap();
     });
 
     // For testing, accepts all inputs

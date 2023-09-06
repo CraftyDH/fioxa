@@ -9,8 +9,6 @@ use kernel_userspace::{
     syscall::{get_pid, send_service_message, service_create},
 };
 
-use crate::ioapic::mask_entry;
-
 use super::PS2Command;
 
 // Keycodes
@@ -154,10 +152,6 @@ impl Mouse {
         self.send_command(0xF4)?;
 
         Ok(())
-    }
-
-    pub fn receive_interrupts(&self) {
-        mask_entry(12, true);
     }
 
     pub fn check_interrupts(&mut self) {

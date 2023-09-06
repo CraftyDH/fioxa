@@ -25,7 +25,7 @@ use crate::{
     gdt,
     paging::{
         offset_map::map_gop,
-        page_allocator::{request_page, AllocatedPage},
+        page_allocator::{request_page, Allocated32Page, AllocatedPage},
         page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
@@ -81,6 +81,7 @@ pub struct ProcessThreads {
 pub struct ProcessMemory {
     pub page_mapper: PageTable<'static, PageLvl4>,
     pub owned_pages: Vec<AllocatedPage>,
+    pub owned32_pages: Vec<Allocated32Page>,
 }
 
 #[derive(Default)]
@@ -117,6 +118,7 @@ impl Process {
             memory: Mutex::new(ProcessMemory {
                 page_mapper,
                 owned_pages,
+                owned32_pages: Default::default(),
             }),
             threads: Default::default(),
             service_messages: Default::default(),
@@ -137,6 +139,7 @@ impl Process {
             memory: Mutex::new(ProcessMemory {
                 page_mapper,
                 owned_pages: Vec::new(),
+                owned32_pages: Vec::new(),
             }),
             threads: Default::default(),
             service_messages: Default::default(),

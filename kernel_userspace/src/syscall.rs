@@ -40,6 +40,7 @@ pub const READ_ARGS: usize = 8;
 
 pub const GET_PID: usize = 9;
 pub const UNMMAP_PAGE: usize = 10;
+pub const MMAP_PAGE32: usize = 11;
 
 // ! BEWARE, DO NOT USE THIS FROM THE KERNEL
 // As it is static is won't give the correct answer
@@ -134,6 +135,13 @@ where
 #[inline]
 pub fn mmap_page(vmem: usize) {
     unsafe { syscall!(MMAP_PAGE, vmem) };
+}
+
+#[inline]
+pub fn mmap_page32() -> u32 {
+    let res: u32;
+    unsafe { syscall!(MMAP_PAGE32 => res) };
+    res
 }
 
 #[inline]

@@ -13,7 +13,7 @@ use crate::{
     cpu_localstorage::CPULocalStorageRW,
     gdt::TASK_SWITCH_INDEX,
     paging::{
-        page_allocator::request_page,
+        page_allocator::{frame_alloc_exec, request_page},
         page_table_manager::{Mapper, Page, Size4KB},
     },
     scheduling::taskmanager,
@@ -46,6 +46,13 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
         EXIT_THREAD => taskmanager::exit_thread(stack_frame, regs),
         MMAP_PAGE => {
             if let Err(e) = mmap_page_handler(regs) {
+                println!("{e}");
+                taskmanager::exit_thread(stack_frame, regs);
+            };
+            taskmanager::yield_now(stack_frame, regs);
+        }
+        MMAP_PAGE32 => {
+            if let Err(e) = mmap_page32_handler(regs) {
                 println!("{e}");
                 taskmanager::exit_thread(stack_frame, regs);
             };
@@ -162,6 +169,25 @@ fn mmap_page_handler(regs: &Registers) -> Result<(), &'static str> {
         .flush();
 
     memory.owned_pages.push(page);
+    Ok(())
+}
+
+fn mmap_page32_handler(regs: &mut Registers) -> Result<(), &'static str> {
+    let task = CPULocalStorageRW::get_current_task();
+
+    let page = frame_alloc_exec(|m| m.request_32bit_reserved_page()).ok_or("OOM")?;
+
+    regs.rax = page.get_address() as usize;
+
+    let mut memory = task.process.memory.lock();
+
+    memory
+        .page_mapper
+        .identity_map_memory(*page)
+        .map_err(|_| "FAULT (failed to map)")?
+        .flush();
+
+    memory.owned32_pages.push(page);
     Ok(())
 }
 

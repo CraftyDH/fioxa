@@ -193,7 +193,7 @@ pub fn check_interrupts(send_buffer: &mut Vec<u8>) -> bool {
         send_int_message(handlers[MOUSE_INT as usize], send_buffer)
     }
     if interrupts & (1 << PCI_INT) > 0 {
-        send_int_message(handlers[KB_INT as usize], send_buffer);
+        send_int_message(handlers[PCI_INT as usize], send_buffer);
     }
     // check if at least 1 interrupt occured
     interrupts != 0

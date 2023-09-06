@@ -49,10 +49,10 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
     set_redirect_entry(apic.apic_addr, 0xFF, 2, 49, true);
 
     set_irq_handler(50, keyboard_int_handler);
-    set_redirect_entry(apic.apic_addr, 0, 1, 50, false);
+    set_redirect_entry(apic.apic_addr, 0, 1, 50, true);
 
     set_irq_handler(51, mouse_int_handler);
-    set_redirect_entry(apic.apic_addr, 0, 12, 51, false);
+    set_redirect_entry(apic.apic_addr, 0, 12, 51, true);
 
     set_irq_handler(52, pci_int_handler);
     set_redirect_entry(apic.apic_addr, 0, 10, 52, true);

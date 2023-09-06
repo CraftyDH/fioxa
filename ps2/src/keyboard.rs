@@ -8,8 +8,6 @@ use kernel_userspace::{
     syscall::{get_pid, send_service_message, service_create},
 };
 
-use crate::ioapic::mask_entry;
-
 use super::{
     scancode::{set2::ScancodeSet2, Scancode},
     PS2Command,
@@ -77,10 +75,6 @@ impl Keyboard {
         self.send_command(2)?;
 
         Ok(())
-    }
-
-    pub fn receive_interrupts(&self) {
-        mask_entry(1, true);
     }
 
     pub fn check_interrupts(&mut self) {

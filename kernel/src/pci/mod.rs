@@ -1,7 +1,8 @@
 use crate::{
     acpi::FioxaAcpiHandler,
+    bootfs::AMD_PCNET_DRIVER,
     cpu_localstorage::CPULocalStorageRW,
-    driver::{disk::ahci::AHCIDriver, driver::Driver, net::amd_pcnet::amd_pcnet_main},
+    driver::{disk::ahci::AHCIDriver, driver::Driver},
     fs::FSDRIVES,
     pci::mcfg::get_mcfg,
 };
@@ -9,9 +10,10 @@ use crate::{
 use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 
 use kernel_userspace::{
+    elf::spawn_elf_process,
     ids::ServiceID,
-    service::ServiceMessage,
-    syscall::{send_service_message, spawn_process, spawn_thread},
+    service::{get_public_service_id, ServiceMessage},
+    syscall::{send_service_message, spawn_thread},
 };
 use spin::Mutex;
 mod express;
@@ -211,7 +213,17 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
             0x2000 => {
                 println!("AMD PCnet");
                 let sid = pci_dev_handler(pci_bus, segment, bus, device, function);
-                spawn_process(amd_pcnet_main, &sid.0.to_ne_bytes(), true);
+
+                let mut buffer = Vec::new();
+                let elf = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
+                spawn_elf_process(
+                    elf,
+                    AMD_PCNET_DRIVER,
+                    &sid.0.to_ne_bytes(),
+                    true,
+                    &mut buffer,
+                )
+                .unwrap();
                 return;
             }
             _ => (),

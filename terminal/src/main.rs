@@ -252,7 +252,13 @@ pub extern "C" fn main() {
 
                 println!("SPAWNING...");
 
-                let pid = spawn_elf_process(elf_loader_sid, contents, args.as_bytes(), &mut buffer);
+                let pid = spawn_elf_process(
+                    elf_loader_sid,
+                    contents,
+                    args.as_bytes(),
+                    false,
+                    &mut buffer,
+                );
 
                 match pid {
                     Ok(_) => (),

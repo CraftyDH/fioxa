@@ -43,7 +43,6 @@ pub mod memory;
 pub mod net;
 pub mod paging;
 pub mod pci;
-pub mod ps2;
 pub mod scheduling;
 pub mod service;
 pub mod syscall;

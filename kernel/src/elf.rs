@@ -22,7 +22,11 @@ use crate::{
     },
 };
 
-pub fn load_elf<'a>(data: &'a [u8], args: &[u8]) -> Result<ProcessID, LoadElfError<'a>> {
+pub fn load_elf<'a>(
+    data: &'a [u8],
+    args: &[u8],
+    kernel: bool,
+) -> Result<ProcessID, LoadElfError<'a>> {
     // Transpose the header as an elf header
     let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
@@ -47,7 +51,13 @@ pub fn load_elf<'a>(data: &'a [u8], args: &[u8]) -> Result<ProcessID, LoadElfErr
     let size = size - base;
     let pages_count = size / 4096 + 1;
 
-    let process = Process::new(crate::scheduling::process::ProcessPrivilige::USER, args);
+    let process = Process::new(
+        match kernel {
+            true => crate::scheduling::process::ProcessPrivilige::KERNEL,
+            false => crate::scheduling::process::ProcessPrivilige::USER,
+        },
+        args,
+    );
     println!("ALLOCING MEM...");
     let mut pages = frame_alloc_exec(|c| c.request_cont_pages(pages_count as usize))
         .ok_or(LoadElfError::InternalError)?
@@ -112,10 +122,10 @@ pub fn elf_new_process_loader() {
     let mut message_buffer = Vec::new();
     let mut tmp_prog_buffer = Vec::new();
     loop {
-        let query: ServiceMessage<(&[u8], &[u8])> =
+        let query: ServiceMessage<(&[u8], &[u8], bool)> =
             receive_service_message_blocking(sid, &mut message_buffer).unwrap();
 
-        let (elf, args) = query.message;
+        let (elf, args, kernel) = query.message;
 
         // TODO: FIX
         // This is a really bad fix to an aligned start address for the buffer
@@ -127,7 +137,7 @@ pub fn elf_new_process_loader() {
         tmp_prog_buffer.copy_from_slice(elf);
         println!("LOADING...");
 
-        let resp = load_elf(&tmp_prog_buffer, args);
+        let resp = load_elf(&tmp_prog_buffer, args, kernel);
 
         send_service_message(
             &ServiceMessage {
