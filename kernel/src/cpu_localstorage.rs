@@ -7,7 +7,7 @@ use crate::{
     gdt::CPULocalGDT,
     paging::{
         get_uefi_active_mapper,
-        page_allocator::{frame_alloc_exec, request_page},
+        page_allocator::{frame_alloc_exec, request_page_early},
         page_table_manager::{Mapper, Page},
         virt_addr_for_phys, MemoryLoc,
     },
@@ -180,7 +180,7 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     let mut map = get_uefi_active_mapper();
 
     for page in (vaddr_base..vaddr_base + gdt_size + 0xfff).step_by(0x1000) {
-        let phys = request_page().unwrap().leak();
+        let phys = request_page_early().unwrap();
         map.map_memory(Page::new(page), phys).unwrap().flush();
     }
 
@@ -221,19 +221,19 @@ pub unsafe fn init_bsp_task() {
     }
 }
 
-pub const CPU_STACK_SIZE: u64 = 0x1000 * 10;
+pub const CPU_STACK_SIZE_PAGES: u64 = 10;
 
 pub unsafe fn new_cpu(core_id: u8) -> u64 {
     let vaddr = init_core(core_id);
     let ls = unsafe { &mut *(vaddr as *mut CPULocalStorage) };
 
-    let stack_base = frame_alloc_exec(|c| c.request_cont_pages(10))
+    let stack_base = frame_alloc_exec(|c| c.request_cont_pages(CPU_STACK_SIZE_PAGES as usize))
         .unwrap()
         .next()
         .unwrap()
         .leak()
         .get_address();
 
-    ls.stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE;
+    ls.stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE_PAGES * 0x1000;
     vaddr
 }

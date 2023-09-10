@@ -74,7 +74,7 @@ pub fn load_elf<'a>(
                 .page_mapper
                 .map_memory(Page::new(virt_addr), *page)
                 .map_err(|_| LoadElfError::InternalError)?
-                .flush();
+                .ignore();
             memory.owned_pages.push(page);
         }
     }
@@ -84,7 +84,7 @@ pub fn load_elf<'a>(
     for program_header_ptr in headers {
         // Transpose the program header as an elf header
         let program_header =
-            unsafe { *(data.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr) };
+            unsafe { *(data.as_ptr().add(program_header_ptr as usize) as *const Elf64Phdr) };
         if program_header.p_type == PT_LOAD {
             unsafe {
                 core::ptr::copy_nonoverlapping::<u8>(

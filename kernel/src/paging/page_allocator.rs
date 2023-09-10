@@ -1,44 +1,69 @@
 use core::{
     cmp::min,
-    mem::{size_of, MaybeUninit},
     ops::{Deref, DerefMut},
-    ptr::slice_from_raw_parts_mut,
 };
 
+use alloc::boxed::Box;
 use bit_field::{BitArray, BitField};
 
 use bootloader::uefi::table::boot::MemoryType;
+use conquer_once::spin::OnceCell;
 use spin::mutex::Mutex;
 
-use crate::{memory::MemoryMapIter, scheduling::without_context_switch};
-
-use super::{
-    page_table_manager::{Page, Size4KB},
-    virt_addr_for_phys, MemoryLoc,
+use crate::{
+    memory::{MemoryMapIter, MemoryMapPageIter, RESERVED_32BIT_MEM_PAGES},
+    scheduling::without_context_switch,
 };
 
-static GLOBAL_FRAME_ALLOCATOR: Mutex<MaybeUninit<PageFrameAllocator>> =
-    Mutex::new(MaybeUninit::uninit());
+use super::{
+    page_table_manager::{Page, PageRange, Size4KB},
+    virt_addr_for_phys, virt_addr_offset,
+};
 
-const RESERVED_32BIT_MEM_PAGES: u64 = 32; // 16Kb
+pub static BOOT_PAGE_ALLOCATOR: OnceCell<Mutex<MemoryMapPageIter>> = OnceCell::uninit();
+static GLOBAL_FRAME_ALLOCATOR: OnceCell<Mutex<PageFrameAllocator>> = OnceCell::uninit();
 
 pub fn frame_alloc_exec<T, F>(closure: F) -> T
 where
     F: Fn(&mut PageFrameAllocator) -> T,
 {
-    without_context_switch(|| unsafe {
-        closure(&mut *GLOBAL_FRAME_ALLOCATOR.lock().assume_init_mut())
-    })
+    without_context_switch(|| closure(&mut GLOBAL_FRAME_ALLOCATOR.get().unwrap().lock()))
 }
 
 pub unsafe fn init(mmap: MemoryMapIter) {
-    GLOBAL_FRAME_ALLOCATOR
-        .lock()
-        .write(unsafe { PageFrameAllocator::new(mmap.clone()) });
+    let alloc = unsafe { PageFrameAllocator::new(mmap).into() };
+    GLOBAL_FRAME_ALLOCATOR.init_once(|| alloc)
 }
 
 pub fn request_page() -> Option<AllocatedPage> {
     frame_alloc_exec(|mutex| mutex.request_page())
+}
+
+pub unsafe fn request_page_early() -> Option<Page<Size4KB>> {
+    without_context_switch(|| match GLOBAL_FRAME_ALLOCATOR.get() {
+        Some(gfa) => gfa.lock().request_page().map(|p| p.leak()),
+        None => BOOT_PAGE_ALLOCATOR
+            .get()
+            .unwrap()
+            .lock()
+            .next()
+            .map(|page| {
+                // BOOT_PAGE_ALLOCATOR doesn't zero pages
+                core::ptr::write_bytes(
+                    virt_addr_for_phys(page.get_address()) as *mut u8,
+                    0,
+                    0x1000,
+                );
+                page
+            }),
+    })
+}
+
+pub unsafe fn free_page_early(page: Page<Size4KB>) {
+    without_context_switch(|| match GLOBAL_FRAME_ALLOCATOR.get() {
+        Some(gfa) => gfa.lock().free_page(page),
+        None => println!("FREEING PAGE BEFORE FRAME ALLOCATOR HAS BEEN INITED (mem leak)"),
+    })
 }
 
 pub struct AllocatedPage(Option<Page<Size4KB>>);
@@ -76,33 +101,31 @@ impl Drop for AllocatedPage {
 }
 
 #[derive(Debug)]
-pub struct AllocatedPageRangeIter {
-    base: u64,
-    count: usize,
-}
+pub struct AllocatedPageRangeIter(PageRange<Size4KB>);
 
 impl Iterator for AllocatedPageRangeIter {
     type Item = AllocatedPage;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.count > 0 {
-            let res = unsafe { AllocatedPage::new(Page::new(self.base)) };
-            self.count -= 1;
-            self.base += 0x1000;
-            Some(res)
-        } else {
-            None
-        }
+        self.0
+            .next()
+            .map(|page| unsafe { AllocatedPage::new(page) })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.count, Some(self.count))
+        self.0.size_hint()
     }
 }
 
 impl ExactSizeIterator for AllocatedPageRangeIter {
     fn len(&self) -> usize {
-        self.count
+        self.0.len()
+    }
+}
+
+impl Drop for AllocatedPageRangeIter {
+    fn drop(&mut self) {
+        while let Some(_) = self.0.next() {}
     }
 }
 
@@ -154,19 +177,19 @@ pub struct MemAddr {
     page_count: u64,
 }
 
-pub struct MemoryRegion<'bit> {
+pub struct MemoryRegion {
     phys_start: u64,
     phys_end: u64,
     /// Bit field storing whether a frame has been allocated
-    allocated: &'bit mut [u8],
+    allocated: Box<[u8]>,
 }
 
-pub struct PageFrameAllocator<'bit> {
-    page_bitmap: &'bit mut [MemoryRegion<'bit>],
+pub struct PageFrameAllocator {
+    page_bitmap: Box<[MemoryRegion]>,
     /// Bitmap of memory region below 16 bits
     reserved_16bit_bitmap: u16,
     // 32 Megs of 32bit memory
-    reserved_32bit: &'bit mut MemoryRegion<'bit>,
+    reserved_32bit: MemoryRegion,
     free_pages: usize,
     used_pages: usize,
     /// Page start addr hint (doesn't actually have to be free)
@@ -180,39 +203,11 @@ const fn bitmap_size(elements: u64) -> u64 {
     (elements + 7) & !7
 }
 
-impl PageFrameAllocator<'_> {
+impl PageFrameAllocator {
     /// Unsafe because this must only be called once (ever) since it hands out pages based on it's own state
     pub unsafe fn new(mmap: MemoryMapIter) -> Self {
         // Can inner self to get safe type checking
         Self::new_inner(mmap)
-    }
-
-    pub unsafe fn push_up_to_offset_mapping(&mut self) {
-        for bit in self.page_bitmap.iter_mut() {
-            bit.allocated = &mut *slice_from_raw_parts_mut(
-                bit.allocated
-                    .as_mut_ptr()
-                    .byte_add(MemoryLoc::PhysMapOffset as usize),
-                bit.allocated.len(),
-            );
-        }
-
-        self.page_bitmap = &mut *slice_from_raw_parts_mut(
-            self.page_bitmap
-                .as_mut_ptr()
-                .byte_add(MemoryLoc::PhysMapOffset as usize),
-            self.page_bitmap.len(),
-        );
-        self.reserved_32bit.allocated = &mut *slice_from_raw_parts_mut(
-            self.reserved_32bit
-                .allocated
-                .as_mut_ptr()
-                .byte_add(MemoryLoc::PhysMapOffset as usize),
-            self.reserved_32bit.allocated.len(),
-        );
-
-        self.reserved_32bit = &mut *(self.reserved_32bit as *mut MemoryRegion)
-            .byte_add(MemoryLoc::PhysMapOffset as usize);
     }
 
     pub fn get_free_pages(&self) -> usize {
@@ -222,27 +217,30 @@ impl PageFrameAllocator<'_> {
     fn new_inner(mmap: MemoryMapIter) -> Self {
         // Memory types we will use
         let mut conventional = mmap
+            .map(|r| unsafe { &*virt_addr_offset(r) })
             .filter(|r| r.ty == MemoryType::CONVENTIONAL)
             .map(|r| MemAddr {
                 phys_start: r.phys_start,
                 page_count: r.page_count,
             });
 
-        let u16_mem_iter = conventional.by_ref().take_while(|r| r.phys_start < 1 << 16);
+        let u16_mem_iter = conventional
+            .by_ref()
+            .take_while(|r| r.phys_start <= u16::MAX.into());
         let mut u16_mem = u16::MAX;
         let mut u16_regect_mem: u64 = 0;
 
         // Create bitmap for 16bit mem region
         for r in u16_mem_iter {
             for mem_addr in (r.phys_start
-                ..(core::cmp::min(1 << 16, r.phys_start + r.page_count * 0x1000)))
+                ..(core::cmp::min(u16::MAX.into(), r.phys_start + r.page_count * 0x1000)))
                 .step_by(0x1000)
             {
                 u16_mem.set_bit((mem_addr / 0x1000) as usize, false);
             }
-            if r.phys_start + r.page_count * 0x1000 > 1 << 16 {
+            if r.phys_start + r.page_count * 0x1000 > u16::MAX.into() {
                 assert!(u16_regect_mem == 0);
-                let count = r.page_count - (((1 << 16) - r.phys_start) / 0x1000);
+                let count = r.page_count - ((u16::MAX as u64 - r.phys_start) / 0x1000);
                 u16_regect_mem = count;
                 break;
             }
@@ -258,104 +256,62 @@ impl PageFrameAllocator<'_> {
             phys_start: 1 << 16,
             page_count: u16_regect_mem,
         };
-        let mut conventional = core::iter::once(excess).chain(conventional);
 
-        // Descriptor for reserved 32bit split
-        let memory_regions_cnt = conventional.clone().count() + 1;
-
-        let size_of_bitmaps: u64 = conventional
-            .clone()
-            .map(|r| bitmap_size(r.page_count))
-            .sum();
-
-        // How much memory will we need to store the structures?
-        let bitmap_pages = (size_of::<MemoryRegion>() * memory_regions_cnt
-            + size_of_bitmaps as usize)
-            / 4096
-            // Add and extra page to be safe
-            + 1;
-
-        let allocator_zone = conventional
-            .clone()
-            .filter(|md| md.page_count >= bitmap_pages as u64)
-            .min_by(|a, b| a.page_count.cmp(&b.page_count))
-            .unwrap();
-        if allocator_zone.page_count < bitmap_pages as u64 {
-            panic!("Max continuous memory region doesn't have enough pages to store page allocator data");
-        }
-
-        let ptr: *mut u8 = allocator_zone.phys_start as *mut u8;
-
-        // Ensure that we have all zeros
-        unsafe { core::ptr::write_bytes(ptr, 0, bitmap_pages * 4096) }
-
-        let reserved_32bit_mem_region = unsafe { &mut *(ptr as *mut MemoryRegion) };
-
-        // Set the start of the data location for storeing the memory region headers after reserved region
-        let page_bitmaps = unsafe {
-            &mut *slice_from_raw_parts_mut(
-                ptr.add(size_of::<MemoryRegion>()) as *mut MemoryRegion,
-                memory_regions_cnt - 1,
-            )
-        };
-
-        // Counter to store to bitmaps right after each other
-        let mut bitmap_idx = size_of::<MemoryRegion>() * memory_regions_cnt + 1;
-
-        let reserved_32bit = conventional
-            .by_ref()
-            .find(|r| r.page_count >= RESERVED_32BIT_MEM_PAGES)
-            .unwrap();
-
-        reserved_32bit_mem_region.phys_start = reserved_32bit.phys_start;
-        reserved_32bit_mem_region.phys_end =
-            reserved_32bit.phys_start + RESERVED_32BIT_MEM_PAGES * 0x1000;
-        let bitmap_size_pages = bitmap_size(RESERVED_32BIT_MEM_PAGES) as usize;
-        reserved_32bit_mem_region.allocated =
-            unsafe { &mut *slice_from_raw_parts_mut(ptr.add(bitmap_idx), bitmap_size_pages) };
-        bitmap_idx += bitmap_size_pages;
-
-        // Add excess memory back into iterator
-        let excess = MemAddr {
-            phys_start: reserved_32bit.phys_start + RESERVED_32BIT_MEM_PAGES * 0x1000,
-            page_count: reserved_32bit.page_count - RESERVED_32BIT_MEM_PAGES,
-        };
         let conventional = core::iter::once(excess).chain(conventional);
 
-        // Count user usable pages
-        let mut total_usable_pages: usize = 0;
+        let mut reserved_32bit_mem_region = None;
 
-        for (idx, map) in conventional.enumerate() {
-            println!("{:?}", map);
-            let mem_region = &mut page_bitmaps[idx];
-            mem_region.phys_start = map.phys_start;
-            mem_region.phys_end = map.phys_start + map.page_count * 0x1000;
-            total_usable_pages += map.page_count as usize;
+        let total_usable_pages = conventional.clone().map(|m| m.page_count as usize).sum();
 
-            let bitmap_size_pages: usize = bitmap_size(map.page_count) as usize;
-
-            mem_region.allocated =
-                unsafe { &mut *slice_from_raw_parts_mut(ptr.add(bitmap_idx), bitmap_size_pages) };
-
-            bitmap_idx += bitmap_size_pages;
-        }
+        let page_bitmap: Box<[MemoryRegion]> = conventional
+            .map(|mut map| {
+                // the bump page alloctor doesn't hand out the first u32 page larger that reserved
+                if let None = reserved_32bit_mem_region {
+                    if map.phys_start <= u32::MAX.into()
+                        && map.page_count >= RESERVED_32BIT_MEM_PAGES
+                    {
+                        reserved_32bit_mem_region = Some(MemoryRegion {
+                            phys_start: map.phys_start,
+                            phys_end: map.phys_start + RESERVED_32BIT_MEM_PAGES * 0x1000,
+                            allocated: unsafe {
+                                Box::new_zeroed_slice(bitmap_size(
+                                    map.page_count - RESERVED_32BIT_MEM_PAGES,
+                                ) as usize)
+                                .assume_init()
+                            },
+                        });
+                        map.phys_start += RESERVED_32BIT_MEM_PAGES * 0x1000;
+                        map.page_count -= RESERVED_32BIT_MEM_PAGES;
+                    }
+                }
+                let bit_size = bitmap_size(map.page_count) as usize;
+                let allocated = unsafe {
+                    let mut allocated = Box::new_uninit_slice(bit_size);
+                    core::ptr::write_bytes(allocated.as_mut_ptr(), u8::MAX, bit_size);
+                    allocated.assume_init()
+                };
+                MemoryRegion {
+                    phys_start: map.phys_start,
+                    phys_end: map.phys_start + map.page_count * 0x1000,
+                    allocated,
+                }
+            })
+            .collect();
 
         let mut alloc = Self {
-            page_bitmap: page_bitmaps,
+            page_bitmap,
             reserved_16bit_bitmap: u16_mem,
-            reserved_32bit: reserved_32bit_mem_region,
-            free_pages: total_usable_pages,
-            used_pages: 0,
+            reserved_32bit: reserved_32bit_mem_region.expect("no reserved 32 bit section found"),
+            free_pages: 0,
+            used_pages: total_usable_pages,
             first_free_page: 0,
         };
 
-        alloc.lock_pages(allocator_zone.phys_start, bitmap_pages as u64);
-
-        println!(
-            "Page allocator structures are using: {}Kb\nFree memory: {}Mb",
-            bitmap_pages * 4096 / 1024,
-            alloc.free_pages * 4096 / 1024 / 1024
-        );
+        // grab all memory not already handed out and free them
+        let mut bpa = BOOT_PAGE_ALLOCATOR.get().unwrap().lock();
+        while let Some(page) = bpa.next() {
+            unsafe { alloc.free_page(page) }
+        }
 
         alloc
     }
@@ -427,7 +383,7 @@ impl PageFrameAllocator<'_> {
     }
 
     pub fn request_32bit_reserved_page(&mut self) -> Option<Allocated32Page> {
-        Self::find_page_in_region(0, self.reserved_32bit)
+        Self::find_page_in_region(0, &mut self.reserved_32bit)
             .map(|p| unsafe { Allocated32Page::new(p) })
     }
 
@@ -498,10 +454,7 @@ impl PageFrameAllocator<'_> {
                     self.free_pages -= cnt;
                     self.used_pages += cnt;
                     // We don't set first_free_page, because we might've skipped some free pages in the search for cont pages
-                    return Some(AllocatedPageRangeIter {
-                        base: page,
-                        count: cnt,
-                    });
+                    return Some(AllocatedPageRangeIter(PageRange::new(page, cnt)));
                 }
             }
         }
@@ -532,7 +485,7 @@ impl PageFrameAllocator<'_> {
 
     pub unsafe fn free_32bit_reserved_page(&mut self, page: Page<Size4KB>) {
         assert!(page.get_address() <= u32::MAX.into());
-        Self::free_page_in_region(self.reserved_32bit, page.get_address()).unwrap();
+        Self::free_page_in_region(&mut self.reserved_32bit, page.get_address()).unwrap();
     }
 
     pub unsafe fn free_page(&mut self, page: Page<Size4KB>) {

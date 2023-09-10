@@ -2,8 +2,6 @@ use core::{mem::size_of, slice};
 
 use thiserror::Error;
 
-use crate::paging::virt_addr_for_phys;
-
 pub const PSF1_MAGIC: [u8; 2] = [0x36, 0x04];
 
 #[derive(Debug, Clone, Copy)]
@@ -14,21 +12,11 @@ pub struct PSF1FontHeader {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct PSF1Font {
-    pub psf1_header: &'static PSF1FontHeader,
-    pub glyph_buffer: &'static [u8],
-    pub unicode_buffer: &'static [u8],
+pub struct PSF1Font<'a> {
+    pub psf1_header: &'a PSF1FontHeader,
+    pub glyph_buffer: &'a [u8],
+    pub unicode_buffer: &'a [u8],
 }
-
-pub const PSF1_FONT_NULL: PSF1Font = PSF1Font {
-    psf1_header: &PSF1FontHeader {
-        magic: PSF1_MAGIC,
-        mode_512: 0,
-        charsize: 0,
-    },
-    glyph_buffer: &[0],
-    unicode_buffer: &[0],
-};
 
 const PSF1_HEADER_SIZE: usize = size_of::<PSF1FontHeader>();
 
@@ -36,9 +24,8 @@ const PSF1_HEADER_SIZE: usize = size_of::<PSF1FontHeader>();
 #[error("psf1 font invalid header, expected ({PSF1_MAGIC:?}), found ({0:?})")]
 pub struct LoadFontInvMagic([u8; 2]);
 
-pub fn load_psf1_font(file: &[u8]) -> Result<PSF1Font, LoadFontInvMagic> {
-    let psf1_header =
-        unsafe { &*(virt_addr_for_phys(file.as_ptr() as u64) as *const PSF1FontHeader) };
+pub fn load_psf1_font<'a>(file: &'a [u8]) -> Result<PSF1Font<'a>, LoadFontInvMagic> {
+    let psf1_header = unsafe { &*(file.as_ptr() as *const PSF1FontHeader) };
 
     if psf1_header.magic != PSF1_MAGIC {
         return Err(LoadFontInvMagic(psf1_header.magic));
@@ -50,18 +37,12 @@ pub fn load_psf1_font(file: &[u8]) -> Result<PSF1Font, LoadFontInvMagic> {
         glyph_buffer_size *= 2;
     }
 
-    let psf1_font = unsafe {
-        slice::from_raw_parts(
-            virt_addr_for_phys(file.as_ptr() as u64 + PSF1_HEADER_SIZE as u64) as *mut u8,
-            glyph_buffer_size,
-        )
-    };
+    let psf1_font =
+        unsafe { slice::from_raw_parts(file.as_ptr().add(PSF1_HEADER_SIZE), glyph_buffer_size) };
 
     let unicode_table_buffer = unsafe {
         slice::from_raw_parts(
-            virt_addr_for_phys(
-                file.as_ptr() as u64 + PSF1_HEADER_SIZE as u64 + glyph_buffer_size as u64,
-            ) as *const u8,
+            file.as_ptr().add(PSF1_HEADER_SIZE + glyph_buffer_size),
             file.len() - PSF1_HEADER_SIZE - glyph_buffer_size,
         )
     };

@@ -29,6 +29,7 @@ use crate::{
         page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
+    BOOT_INFO,
 };
 
 const STACK_ADDR: u64 = 0x100_000_000_000;
@@ -101,12 +102,9 @@ impl Process {
             page_mapper.set_next_table(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
             page_mapper.set_next_table(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
             page_mapper.set_next_table(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
-            map_gop(&mut page_mapper);
+            map_gop(&mut page_mapper, &(*BOOT_INFO).gop);
             page_mapper
-                .map_memory(
-                    Page::<Size4KB>::new(0xfee000b0 & !0xFFF),
-                    Page::new(0xfee000b0 & !0xFFF),
-                )
+                .identity_map_memory(Page::<Size4KB>::containing(0xfee000b0))
                 .unwrap()
                 .ignore();
         }

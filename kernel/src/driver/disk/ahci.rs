@@ -44,19 +44,19 @@ pub struct AHCIDriver {
 }
 
 #[repr(C)]
-pub struct HBACommandTable {
+pub struct HBACommandTable<const N: usize> {
     command_fis: [u8; 64],
     atapi_command: [u8; 16],
     rsv: [u8; 48],
-    prdt_entry: [HBAPRDTEntry; 8],
+    prdt_entry: [HBAPRDTEntry; N],
 }
 
 #[repr(C)]
 pub struct HBAPort {
-    command_list_base: Volatile<u32>,
-    command_list_base_upper: Volatile<u32>,
-    fis_base_address: Volatile<u32>,
-    fis_base_address_upper: Volatile<u32>,
+    // do I really have to split into two u32's?
+    command_list_base: Volatile<u64>,
+    // do I really have to split into two u32's?
+    fis_base_address: Volatile<u64>,
     interrupt_status: Volatile<u32>,
     interrupt_enable: Volatile<u32>,
     cmd_sts: Volatile<u32>,

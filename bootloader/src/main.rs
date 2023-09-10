@@ -64,35 +64,16 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
 
     let stack = unsafe {
         let stack = boot_services
-            .allocate_pool(MemoryType::LOADER_DATA, 1024 * 1024 * 5) // 5 Mb
+            .allocate_pool(MemoryType::LOADER_DATA, 1024 * 12) // 5 Mb
             .unwrap();
-        core::ptr::write_bytes(stack, 0, 1024 * 1024 * 5);
-        stack.add(1024 * 1024 * 5)
+        core::ptr::write_bytes(stack, 0, 1024 * 12);
+        stack.add(1024 * 12)
     };
 
     // Create a memory region to store the boot info in
     let mut boot_info = unsafe { bootloader::get_buffer_as_type::<BootInfo>(boot_services) };
 
     let entry_point = load_system(&boot_services, &mut image_handle, &mut boot_info);
-
-    let config_table = system_table.config_table();
-
-    // Ensure a successful init
-    // boot_info.rsdp_address = None;
-    let mut rsdp_found = false;
-    // Find RSDP
-    for entry in config_table {
-        // We want last correct entry so keep interating
-        if entry.guid == uefi::table::cfg::ACPI2_GUID {
-            boot_info.rsdp_address = entry.address as usize;
-            rsdp_found = true;
-            break;
-        }
-    }
-
-    if !rsdp_found {
-        panic!("Couldn't find the RSDP address");
-    }
 
     let mmap_size = boot_services.memory_map_size();
     boot_info.mmap_entry_size = mmap_size.entry_size;
@@ -147,25 +128,6 @@ fn load_system(
     .unwrap();
 
     let entry_point = load_kernel(boot_services, kernel_data, boot_info);
-
-    info!("Loading PSF1 Font...");
-    const FONT_PATH: &str = "font.psf";
-    let mut buf = [0; FONT_PATH.len() + 1];
-    let font_file = unsafe {
-        fs::read_file_no_drop(
-            boot_services,
-            &mut root_fs,
-            uefi::CStr16::from_str_with_buf(FONT_PATH, &mut buf).unwrap(),
-        )
-    }
-    .unwrap();
-
-    assert!(
-        font_file[0..2] == [0x36, 0x04],
-        "PSF1 font magic number invalid"
-    );
-
-    boot_info.font = font_file;
 
     info!("Initializing GOP...");
     let mut gop = gop::initialize_gop(boot_services);

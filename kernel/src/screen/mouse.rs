@@ -76,7 +76,7 @@ pub fn print_cursor(pos: &mut Pos, mouse: MousePacket) {
     pos.y = pos.y.saturating_add_signed(mouse.y_mov as isize);
 
     without_context_switch(|| {
-        let gop_mutex = &mut WRITER.lock();
+        let gop_mutex = &mut WRITER.get().unwrap().lock();
         let gop_info = &gop_mutex.gop;
 
         if pos.x > gop_info.horizonal - 8 {

@@ -175,7 +175,7 @@ fn mmap_page_handler(regs: &Registers) -> Result<(), &'static str> {
 fn mmap_page32_handler(regs: &mut Registers) -> Result<(), &'static str> {
     let task = CPULocalStorageRW::get_current_task();
 
-    let page = frame_alloc_exec(|m| m.request_32bit_reserved_page()).ok_or("OOM")?;
+    let page = frame_alloc_exec(|m| m.request_32bit_reserved_page()).ok_or("OOM32")?;
 
     regs.rax = page.get_address() as usize;
 

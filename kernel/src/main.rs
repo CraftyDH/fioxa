@@ -10,39 +10,38 @@ extern crate alloc;
 extern crate kernel;
 
 use core::ffi::c_void;
-use core::mem::{size_of, transmute};
-use core::ptr::slice_from_raw_parts_mut;
 
 use ::acpi::{AcpiError, RsdpError};
 use acpi::sdt::Signature;
 use alloc::vec::Vec;
 use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
-use kernel::bootfs::{PS2_DRIVER, TERMINAL_ELF};
+use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER, TERMINAL_ELF};
 use kernel::cpu_localstorage::init_bsp_task;
 use kernel::fs::{self, FSDRIVES};
 use kernel::interrupts::{self};
 
 use kernel::ioapic::{enable_apic, Madt};
-use kernel::lapic::enable_localapic;
-use kernel::memory::MemoryMapIter;
+use kernel::lapic::{enable_localapic, map_lapic};
+use kernel::memory::{MemoryMapIter, MemoryMapPageIter, MemoryMapUsuableIter};
 use kernel::net::ethernet::userspace_networking_main;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
-use kernel::paging::page_allocator::{frame_alloc_exec, request_page};
+use kernel::paging::page_allocator::{request_page, BOOT_PAGE_ALLOCATOR};
 use kernel::paging::page_table_manager::{Mapper, Page, Size4KB};
 use kernel::paging::{
-    get_uefi_active_mapper, set_mem_offset, virt_addr_for_phys, MemoryLoc, KERNEL_MAP,
+    get_uefi_active_mapper, set_mem_offset, virt_addr_for_phys, virt_addr_offset, MemoryLoc,
+    KERNEL_HEAP_MAP, KERNEL_MAP,
 };
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::taskmanager::core_start_multitasking;
-use kernel::screen::gop::{self, WRITER};
-use kernel::screen::psf1::{self, load_psf1_font};
+use kernel::screen::gop::{self, Writer};
+use kernel::screen::psf1::{self};
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
 use kernel::{elf, gdt, paging, service, BOOT_INFO};
 
-use bootloader::uefi::table::cfg::{ConfigTableEntry, ACPI2_GUID};
+use bootloader::uefi::table::cfg::ACPI2_GUID;
 use bootloader::uefi::table::{Runtime, SystemTable};
 use kernel_userspace::elf::spawn_elf_process;
 use kernel_userspace::service::{get_public_service_id, register_public_service, ServiceMessage};
@@ -54,112 +53,113 @@ use kernel_userspace::syscall::{
 entry_point!(main);
 
 pub fn main(info: *const BootInfo) -> ! {
-    let rsp: usize;
+    let mmap = {
+        x86_64::instructions::interrupts::disable();
 
-    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp) }
-    unsafe {
-        BOOT_INFO = transmute(info);
-    }
+        // init gdt & idt
+        unsafe { gdt::init_bootgdt() };
+        interrupts::init_idt();
 
-    let boot_info = unsafe { core::ptr::read(info) };
+        // get boot_info
+        let boot_info = unsafe { info.read() };
 
-    let Ok(font) = psf1::load_psf1_font(boot_info.font) else {
-        // We can't do anything because without a font printing is futile
-        loop {}
+        // get memory map
+        let mmap = unsafe {
+            MemoryMapIter::new(
+                boot_info.mmap_buf,
+                boot_info.mmap_entry_size,
+                boot_info.mmap_len,
+            )
+        };
+
+        // Initialize boot page allocator & heap
+        unsafe {
+            BOOT_PAGE_ALLOCATOR.init_once(|| {
+                MemoryMapPageIter::from(MemoryMapUsuableIter::from(mmap.clone().into_iter())).into()
+            });
+            // ensure that allocations that happen during init carry over
+            let mut uefi = get_uefi_active_mapper();
+            uefi.set_next_table(MemoryLoc::KernelHeap as u64, &mut KERNEL_HEAP_MAP.lock());
+        };
+
+        // Initalize GOP stdout
+        let font = psf1::load_psf1_font(DEFAULT_FONT).expect("cannot load psf1 font");
+        gop::WRITER.init_once(|| Writer::new(boot_info.gop, font).into());
+        // Test screen colours
+        gop::WRITER.get().unwrap().lock().fill_screen(0xFF_00_00);
+        gop::WRITER.get().unwrap().lock().fill_screen(0x00_FF_00);
+        gop::WRITER.get().unwrap().lock().fill_screen(0x00_00_FF);
+        gop::WRITER.get().unwrap().lock().fill_screen(0xFF_FF_FF);
+        gop::WRITER.get().unwrap().lock().fill_screen(0x00_00_00);
+
+        mmap
     };
 
-    gop::WRITER.lock().set_gop(boot_info.gop, font);
-    // Test screen colours
-    // gop::WRITER.lock().fill_screen(0xFF_00_00);
-    // gop::WRITER.lock().fill_screen(0x00_FF_00);
-    // gop::WRITER.lock().fill_screen(0x00_00_FF);
-    log!("Fill screen");
-    gop::WRITER.lock().fill_screen(0);
     log!("Welcome to Fioxa...");
 
-    log!("Disabling interrupts...");
-    x86_64::instructions::interrupts::disable();
+    // remap and jump kernel to correct location
+    unsafe {
+        let mut map = KERNEL_MAP.lock();
 
+        create_offset_map(
+            &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::PhysMapOffset as u64)),
+            mmap,
+        );
+        // get boot_info
+        let boot_info = &*info;
+
+        create_kernel_map(
+            &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::KernelStart as u64)),
+            boot_info,
+        );
+        map_gop(&mut map, &boot_info.gop);
+
+        let map_addr = map.into_page().get_address();
+        drop(map);
+        println!("Remapping to higher half");
+
+        // load and jump stack
+        core::arch::asm!(
+            "add rsp, {}",
+            "mov cr3, {}",
+            in(reg) MemoryLoc::PhysMapOffset as u64,
+            in(reg) map_addr,
+        );
+        set_mem_offset(MemoryLoc::PhysMapOffset as u64);
+        KERNEL_MAP.lock().shift_table_to_offset();
+    }
+
+    let info = virt_addr_offset(info);
+    // set global boot info
+    unsafe { BOOT_INFO = info };
+
+    // read boot_info
+    let boot_info = unsafe { core::ptr::read(info) };
+
+    log!("Initializing BSP for multicore...");
+    unsafe { init_bsp_task() };
+
+    unsafe {
+        get_uefi_active_mapper()
+            .identity_map_memory(Page::<Size4KB>::containing(boot_info.uefi_runtime_table))
+            .unwrap()
+            .ignore();
+    }
     log!("Getting UEFI runtime table");
     let runtime_table =
         unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
             .unwrap();
 
-    // Init the frame allocator
-    log!("Initializing Frame Allocator...");
-
-    let mmap_buf = unsafe {
-        &*slice_from_raw_parts_mut(
+    let mmap = unsafe {
+        MemoryMapIter::new(
             boot_info.mmap_buf,
-            boot_info.mmap_len * boot_info.mmap_entry_size,
+            boot_info.mmap_entry_size,
+            boot_info.mmap_len,
         )
     };
-    let mmap = MemoryMapIter::new(mmap_buf, boot_info.mmap_entry_size, boot_info.mmap_len);
 
-    unsafe { paging::page_allocator::init(mmap.clone()) };
-    log!("Initalizing BOOT GDT...");
-    unsafe { gdt::init_bootgdt() };
-
-    log!("Initalizing IDT...");
-    interrupts::init_idt();
-
-    // {
-    //     println!("{:?}", get_chunked_page_range(0, 0x1000));
-    //     println!("{:?}", get_chunked_page_range(0, 0x20000));
-    //     println!("{:?}", get_chunked_page_range(0, 0x20000 - 0x1000));
-    //     println!("{:?}", get_chunked_page_range(0x2000, 0x400000));
-    // }
-
-    {
-        let mut map = KERNEL_MAP.lock();
-
-        // Remap this threads stack
-        for page in ((rsp & !0xFFF) as u64..(rsp + 1024 * 1024 * 5) as u64).step_by(0x1000) {
-            map.identity_map_memory(Page::<Size4KB>::new(page))
-                .unwrap()
-                .ignore();
-        }
-
-        // create_offset_map(&mut map.get_lvl3(0), mmap.clone());
-        create_offset_map(
-            &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::PhysMapOffset as u64)),
-            mmap,
-        );
-        create_kernel_map(
-            &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::KernelStart as u64)),
-        );
-        map_gop(&mut map);
-
-        map.identity_map_memory(Page::<Size4KB>::containing(info as u64))
-            .unwrap()
-            .ignore();
-
-        map.identity_map_memory(Page::<Size4KB>::containing(boot_info.uefi_runtime_table))
-            .unwrap()
-            .ignore();
-
-        println!("Remapping to higher half");
-
-        unsafe {
-            frame_alloc_exec(|f| {
-                Some({
-                    f.push_up_to_offset_mapping();
-                })
-            });
-
-            // load and jump stack
-            core::arch::asm!(
-                "add rsp, {}",
-                "mov cr3, {}",
-                in(reg) MemoryLoc::PhysMapOffset as u64,
-                in(reg) map.into_page().get_address(),
-            );
-            set_mem_offset(MemoryLoc::PhysMapOffset as u64);
-            map.shift_table_to_offset();
-        }
-    }
-
-    println!("Paging enabled");
+    log!("Setting up proper page allocator");
+    unsafe { paging::page_allocator::init(mmap) };
 
     unsafe {
         let frame = request_page().unwrap();
@@ -167,7 +167,6 @@ pub fn main(info: *const BootInfo) -> ! {
         KERNEL_MAP.lock().map_memory(page, *frame).unwrap().flush();
         let f = virt_addr_for_phys(frame.get_address()) as *mut u64;
 
-        println!("Page test");
         *f = 4493;
         assert!(
             *((0x400000000000 as u64) as *const u64) == 4493,
@@ -176,31 +175,8 @@ pub fn main(info: *const BootInfo) -> ! {
         KERNEL_MAP.lock().unmap_memory(page).unwrap().flush();
     }
 
-    // log!("Initializing HEAP...");
-    // allocator::init_heap(&mut KERNEL_MAP.lock()).expect("Heap initialization failed");
-
-    log!("Updating font...");
-    // Set unicode mapping buffer (for more chacters than ascii)
-    // And update font to use new mapping
-    WRITER
-        .lock()
-        .update_font(load_psf1_font(boot_info.font).unwrap());
-
     log!("Loading UEFI runtime table");
     let config_tables = runtime_table.config_table();
-
-    let base = (config_tables.as_ptr() as u64) & !0xFFF;
-    for page in (base..config_tables.as_ptr() as u64
-        + size_of::<ConfigTableEntry>() as u64 * config_tables.len() as u64
-        + 0xFFF)
-        .step_by(0x1000)
-    {
-        KERNEL_MAP
-            .lock()
-            .identity_map_memory(Page::<Size4KB>::new(page))
-            .unwrap()
-            .ignore();
-    }
 
     println!("Config table: ptr{:?}", config_tables.as_ptr());
 
@@ -215,10 +191,8 @@ pub fn main(info: *const BootInfo) -> ! {
         .unwrap()
         .unwrap();
 
-    log!("Initializing BSP for multicore...");
-    unsafe { init_bsp_task() };
-
-    enable_localapic(&mut KERNEL_MAP.lock());
+    map_lapic(&mut KERNEL_MAP.lock());
+    enable_localapic();
 
     unsafe { core::arch::asm!("sti") };
 
@@ -237,35 +211,13 @@ pub fn main(info: *const BootInfo) -> ! {
 }
 
 fn after_boot() {
-    unsafe {
-        map_gop(&mut get_uefi_active_mapper());
-    }
-
-    let boot_info = unsafe {
-        &*((BOOT_INFO as *const u8).add(MemoryLoc::PhysMapOffset as usize) as *const BootInfo)
-    };
+    let boot_info = unsafe { &*BOOT_INFO };
 
     let mut map = unsafe { get_uefi_active_mapper() };
 
     map.identity_map_memory(Page::<Size4KB>::containing(boot_info.uefi_runtime_table))
         .unwrap()
         .ignore();
-
-    let runtime_table =
-        unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
-            .unwrap();
-
-    let config_tables = runtime_table.config_table();
-
-    let base = (config_tables.as_ptr() as u64) & !0xFFF;
-    for page in (base..config_tables.as_ptr() as u64
-        + size_of::<ConfigTableEntry>() as u64 * config_tables.len() as u64)
-        .step_by(0x1000)
-    {
-        map.identity_map_memory(Page::<Size4KB>::new(page))
-            .unwrap()
-            .ignore();
-    }
 
     let runtime_table =
         unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }

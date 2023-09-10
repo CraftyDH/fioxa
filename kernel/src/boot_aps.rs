@@ -12,7 +12,6 @@ use crate::{
     ioapic::Madt,
     lapic::{enable_localapic, LAPIC_ADDR},
     paging::{
-        get_uefi_active_mapper,
         page_allocator::frame_alloc_exec,
         page_table_manager::{Mapper, Page, PageTable, Size4KB},
         MemoryLoc, KERNEL_MAP,
@@ -147,8 +146,7 @@ pub extern "C" fn ap_startup_f(core_id: u32) {
         IDT.lock().load_unsafe();
 
         // Enable lapic
-        let mut mapper = get_uefi_active_mapper();
-        enable_localapic(&mut mapper);
+        enable_localapic();
     }
 
     println!("Core: {core_id} booted");

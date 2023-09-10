@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, sync::Arc};
 
-use crate::paging::page_table_manager::{ident_map_curr_process, Page, Size4KB};
+use crate::paging::page_table_manager::{ensure_ident_map_curr_process, Page, Size4KB};
 
 use super::{mcfg::MCFG, PCIBus, PCIDevice, PCIHeaderCommon};
 
@@ -63,7 +63,7 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
     fn get_device(&mut self, segment: u16, bus: u8, device: u8, function: u8) -> PCIHeaderCommon {
         let address = self.get_address(segment, bus, device, function).unwrap();
 
-        unsafe { ident_map_curr_process(Page::<Size4KB>::new(address), true) };
+        unsafe { ensure_ident_map_curr_process(Page::<Size4KB>::new(address), true) };
 
         PCIHeaderCommon {
             device: Arc::new(PCIExpressDevice { address }),
@@ -78,7 +78,7 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
     ) -> Box<dyn PCIDevice> {
         let address = self.get_address(segment, bus, device, function).unwrap();
 
-        unsafe { ident_map_curr_process(Page::<Size4KB>::new(address), true) };
+        unsafe { ensure_ident_map_curr_process(Page::<Size4KB>::new(address), true) };
 
         Box::new(PCIExpressDevice { address })
     }

@@ -1,9 +1,8 @@
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use bootloader::gop::GopInfo;
-use conquer_once::spin::Lazy;
+use conquer_once::spin::OnceCell;
 use core::fmt::Write;
-use core::sync::atomic::AtomicPtr;
 use kernel_userspace::service::{
     generate_tracking_number, register_public_service, SendError, SendServiceMessageDest,
     ServiceMessage, Stdout,
@@ -16,25 +15,18 @@ pub struct Pos {
     pub y: usize,
 }
 
-pub struct Writer {
+pub struct Writer<'a> {
     pub pos: Pos,
     pub gop: GopInfo,
-    pub font: PSF1Font,
+    pub font: PSF1Font<'a>,
     pub fg_colour: u32,
     pub bg_colour: u32,
-    pub unicode_table: Option<BTreeMap<char, usize>>,
+    pub unicode_table: BTreeMap<char, usize>,
 }
 
-impl Writer {
-    pub fn set_gop(&mut self, gop: GopInfo, font: PSF1Font) {
-        self.gop = gop;
-
-        self.font = font;
-    }
-
-    /// Requires Allocation to be enabled first!
-    pub fn update_font(&mut self, font: PSF1Font) {
-        let unicode_buffer = font.unicode_buffer;
+impl<'a> Writer<'a> {
+    pub fn new(gop: GopInfo, font: PSF1Font<'a>) -> Writer {
+        let unicode_buffer = &font.unicode_buffer;
 
         let mut unicode_table: BTreeMap<char, usize> = BTreeMap::new();
 
@@ -54,21 +46,23 @@ impl Writer {
             }
         }
 
-        self.unicode_table = Some(unicode_table);
-        self.font = font;
+        Self {
+            pos: Pos { x: 0, y: 0 },
+            gop,
+            font,
+            unicode_table,
+            fg_colour: 0xFF_FF_FF,
+            bg_colour: 0x00_00_00,
+        }
     }
 
     pub fn put_char(&mut self, colour: u32, chr: char, xoff: usize, yoff: usize) {
-        // let addr = ('A' as usize) * (font.psf1_header.charsize as usize);
-        let mut addr: usize;
-        if let Some(unicode) = &self.unicode_table {
-            addr = *unicode.get(&chr).unwrap_or(&0);
-        } else {
-            addr = chr as usize;
-            if addr > 255 {
-                addr = 0
-            }
-        }
+        let mut addr: usize = *self.unicode_table.get(&chr).unwrap_or(&0);
+
+        // let mut addr = chr as usize;
+        // if addr > 255 {
+        //     addr = 0
+        // }
         addr *= 16;
 
         let ptr = self.gop.buffer.get_mut();
@@ -226,29 +220,13 @@ impl Writer {
     }
 }
 
-impl core::fmt::Write for Writer {
+impl core::fmt::Write for Writer<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.write_string(s);
         Ok(())
     }
 }
-pub static WRITER: Lazy<Mutex<Writer>> = Lazy::new(|| {
-    Mutex::new(Writer {
-        pos: Pos { x: 0, y: 0 },
-        gop: GopInfo {
-            buffer: AtomicPtr::default(),
-            buffer_size: 0,
-            horizonal: 0,
-            vertical: 0,
-            stride: 0,
-            pixel_format: bootloader::uefi::proto::console::gop::PixelFormat::Rgb,
-        },
-        font: PSF1_FONT_NULL,
-        unicode_table: None,
-        fg_colour: 0xFF_FF_FF,
-        bg_colour: 0x00_00_00,
-    })
-});
+pub static WRITER: OnceCell<Mutex<Writer>> = OnceCell::uninit();
 
 #[macro_export]
 macro_rules! println {
@@ -268,10 +246,7 @@ macro_rules! colour {
     };
 }
 
-use crate::paging::get_uefi_active_mapper;
-use crate::paging::offset_map::map_gop;
 use crate::scheduling::without_context_switch;
-use crate::screen::psf1::PSF1_FONT_NULL;
 use core::fmt::Arguments;
 use spin::mutex::Mutex;
 
@@ -283,7 +258,7 @@ pub fn _print(args: Arguments) {
     loop {
         // Prevent task from being scheduled away with mutex
         if without_context_switch(|| {
-            if let Some(mut w) = WRITER.try_lock() {
+            if let Some(mut w) = WRITER.get().unwrap().try_lock() {
                 w.write_fmt(args).unwrap();
                 return Some(());
             }
@@ -332,10 +307,7 @@ pub fn monitor_stdout_task() {
 }
 
 pub fn gop_entry() {
-    unsafe {
-        map_gop(&mut get_uefi_active_mapper());
-    }
-
+    // TODO: Once isnt mapped for everyone, map it
     spawn_thread(monitor_cursor_task);
     monitor_stdout_task()
 }

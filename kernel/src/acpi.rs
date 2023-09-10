@@ -4,12 +4,10 @@ use acpi::{AcpiError, AcpiHandler, AcpiTables, PhysicalMapping};
 
 use crate::paging::{
     get_uefi_active_mapper,
-    page_table_manager::{ident_map_curr_process, Mapper, Page, Size4KB},
+    page_table_manager::{Mapper, Page, Size4KB},
 };
 
 pub fn prepare_acpi(rsdp: usize) -> Result<AcpiTables<FioxaAcpiHandler>, AcpiError> {
-    unsafe { ident_map_curr_process(Page::<Size4KB>::containing(rsdp as u64), false) };
-
     let root_acpi_handler = unsafe { acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, rsdp) }?;
 
     println!("ACPI");

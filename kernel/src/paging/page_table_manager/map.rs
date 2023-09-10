@@ -17,6 +17,10 @@ impl PageTable<'_, PageLvl4> {
             options(nostack, preserves_flags)
         );
     }
+
+    pub fn get_phys_addr_from_vaddr(&mut self, address: u64) -> Option<u64> {
+        Some(self.get_phys_addr(Page::<Size4KB>::containing(address))? + address % 0x1000)
+    }
 }
 
 impl Mapper<Size1GB> for PageTable<'_, PageLvl3> {

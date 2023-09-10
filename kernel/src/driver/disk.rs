@@ -1,6 +1,6 @@
 pub mod ahci;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use kernel_userspace::disk::ata::ATADiskIdentify;
 use spin::Mutex;
 
@@ -14,5 +14,5 @@ pub trait DiskBusDriver: Driver {
 pub trait DiskDevice: Send + Sync {
     fn read(&mut self, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()>;
     fn write(&mut self, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()>;
-    fn identify(&mut self) -> &ATADiskIdentify;
+    fn identify(&mut self) -> Box<ATADiskIdentify>;
 }

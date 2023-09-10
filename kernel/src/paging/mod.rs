@@ -2,9 +2,10 @@ use conquer_once::spin::Lazy;
 use spin::Mutex;
 use x86_64::registers::control::Cr3;
 
-use crate::paging::page_allocator::frame_alloc_exec;
-
-use self::page_table_manager::{Page, PageLvl3, PageLvl4, PageTable};
+use self::{
+    page_allocator::request_page_early,
+    page_table_manager::{Page, PageLvl3, PageLvl4, PageTable},
+};
 
 pub mod offset_map;
 pub mod page_allocator;
@@ -15,9 +16,8 @@ pub const fn gen_lvl3_map() -> Lazy<Mutex<PageTable<'static, PageLvl3>>> {
     Lazy::new(|| {
         Mutex::new(unsafe {
             // The AP startup code needs a 32 bit ptr
-            let page = frame_alloc_exec(|a| a.request_32bit_reserved_page())
-                .unwrap()
-                .leak();
+            let page = request_page_early().unwrap();
+            assert!(page.get_address() <= u32::MAX as u64);
             PageTable::from_page(page)
         })
     })
@@ -32,9 +32,8 @@ pub static PER_CPU_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map
 pub static KERNEL_MAP: Lazy<Mutex<PageTable<'static, PageLvl4>>> = Lazy::new(|| {
     Mutex::new(unsafe {
         // The AP startup code needs a 32 bit ptr
-        let page = frame_alloc_exec(|a| a.request_32bit_reserved_page())
-            .unwrap()
-            .leak();
+        let page = request_page_early().unwrap();
+        assert!(page.get_address() <= u32::MAX as u64);
         let mut lvl4 = PageTable::from_page(page);
 
         lvl4.set_next_table(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
@@ -77,7 +76,12 @@ pub unsafe fn set_mem_offset(n: u64) {
 }
 
 pub fn virt_addr_for_phys(phys: u64) -> u64 {
-    phys + unsafe { MEM_OFFSET }
+    phys.checked_add(unsafe { MEM_OFFSET })
+        .expect("expected phys addr")
+}
+
+pub fn virt_addr_offset<T>(t: *const T) -> *const T {
+    virt_addr_for_phys(t as u64) as *const T
 }
 
 pub fn phys_addr_for_virt(virt: u64) -> u64 {

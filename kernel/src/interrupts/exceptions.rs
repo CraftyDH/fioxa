@@ -81,8 +81,8 @@ extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
-    WRITER.lock().fill_screen(0xFF_00_00);
-    WRITER.lock().pos.y = 0;
+    WRITER.get().unwrap().lock().fill_screen(0xFF_00_00);
+    WRITER.get().unwrap().lock().pos.y = 0;
 
     panic!("EXCEPTION: DOUBLE FAULT {}\n{:#?}", error_code, stack_frame);
 }

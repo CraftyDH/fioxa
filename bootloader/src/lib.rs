@@ -54,14 +54,13 @@ pub unsafe fn get_buffer_as_type<'b, T>(bt: &BootServices) -> &'b mut T {
 }
 
 /// The struct that is passed from bootloader to the kernel
-pub struct BootInfo<'f> {
+#[derive(Debug)]
+pub struct BootInfo {
     pub uefi_runtime_table: u64,
     pub gop: gop::GopInfo,
-    pub font: &'f [u8],
-    pub mmap_buf: *mut u8,
+    pub mmap_buf: *const u8,
     pub mmap_entry_size: usize,
     pub mmap_len: usize,
-    pub rsdp_address: usize,
     pub kernel_start: u64,
     pub kernel_pages: u64,
 }

@@ -1,22 +1,28 @@
+use bootloader::{gop::GopInfo, BootInfo};
+
 use crate::{
     kernel_memory_loc,
     memory::MemoryMapIter,
     paging::{
         page_table_manager::{get_chunked_page_range, Mapper, Page},
-        MemoryLoc,
+        virt_addr_offset, MemoryLoc,
     },
-    screen::gop::WRITER,
-    BOOT_INFO,
 };
 
 use super::page_table_manager::{PageLvl3, PageLvl4, PageTable, Size4KB};
 
-pub fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMapIter) {
+pub unsafe fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMapIter) {
     // Only map actual memory
     // This means we will get a page fault on access to a non ram in the offset table
     // (instead of accessing memory holes/complely non existend addresses)
     for r in mmap {
         print!(".");
+        let r = unsafe { &*virt_addr_offset(r) };
+
+        assert!(
+            r.phys_start + r.page_count * 1000
+                <= MemoryLoc::_EndPhysMapOffset as u64 - MemoryLoc::PhysMapOffset as u64
+        );
 
         // println!("{:?}", r);
         let pages = get_chunked_page_range(r.phys_start, r.phys_start + r.page_count * 0x1000);
@@ -64,10 +70,10 @@ pub fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMapIter) 
     }
 }
 
-pub fn map_gop(mapper: &mut PageTable<PageLvl4>) {
+pub unsafe fn map_gop(mapper: &mut PageTable<PageLvl4>, gop: &GopInfo) {
     // Map GOP framebuffer
-    let fb_base = *WRITER.lock().gop.buffer.get_mut() as u64;
-    let fb_size = fb_base + (WRITER.lock().gop.buffer_size as u64);
+    let fb_base = *gop.buffer.as_ptr() as u64;
+    let fb_size = fb_base + (gop.buffer_size as u64);
 
     for i in (fb_base..fb_size + 0xFFF).step_by(0x1000) {
         mapper
@@ -77,9 +83,7 @@ pub fn map_gop(mapper: &mut PageTable<PageLvl4>) {
     }
 }
 
-pub fn create_kernel_map(mapper: &mut PageTable<PageLvl3>) {
-    let boot_info = unsafe { &*BOOT_INFO };
-
+pub unsafe fn create_kernel_map(mapper: &mut PageTable<PageLvl3>, boot_info: &BootInfo) {
     // Map ourself
     let base = boot_info.kernel_start;
     let pages = boot_info.kernel_pages;

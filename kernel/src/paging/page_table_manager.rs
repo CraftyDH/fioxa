@@ -5,17 +5,17 @@ use core::marker::PhantomData;
 
 use thiserror::Error;
 
-use crate::paging::page_allocator;
+use crate::paging::page_allocator::free_page_early;
 
 use super::{
-    get_uefi_active_mapper, page_allocator::request_page, page_directory::PageDirectoryEntry,
+    get_uefi_active_mapper, page_allocator::request_page_early, page_directory::PageDirectoryEntry,
     phys_addr_for_virt, virt_addr_for_phys,
 };
 
 #[derive(Error, Debug)]
 pub enum MapMemoryError {
     #[error("cannot map {from:X} to {to:X} because {current:X} is mapped")]
-    MemAlreadyMapped { to: u64, from: u64, current: u64 },
+    MemAlreadyMapped { from: u64, to: u64, current: u64 },
 }
 
 #[derive(Error, Debug)]
@@ -180,7 +180,7 @@ impl PhysPageTable {
         if entry.present() {
             addr = virt_addr_for_phys(entry.get_address()) as *mut PhysPageTable;
         } else {
-            let new_page = unsafe { request_page().unwrap().leak() };
+            let new_page = unsafe { request_page_early().unwrap() };
             addr = virt_addr_for_phys(new_page.get_address()) as *mut PhysPageTable;
 
             entry.set_address(new_page.get_address());
@@ -196,7 +196,7 @@ impl PhysPageTable {
         let entry = &mut self.entries[idx];
         assert!(entry.present());
         let phys = Page::<Size4KB>::new(entry.get_address());
-        page_allocator::frame_alloc_exec(|a| a.free_page(phys));
+        free_page_early(phys);
         entry.set_present(false);
         entry.set_address(0);
     }
@@ -316,13 +316,13 @@ impl<S: PageLevel + LvlSize> PageTable<'_, S> {
         if entry.present() {
             // TODO: When the kernel is less buggy by double mapping, assert this whenever it is present
             // Make sure we aren't creating bugs by checking that it only overrides with the same addr
-            if entry.get_address() != to.address {
-                return Err(MapMemoryError::MemAlreadyMapped {
-                    to: to.get_address(),
-                    from: to.get_address(),
-                    current: entry.get_address(),
-                });
-            }
+            // if entry.get_address() != to.address {
+            return Err(MapMemoryError::MemAlreadyMapped {
+                from: from.get_address(),
+                to: to.get_address(),
+                current: entry.get_address(),
+            });
+            // }
         }
 
         entry.set_present(true);
@@ -371,6 +371,22 @@ where
     mapper.identity_map_memory(page).unwrap().flush();
 }
 
+pub unsafe fn ensure_ident_map_curr_process<S: PageSize>(page: Page<S>, _write: bool)
+where
+    for<'a> PageTable<'a, PageLvl4>: Mapper<S>,
+{
+    let mut mapper = get_uefi_active_mapper();
+    match mapper.identity_map_memory(page) {
+        Ok(f) => f.flush(),
+        Err(MapMemoryError::MemAlreadyMapped {
+            from: _,
+            to,
+            current,
+        }) if to == current => (),
+        Err(e) => panic!("cannot ident map because {e:?}"),
+    }
+}
+
 #[must_use = "TLB must be flushed or can be ignored"]
 pub struct Flusher(u64);
 
@@ -400,86 +416,58 @@ pub fn get_chunked_page_range(
     // Normalize 4kb chunks
     let s4kb = if start & 0x1f_ffff > 0 {
         let new_start = core::cmp::min((start & !0x1f_ffff) + 0x200000, end);
-        let tmp = PageRange {
-            idx: start,
-            end: new_start,
-            _size: PhantomData,
-        };
+        let tmp = PageRange::new(
+            start,
+            (new_start - start) as usize / Size4KB::PAGE_SIZE as usize,
+        );
         start = new_start;
         tmp
     } else {
-        PageRange {
-            idx: 1,
-            end: 0,
-            _size: PhantomData,
-        }
+        PageRange::empty()
     };
 
     let e4kb = if end & 0x1f_ffff > 0 && start != end {
         let new_end = core::cmp::max(end & !0x1f_ffff, start);
-        let tmp = PageRange {
-            idx: new_end,
-            end,
-            _size: PhantomData,
-        };
+        let tmp = PageRange::new(
+            new_end,
+            (end - new_end) as usize / Size4KB::PAGE_SIZE as usize,
+        );
         end = new_end;
         tmp
     } else {
-        PageRange {
-            idx: 1,
-            end: 0,
-            _size: PhantomData,
-        }
+        PageRange::empty()
     };
 
     // Normalize 2mb chunks
     let s2mb = if start & 0x3fffffff > 0 && start != end {
         let new_start = core::cmp::min((start & !0x3fffffff) + 0x40000000, end);
-        let tmp = PageRange {
-            idx: start,
-            end: new_start,
-            _size: PhantomData,
-        };
+        let tmp = PageRange::new(
+            start,
+            (new_start - start) as usize / Size2MB::PAGE_SIZE as usize,
+        );
         start = new_start;
         tmp
     } else {
-        PageRange {
-            idx: 1,
-            end: 0,
-            _size: PhantomData,
-        }
+        PageRange::empty()
     };
 
     let e2mb = if end & 0x3fffffff > 0 && start != end {
         let new_end = core::cmp::max(end & !0x3fffffff, start);
 
-        let tmp = PageRange {
-            idx: new_end,
-            end,
-            _size: PhantomData,
-        };
+        let tmp = PageRange::new(
+            new_end,
+            (end - new_end) as usize / Size2MB::PAGE_SIZE as usize,
+        );
         end = new_end;
         tmp
     } else {
-        PageRange {
-            idx: 1,
-            end: 0,
-            _size: PhantomData,
-        }
+        PageRange::empty()
     };
 
     let gb = if start < end && start != end {
-        PageRange {
-            idx: start,
-            end,
-            _size: PhantomData,
-        }
+        PageRange::new(start, ((end - start) / Size1GB::PAGE_SIZE) as usize)
     } else {
-        PageRange {
-            idx: 1,
-            end: 0,
-            _size: PhantomData,
-        }
+        PageRange::empty()
     };
 
     (s4kb, s2mb, gb, e2mb, e4kb)
@@ -487,25 +475,46 @@ pub fn get_chunked_page_range(
 
 #[derive(Debug)]
 pub struct PageRange<S: PageSize> {
-    idx: u64,
-    end: u64,
+    base: u64,
+    count: usize,
     _size: PhantomData<S>,
+}
+
+impl<S: PageSize> PageRange<S> {
+    pub fn new(base: u64, count: usize) -> Self {
+        Self {
+            base,
+            count,
+            _size: Default::default(),
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self::new(0, 0)
+    }
 }
 
 impl<S: PageSize> Iterator for PageRange<S> {
     type Item = Page<S>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let res = self.idx;
-        self.idx += S::PAGE_SIZE;
-
-        if res < self.end {
-            Some(Page {
-                address: res,
-                _size: PhantomData,
-            })
+        if self.count > 0 {
+            let res = Page::new(self.base);
+            self.count -= 1;
+            self.base += S::PAGE_SIZE;
+            Some(res)
         } else {
             None
         }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.count, Some(self.count))
+    }
+}
+
+impl<S: PageSize> ExactSizeIterator for PageRange<S> {
+    fn len(&self) -> usize {
+        self.count
     }
 }
