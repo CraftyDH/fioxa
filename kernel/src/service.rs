@@ -22,7 +22,7 @@ use crate::{
     assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
     scheduling::{
-        process::{ProcessMessages, ScheduleStatus, Thread},
+        process::{ProcessMessages, SavedThreadState, Thread, ThreadContext},
         taskmanager::{load_new_task, push_task_queue, PROCESSES},
     },
 };
@@ -125,16 +125,16 @@ fn send_message(
 
         let mut ctx = thread.context.lock();
 
-        assert!(
-            ctx.schedule_status == ScheduleStatus::WaitingOn(message.0)
-                || ctx.schedule_status == ScheduleStatus::WaitingOn(ServiceID(u64::MAX))
-        );
-        assert!(ctx.current_message.is_none());
-
-        ctx.register_state.rax = message.2.len();
-        ctx.current_message = Some(message);
-        ctx.schedule_status = ScheduleStatus::Scheduled;
-        push_task_queue(Arc::downgrade(thread)).unwrap();
+        match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
+            ThreadContext::WaitingOn(mut state, id)
+                if id == message.0 || id == ServiceID(u64::MAX) =>
+            {
+                state.register_state.rax = message.2.len();
+                *ctx = ThreadContext::Scheduled(state, Some(message));
+                push_task_queue(Arc::downgrade(thread)).unwrap();
+            }
+            e => panic!("thread was not waiting it was {e:?}"),
+        }
         return Ok(());
     }
 
@@ -168,7 +168,10 @@ pub fn try_find_message(
 
     let length = msg.2.len();
 
-    thread.context.lock().current_message = Some(msg);
+    match &mut *thread.context.lock() {
+        ThreadContext::Running(m) => *m = Some(msg),
+        e => panic!("thread should be running but was {e:?}"),
+    }
 
     Some(length)
 }
@@ -215,8 +218,15 @@ pub fn find_or_wait_message(
             let threads = current_thread.process.threads.lock();
             let t = threads.threads.get(&current_thread.tid).unwrap();
             let mut ctx = t.context.lock();
-            ctx.schedule_status = ScheduleStatus::WaitingOn(narrow_by_sid);
-            ctx.save(stack_frame, reg);
+            match &*ctx {
+                ThreadContext::Running(_) => {
+                    *ctx = ThreadContext::WaitingOn(
+                        SavedThreadState::new(stack_frame, reg),
+                        narrow_by_sid,
+                    )
+                }
+                e => panic!("thread was not running it was: {e:?}"),
+            }
         }
 
         load_new_task(stack_frame, reg);
@@ -224,10 +234,15 @@ pub fn find_or_wait_message(
 }
 
 pub fn get_message(thread: &Thread, buffer: &mut [u8]) -> Option<()> {
-    let msg = thread.context.lock().current_message.take()?;
+    let mut ctx = thread.context.lock();
 
-    buffer.copy_from_slice(&msg.2);
-    Some(())
+    match &mut *ctx {
+        ThreadContext::Running(msg) => {
+            buffer.copy_from_slice(&msg.take()?.2);
+            Some(())
+        }
+        e => panic!("thread was not running it was: {e:?}"),
+    }
 }
 
 pub static PUBLIC_SERVICES: Mutex<BTreeMap<String, ServiceID>> = Mutex::new(BTreeMap::new());

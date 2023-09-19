@@ -151,28 +151,13 @@ impl Process {
         let mut threads = self.threads.lock();
         let tid = threads.get_next_id();
 
-        let pushed_register_state = InterruptStackFrameValue {
-            instruction_pointer: VirtAddr::new(0x8002),
-            code_segment: 0,
-            cpu_flags: 0,
-            stack_pointer: VirtAddr::new(0),
-            stack_segment: 0,
-        };
-
-        let register_state = Registers::default();
-
         let thread: Arc<Thread> = Arc::new(Thread {
             process: threads
                 .proc_reference
                 .upgrade()
                 .expect("process should still be alive"),
             tid,
-            context: Mutex::new(ThreadContext {
-                register_state,
-                pushed_register_state,
-                current_message: Default::default(),
-                schedule_status: ScheduleStatus::Scheduled,
-            }),
+            context: Mutex::new(ThreadContext::Running(None)),
         });
 
         threads.threads.insert(tid, thread.clone());
@@ -205,7 +190,7 @@ impl Process {
             }
         }
 
-        let pushed_register_state = InterruptStackFrameValue {
+        let interrupt_frame = InterruptStackFrameValue {
             instruction_pointer: VirtAddr::from_ptr(entry_point),
             code_segment: self.privilege.get_code_segment().0 as u64,
             cpu_flags: 0x202,
@@ -216,12 +201,13 @@ impl Process {
         let thread = Arc::new(Thread {
             process: threads.proc_reference.upgrade().unwrap(),
             tid,
-            context: Mutex::new(ThreadContext {
-                register_state,
-                pushed_register_state,
-                current_message: Default::default(),
-                schedule_status: ScheduleStatus::Scheduled,
-            }),
+            context: Mutex::new(ThreadContext::Scheduled(
+                SavedThreadState {
+                    register_state,
+                    interrupt_frame,
+                },
+                None,
+            )),
         });
 
         threads.threads.insert(tid, thread.clone());
@@ -252,35 +238,54 @@ pub struct Thread {
     pub context: Mutex<ThreadContext>,
 }
 
-pub struct ThreadContext {
-    pub register_state: Registers,
-    // Rest of the data inclusing rip & rsp
-    pub pushed_register_state: InterruptStackFrameValue,
-    // Used for storing current msg, so that the popdata can get the data
-    pub current_message: Option<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>,
-    // Is the thread scheduled or waiting
-    pub schedule_status: ScheduleStatus,
+// Used for storing current msg, so that the popdata can get the data
+pub type CurrentMessage = Option<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>;
+
+#[derive(Debug)]
+pub enum ThreadContext {
+    Invalid,
+    Running(CurrentMessage),
+    Scheduled(SavedThreadState, CurrentMessage),
+    WaitingOn(SavedThreadState, ServiceID),
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum ScheduleStatus {
-    Scheduled,
-    WaitingOn(ServiceID),
+#[derive(Debug)]
+pub struct SavedThreadState {
+    pub register_state: Registers,
+    // Rest of the data inclusing rip & rsp
+    pub interrupt_frame: InterruptStackFrameValue,
+}
+
+impl SavedThreadState {
+    pub fn new(stack_frame: &InterruptStackFrame, reg: &Registers) -> Self {
+        SavedThreadState {
+            register_state: reg.clone(),
+            interrupt_frame: **stack_frame,
+        }
+    }
 }
 
 impl ThreadContext {
     pub fn save(&mut self, stack_frame: &InterruptStackFrame, reg: &Registers) {
-        self.pushed_register_state.clone_from(stack_frame);
-        self.register_state.clone_from(reg);
-    }
-    pub fn restore(&self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-        unsafe {
-            stack_frame
-                .as_mut()
-                .extract_inner()
-                .clone_from(&self.pushed_register_state);
+        match core::mem::replace(self, ThreadContext::Invalid) {
+            ThreadContext::Running(msg) => {
+                *self = ThreadContext::Scheduled(SavedThreadState::new(stack_frame, reg), msg)
+            }
+            e => panic!("thread was not running it was: {e:?}"),
         }
-        reg.clone_from(&self.register_state);
+    }
+    pub fn restore(&mut self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
+        match core::mem::replace(self, ThreadContext::Invalid) {
+            ThreadContext::Scheduled(state, msg) => unsafe {
+                stack_frame
+                    .as_mut()
+                    .extract_inner()
+                    .clone_from(&state.interrupt_frame);
+                reg.clone_from(&state.register_state);
+                *self = ThreadContext::Running(msg);
+            },
+            e => panic!("thread was not scheduled it was: {e:?}"),
+        }
     }
 }
 
