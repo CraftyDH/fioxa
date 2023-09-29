@@ -25,16 +25,17 @@ use crate::{
     gdt,
     paging::{
         offset_map::map_gop,
-        page_allocator::{request_page, Allocated32Page, AllocatedPage},
-        page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
+        page_allocator::Allocated32Page,
+        page_mapper::PageMapperManager,
+        page_table_manager::{Mapper, Page, Size4KB},
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
     BOOT_INFO,
 };
 
-const STACK_ADDR: u64 = 0x100_000_000_000;
+pub const STACK_ADDR: u64 = 0x100_000_000_000;
 
-const STACK_SIZE: u64 = 1024 * 12;
+pub const STACK_SIZE: u64 = 1024 * 12;
 
 fn generate_next_process_id() -> ProcessID {
     static PID: AtomicU64 = AtomicU64::new(0);
@@ -80,8 +81,7 @@ pub struct ProcessThreads {
 }
 
 pub struct ProcessMemory {
-    pub page_mapper: PageTable<'static, PageLvl4>,
-    pub owned_pages: Vec<AllocatedPage>,
+    pub page_mapper: PageMapperManager<'static>,
     pub owned32_pages: Vec<Allocated32Page>,
 }
 
@@ -93,18 +93,16 @@ pub struct ProcessMessages {
 
 impl Process {
     pub fn new(privilege: ProcessPrivilige, args: &[u8]) -> Arc<Self> {
-        let pml4 = request_page().unwrap();
-        let mut page_mapper = unsafe { PageTable::<PageLvl4>::from_page(*pml4) };
-        let owned_pages = vec![pml4];
+        let mut page_mapper = PageMapperManager::new();
 
         unsafe {
-            page_mapper.set_next_table(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
-            page_mapper.set_next_table(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
-            page_mapper.set_next_table(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
-            page_mapper.set_next_table(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
-            map_gop(&mut page_mapper, &(*BOOT_INFO).gop);
-            page_mapper
-                .identity_map_memory(Page::<Size4KB>::containing(0xfee000b0))
+            let m = page_mapper.get_mapper_mut();
+            m.set_next_table(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
+            m.set_next_table(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
+            m.set_next_table(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
+            m.set_next_table(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
+            map_gop(m, &(*BOOT_INFO).gop);
+            m.identity_map_memory(Page::<Size4KB>::containing(0xfee000b0))
                 .unwrap()
                 .ignore();
         }
@@ -115,7 +113,6 @@ impl Process {
             args: args.to_vec(),
             memory: Mutex::new(ProcessMemory {
                 page_mapper,
-                owned_pages,
                 owned32_pages: Default::default(),
             }),
             threads: Default::default(),
@@ -123,45 +120,6 @@ impl Process {
         });
         s.threads.lock().proc_reference = Arc::downgrade(&s);
         s
-    }
-
-    pub unsafe fn new_with_page(
-        privilege: ProcessPrivilige,
-        page_mapper: PageTable<'static, PageLvl4>,
-        args: &[u8],
-    ) -> Arc<Self> {
-        let s = Arc::new(Self {
-            pid: generate_next_process_id(),
-            privilege,
-            args: args.to_vec(),
-            memory: Mutex::new(ProcessMemory {
-                page_mapper,
-                owned_pages: Vec::new(),
-                owned32_pages: Vec::new(),
-            }),
-            threads: Default::default(),
-            service_messages: Default::default(),
-        });
-        s.threads.lock().proc_reference = Arc::downgrade(&s);
-        s
-    }
-
-    // A in place thread which data will overriden with the real thread on its context switch out.
-    pub unsafe fn new_overide_thread(&self) -> Arc<Thread> {
-        let mut threads = self.threads.lock();
-        let tid = threads.get_next_id();
-
-        let thread: Arc<Thread> = Arc::new(Thread {
-            process: threads
-                .proc_reference
-                .upgrade()
-                .expect("process should still be alive"),
-            tid,
-            context: Mutex::new(ThreadContext::Running(None)),
-        });
-
-        threads.threads.insert(tid, thread.clone());
-        thread
     }
 
     pub fn new_thread_direct(
@@ -175,20 +133,10 @@ impl Process {
         // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0;
 
-        {
-            let mut memory = self.memory.lock();
-            for addr in (stack_base..(stack_base + STACK_SIZE - 1)).step_by(0x1000) {
-                let page = request_page().unwrap();
-
-                memory
-                    .page_mapper
-                    .map_memory(Page::new(addr), *page)
-                    .unwrap()
-                    .flush();
-
-                memory.owned_pages.push(page);
-            }
-        }
+        self.memory
+            .lock()
+            .page_mapper
+            .create_lazy_mapping(stack_base as usize, STACK_SIZE as usize);
 
         let interrupt_frame = InterruptStackFrameValue {
             instruction_pointer: VirtAddr::from_ptr(entry_point),
@@ -236,6 +184,20 @@ pub struct Thread {
     pub process: Arc<Process>,
     pub tid: ThreadID,
     pub context: Mutex<ThreadContext>,
+}
+
+impl Drop for Thread {
+    fn drop(&mut self) {
+        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.tid.0;
+
+        unsafe {
+            self.process
+                .memory
+                .lock()
+                .page_mapper
+                .free_mapping(stack_base as usize, STACK_SIZE as usize);
+        }
+    }
 }
 
 // Used for storing current msg, so that the popdata can get the data

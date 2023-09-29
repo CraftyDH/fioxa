@@ -5,6 +5,7 @@ use x86_64::{
 };
 
 use crate::{
+    cpu_localstorage::CPULocalStorageRW,
     gdt::{DOUBLE_FAULT_IST_INDEX, PAGE_FAULT_IST_INDEX},
     screen::gop::WRITER,
 };
@@ -112,10 +113,19 @@ extern "x86-interrupt" fn page_fault_handler(
     // WRITER.lock().pos.y = 0;
     let addr = Cr2::read();
 
-    println!("EXCEPTION: PAGE FAULT: {:?}", error_code);
-    println!(
-        "Accessed Address: {:?} by {:?}",
-        addr, stack_frame.instruction_pointer
-    );
-    loop {}
+    if error_code.contains(PageFaultErrorCode::complement(
+        PageFaultErrorCode::CAUSED_BY_WRITE
+            | PageFaultErrorCode::USER_MODE
+            | PageFaultErrorCode::INSTRUCTION_FETCH,
+    )) {
+        println!("EXCEPTION: PAGE FAULT: {:?}", error_code);
+        panic!(
+            "Accessed Address: {:?} by {:?}",
+            addr, stack_frame.instruction_pointer
+        );
+    } else {
+        let process = &CPULocalStorageRW::get_current_task().process;
+        let mut mem = process.memory.lock();
+        mem.page_mapper.page_fault_handler(addr.as_u64() as usize);
+    }
 }

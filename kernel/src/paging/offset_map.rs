@@ -25,7 +25,10 @@ pub unsafe fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMa
         );
 
         // println!("{:?}", r);
-        let pages = get_chunked_page_range(r.phys_start, r.phys_start + r.page_count * 0x1000);
+        let pages = get_chunked_page_range(
+            r.phys_start.max(0x1000), // Ignore the zero page for now
+            r.phys_start + r.page_count * 0x1000,
+        );
 
         for page in [pages.0, pages.4].into_iter() {
             for page in page.into_iter() {

@@ -133,8 +133,10 @@ where
 }
 
 #[inline]
-pub fn mmap_page(vmem: usize) {
-    unsafe { syscall!(MMAP_PAGE, vmem) };
+pub fn mmap_page(vmem: usize, length: usize) -> usize {
+    let mem;
+    unsafe { syscall!(MMAP_PAGE, vmem, length => mem) };
+    mem
 }
 
 #[inline]
@@ -145,8 +147,8 @@ pub fn mmap_page32() -> u32 {
 }
 
 #[inline]
-pub fn unmmap_page(vmem: usize) {
-    unsafe { syscall!(UNMMAP_PAGE, vmem) };
+pub fn unmmap_page(vmem: usize, mapping_length: usize) {
+    unsafe { syscall!(UNMMAP_PAGE, vmem, mapping_length) };
 }
 
 pub fn send_service_message<T: Serialize>(

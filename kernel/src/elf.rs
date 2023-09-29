@@ -1,22 +1,19 @@
-use core::cmp::{max, min};
-
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use kernel_userspace::{
     elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
     ids::ProcessID,
     service::{register_public_service, SendServiceMessageDest, ServiceMessage},
     syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
 };
+use x86_64::{align_down, align_up};
 
 use crate::{
     assembly::registers::Registers,
     paging::{
-        page_allocator::frame_alloc_exec,
-        page_table_manager::{Mapper, Page},
-        virt_addr_for_phys,
+        page_allocator::frame_alloc_exec, page_mapper::MaybeAllocatedPage, virt_addr_for_phys,
     },
     scheduling::{
-        process::Process,
+        process::{Process, ProcessPrivilige},
         taskmanager::{push_task_queue, PROCESSES},
         without_context_switch,
     },
@@ -30,79 +27,61 @@ pub fn load_elf<'a>(
     // Transpose the header as an elf header
     let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
-    validate_elf_header(elf_header)?;
-
-    let headers = (elf_header.e_phoff..((elf_header.e_phnum * elf_header.e_phentsize).into()))
-        .step_by(elf_header.e_phentsize.into());
-
-    let mut base = u64::MAX;
-    let mut size = u64::MIN;
-
-    println!("LOADING HEADERS...");
-    for program_header_ptr in headers.clone() {
-        let program_header =
-            unsafe { *(data.as_ptr().offset(program_header_ptr as isize) as *const Elf64Phdr) };
-        base = min(base, program_header.p_vaddr);
-        size = max(size, program_header.p_vaddr + program_header.p_memsz);
-    }
-
-    let mem_start = (base / 0x1000) * 0x1000;
-    // The size from start to finish
-    let size = size - base;
-    let pages_count = size / 4096 + 1;
+    validate_elf_header(&elf_header)?;
 
     let process = Process::new(
-        match kernel {
-            true => crate::scheduling::process::ProcessPrivilige::KERNEL,
-            false => crate::scheduling::process::ProcessPrivilige::USER,
+        if kernel {
+            ProcessPrivilige::KERNEL
+        } else {
+            ProcessPrivilige::USER
         },
         args,
     );
-    println!("ALLOCING MEM...");
-    let mut pages = frame_alloc_exec(|c| c.request_cont_pages(pages_count as usize))
-        .ok_or(LoadElfError::InternalError)?
-        .peekable();
 
-    assert_eq!(pages.len(), pages_count as usize);
-    let start = pages.peek().unwrap().get_address();
+    let headers = (elf_header.e_phoff..((elf_header.e_phnum * elf_header.e_phentsize).into()))
+        .step_by(elf_header.e_phentsize.into())
+        // Transpose the program header as an elf header
+        .map(|header| unsafe { &*(data.as_ptr().add(header as usize) as *const Elf64Phdr) });
 
-    {
-        let mut memory = process.memory.lock();
-
-        for (page, virt_addr) in pages.zip((mem_start..).step_by(0x1000)) {
-            memory
-                .page_mapper
-                .map_memory(Page::new(virt_addr), *page)
-                .map_err(|_| LoadElfError::InternalError)?
-                .ignore();
-            memory.owned_pages.push(page);
-        }
-    }
+    let mut memory = process.memory.lock();
 
     println!("COPYING MEM...");
     // Iterate over each header
-    for program_header_ptr in headers {
-        // Transpose the program header as an elf header
-        let program_header =
-            unsafe { *(data.as_ptr().add(program_header_ptr as usize) as *const Elf64Phdr) };
+    for program_header in headers {
         if program_header.p_type == PT_LOAD {
-            unsafe {
-                core::ptr::copy_nonoverlapping::<u8>(
-                    data.as_ptr().offset(
-                        program_header
-                            .p_offset
-                            .try_into()
-                            .map_err(|_| LoadElfError::InternalError)?,
-                    ),
-                    virt_addr_for_phys(start + program_header.p_vaddr - mem_start) as *mut u8,
-                    program_header
-                        .p_filesz
-                        .try_into()
-                        .map_err(|_| LoadElfError::InternalError)?,
-                )
+            let vstart = align_down(program_header.p_vaddr, 0x1000);
+            let vallocend = align_up(program_header.p_vaddr + program_header.p_filesz, 0x1000);
+            let vend = align_up(program_header.p_vaddr + program_header.p_memsz, 0x1000);
+
+            let pages: Box<[_]> =
+                frame_alloc_exec(|c| c.request_cont_pages((vallocend - vstart) as usize / 0x1000))
+                    .ok_or(LoadElfError::InternalError)?
+                    .map(|a| MaybeAllocatedPage::from(a))
+                    // if there is extra space lazy allocate the zeros
+                    .chain((0..((vend - vallocend) / 0x1000)).map(|_| MaybeAllocatedPage::new()))
+                    .collect();
+
+            let first = pages[0].get();
+            memory.page_mapper.create_mapping_with_alloc(
+                vstart as usize,
+                (vend - vstart) as usize,
+                pages,
+            );
+
+            // If all zeros we don't need to copy anything
+            if let Some(first) = first {
+                let start = first.get_address();
+                unsafe {
+                    core::ptr::copy_nonoverlapping::<u8>(
+                        data.as_ptr().add(program_header.p_offset as usize),
+                        virt_addr_for_phys(start + program_header.p_vaddr - vstart) as *mut u8,
+                        program_header.p_filesz as usize,
+                    )
+                }
             }
         }
     }
+    drop(memory);
     println!("STARTING PROC...");
     let tid = process.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
     let thread = Arc::downgrade(&tid);
@@ -120,24 +99,16 @@ pub fn elf_new_process_loader() {
     register_public_service("ELF_LOADER", sid, &mut Vec::new());
 
     let mut message_buffer = Vec::new();
-    let mut tmp_prog_buffer = Vec::new();
+    let mut send_buffer = Vec::new();
     loop {
         let query: ServiceMessage<(&[u8], &[u8], bool)> =
             receive_service_message_blocking(sid, &mut message_buffer).unwrap();
 
         let (elf, args, kernel) = query.message;
 
-        // TODO: FIX
-        // This is a really bad fix to an aligned start address for the buffer
-        // let data = data.to_vec();
-        tmp_prog_buffer.reserve(elf.len());
-        unsafe {
-            tmp_prog_buffer.set_len(elf.len());
-        }
-        tmp_prog_buffer.copy_from_slice(elf);
         println!("LOADING...");
 
-        let resp = load_elf(&tmp_prog_buffer, args, kernel);
+        let resp = load_elf(elf, args, kernel);
 
         send_service_message(
             &ServiceMessage {
@@ -147,7 +118,7 @@ pub fn elf_new_process_loader() {
                 destination: SendServiceMessageDest::ToProcess(query.sender_pid),
                 message: resp,
             },
-            &mut message_buffer,
+            &mut send_buffer,
         )
         .unwrap();
     }

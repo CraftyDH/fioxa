@@ -8,7 +8,7 @@ use crate::{
     syscall::{get_pid, send_and_get_response_service_message},
 };
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 pub struct Elf64Ehdr {
     pub e_ident: [u8; 16],
@@ -27,7 +27,7 @@ pub struct Elf64Ehdr {
     pub e_shstrndx: u16,
 }
 
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 pub struct Elf64Phdr {
     pub p_type: u32,

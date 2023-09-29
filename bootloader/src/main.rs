@@ -64,10 +64,10 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
 
     let stack = unsafe {
         let stack = boot_services
-            .allocate_pool(MemoryType::LOADER_DATA, 1024 * 12) // 5 Mb
+            .allocate_pool(MemoryType::LOADER_DATA, 0x1000 * 25) // 100 KB
             .unwrap();
-        core::ptr::write_bytes(stack, 0, 1024 * 12);
-        stack.add(1024 * 12)
+        core::ptr::write_bytes(stack, 0, 0x1000 * 25);
+        stack.add(0x1000 * 25)
     };
 
     // Create a memory region to store the boot info in

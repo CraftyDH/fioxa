@@ -13,7 +13,7 @@ use crate::{
     lapic::{enable_localapic, LAPIC_ADDR},
     paging::{
         page_allocator::frame_alloc_exec,
-        page_table_manager::{Mapper, Page, PageTable, Size4KB},
+        page_table_manager::{Mapper, Page, Size4KB},
         MemoryLoc, KERNEL_MAP,
     },
     scheduling::taskmanager::{self, core_start_multitasking},
@@ -120,9 +120,7 @@ pub fn boot_aps(madt: &Madt) {
     }
 
     unsafe {
-        let mapper = PageTable::from_page(KERNEL_MAP.lock().into_page());
-
-        taskmanager::init(mapper, n_cores.try_into().unwrap());
+        taskmanager::init(n_cores.try_into().unwrap());
     }
 
     KERNEL_MAP

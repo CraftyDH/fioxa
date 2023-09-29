@@ -12,10 +12,7 @@ use crate::{
     assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
     gdt::TASK_SWITCH_INDEX,
-    paging::{
-        page_allocator::{frame_alloc_exec, request_page},
-        page_table_manager::{Mapper, Page, Size4KB},
-    },
+    paging::{page_allocator::frame_alloc_exec, page_table_manager::Mapper},
     scheduling::taskmanager,
     service,
     time::{pit::get_uptime, spin_sleep_ms},
@@ -153,22 +150,14 @@ fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
     }
 }
 
-fn mmap_page_handler(regs: &Registers) -> Result<(), &'static str> {
+fn mmap_page_handler(regs: &mut Registers) -> Result<(), &'static str> {
     assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
 
     let task = CPULocalStorageRW::get_current_task();
 
-    let page = request_page().ok_or("OOM")?;
-
     let mut memory = task.process.memory.lock();
 
-    memory
-        .page_mapper
-        .map_memory(Page::<Size4KB>::new(regs.r8 as u64), *page)
-        .map_err(|_| "FAULT (failed to map)")?
-        .flush();
-
-    memory.owned_pages.push(page);
+    regs.rax = memory.page_mapper.create_lazy_mapping(regs.r8, regs.r9);
     Ok(())
 }
 
@@ -180,13 +169,14 @@ fn mmap_page32_handler(regs: &mut Registers) -> Result<(), &'static str> {
     regs.rax = page.get_address() as usize;
 
     let mut memory = task.process.memory.lock();
-
-    memory
-        .page_mapper
-        .identity_map_memory(*page)
-        .map_err(|_| "FAULT (failed to map)")?
-        .flush();
-
+    unsafe {
+        memory
+            .page_mapper
+            .get_mapper_mut()
+            .identity_map_memory(*page)
+            .map_err(|_| "FAULT (failed to map)")?
+            .flush();
+    }
     memory.owned32_pages.push(page);
     Ok(())
 }
@@ -195,29 +185,12 @@ fn unmmap_page_handler(regs: &Registers) -> Result<(), String> {
     assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
 
     let task = CPULocalStorageRW::get_current_task();
-    let page = Page::<Size4KB>::new(regs.r8 as u64);
 
     let mut memory = task.process.memory.lock();
 
-    let phys_page = memory
-        .page_mapper
-        .get_phys_addr(page)
-        .ok_or("SEGFAULT: tried to unmap not mapped page")?;
-
-    let pos = memory
-        .owned_pages
-        .iter()
-        .position(|e| e.get_address() == phys_page)
-        .ok_or("SEGFAULT: process tried to unmap not owned memory")?;
-
-    memory
-        .page_mapper
-        .unmap_memory(page)
-        .map_err(|e| format!("SEGFAULT: couldn't unmap memory: {e}"))?
-        .flush();
-
-    // The memory should be freed by the allocated page destructor
-    memory.owned_pages.swap_remove(pos);
+    unsafe {
+        memory.page_mapper.free_mapping(regs.r8, regs.r9);
+    }
     Ok(())
 }
 

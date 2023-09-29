@@ -10,6 +10,7 @@ use self::{
 pub mod offset_map;
 pub mod page_allocator;
 pub mod page_directory;
+pub mod page_mapper;
 pub mod page_table_manager;
 
 pub const fn gen_lvl3_map() -> Lazy<Mutex<PageTable<'static, PageLvl3>>> {

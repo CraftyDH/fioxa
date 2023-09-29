@@ -16,7 +16,7 @@ use crate::{
     assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
     interrupts::check_interrupts,
-    paging::page_table_manager::{PageLvl4, PageTable},
+    scheduling::process::{ThreadContext, STACK_ADDR, STACK_SIZE},
     time::pit::is_switching_tasks,
 };
 
@@ -54,25 +54,53 @@ pub unsafe fn core_start_multitasking() -> ! {
         core::arch::asm!("hlt");
     }
 
-    // initialize cpulocalstorage with task details
     let cpuid = ThreadID(CPULocalStorageRW::get_core_id() as u64);
-    let mgmt_task = PROCESSES
-        .lock()
-        .get(&ProcessID(0))
-        .expect("processID(0) should exist")
-        .threads
-        .lock()
-        .threads
-        .get(&cpuid)
-        .expect("thread for this core should exist")
-        .clone();
+    let cr3 = {
+        // initialize cpulocalstorage with task details
+        let process = PROCESSES
+            .lock()
+            .get(&ProcessID(0))
+            .expect("processID(0) should exist")
+            .clone();
+        let cr3 = process
+            .memory
+            .lock()
+            .page_mapper
+            .get_mapper_mut()
+            .into_page()
+            .get_address();
+        let mgmt_task = process
+            .threads
+            .lock()
+            .threads
+            .get(&cpuid)
+            .expect("thread for this core should exist")
+            .clone();
 
-    CPULocalStorageRW::set_core_mgmt_task(mgmt_task.clone());
-    CPULocalStorageRW::set_current_task(mgmt_task);
+        // we are running
+        *mgmt_task.context.lock() = ThreadContext::Running(None);
 
-    CPULocalStorageRW::set_current_pid(ProcessID(0));
-    CPULocalStorageRW::set_current_tid(cpuid);
+        CPULocalStorageRW::set_core_mgmt_task(mgmt_task.clone());
+        CPULocalStorageRW::set_current_task(mgmt_task);
 
+        CPULocalStorageRW::set_current_pid(ProcessID(0));
+        CPULocalStorageRW::set_current_tid(cpuid);
+        cr3
+    };
+
+    let stack = STACK_ADDR + (STACK_SIZE + 0x1000) * cpuid.0 + STACK_SIZE;
+    let task = core_mgmt_task as u64;
+
+    core::arch::asm!(
+        "mov cr3, {}; mov rsp, {}; jmp {}",
+        in (reg) cr3,
+        in (reg) stack,
+        in (reg) task,
+        options(noreturn)
+    );
+}
+
+extern "C" fn core_mgmt_task() -> ! {
     // Init complete, start executing tasks
     CPULocalStorageRW::set_stay_scheduled(false);
 
@@ -84,7 +112,7 @@ pub unsafe fn core_start_multitasking() -> ! {
             kernel_userspace::syscall::yield_now();
         } else {
             // no interrupts to handle so sleep
-            core::arch::asm!("hlt");
+            unsafe { core::arch::asm!("hlt") };
         }
     }
 }
@@ -109,19 +137,15 @@ fn get_next_task() -> Arc<Thread> {
     }
 }
 
-pub unsafe fn init(mapper: PageTable<'static, PageLvl4>, core_cnt: u8) {
+pub unsafe fn init(core_cnt: u8) {
     CORE_COUNT
         .try_init_once(|| core_cnt)
         .expect("CORE_COUNT shouldn't have been inited yet");
-    let process = Process::new_with_page(
-        crate::scheduling::process::ProcessPrivilige::KERNEL,
-        mapper,
-        &[],
-    );
+    let process = Process::new(crate::scheduling::process::ProcessPrivilige::USER, &[]);
     assert!(process.pid == ProcessID(0));
 
     for _ in 0..core_cnt {
-        unsafe { process.new_overide_thread() };
+        process.new_thread_direct(0 as *const u64, Registers::default());
     }
     let pid = process.pid;
     PROCESSES.lock().insert(pid, process);
@@ -142,7 +166,15 @@ pub fn load_new_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers)
 
     // If we are switching processes update page tables
     if CPULocalStorageRW::get_current_pid() != thread.process.pid {
-        unsafe { thread.process.memory.lock().page_mapper.load_into_cr3() }
+        unsafe {
+            thread
+                .process
+                .memory
+                .lock()
+                .page_mapper
+                .get_mapper_mut()
+                .load_into_cr3()
+        }
         CPULocalStorageRW::set_current_pid(thread.process.pid);
     }
 

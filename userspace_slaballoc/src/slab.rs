@@ -17,7 +17,6 @@ struct ListNode {
 
 pub struct SlabAllocator {
     slab_heads: [Option<&'static mut ListNode>; SLAB_SIZES.len()],
-    base_address: u64,
 }
 
 impl SlabAllocator {
@@ -26,7 +25,6 @@ impl SlabAllocator {
 
         Self {
             slab_heads: [EMPTY; SLAB_SIZES.len()],
-            base_address: 0x7F0000000000,
         }
     }
 }
@@ -48,10 +46,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     let block_size = SLAB_SIZES[index];
                     // Only works if all blocks are powers of 2
 
-                    let base = allocator.base_address;
-                    allocator.base_address += 0x1000;
-
-                    mmap_page(base as usize);
+                    let base = mmap_page(0, 0x1000);
 
                     let mut current_node = None;
                     for block in (base..(base + 0x1000)).step_by(block_size) {
@@ -65,18 +60,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     nxt as *mut ListNode as *mut u8
                 }
             },
-            None => {
-                // Round to next page
-                let length = ((min_size + 0xFFF) & !0xFFF) as u64;
-
-                let base = allocator.base_address;
-                allocator.base_address += length;
-
-                for page in (base..(base + length)).step_by(0x1000) {
-                    mmap_page(page as usize);
-                }
-                base as *mut u8
-            }
+            None => mmap_page(0, min_size as usize) as *mut u8,
         }
     }
 
@@ -97,11 +81,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                 allocator.slab_heads[index] = Some(&mut *new_node_ptr);
             }
             None => {
-                let base = ptr as u64;
-                // We assume that we allocted cont pages
-                for page in (base..(base + max_size as u64)).step_by(0x1000) {
-                    unmmap_page(page as usize);
-                }
+                unmmap_page(ptr as usize, max_size);
             }
         }
     }

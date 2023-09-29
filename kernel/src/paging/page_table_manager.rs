@@ -1,7 +1,7 @@
 pub mod map;
 pub mod walk;
 
-use core::marker::PhantomData;
+use core::{marker::PhantomData, num::NonZeroU64};
 
 use thiserror::Error;
 
@@ -53,16 +53,16 @@ impl PageSize for Size1GB {
 
 #[derive(Debug)]
 pub struct Page<S: PageSize> {
-    address: u64,
+    address: NonZeroU64,
     _size: core::marker::PhantomData<S>,
 }
 
 impl<S: PageSize> Page<S> {
-    pub const fn get_address(&self) -> u64 {
-        self.address
+    pub fn get_address(&self) -> u64 {
+        self.address.into()
     }
 
-    pub const fn new(address: u64) -> Self {
+    pub fn new(address: u64) -> Self {
         assert!(
             address & (S::PAGE_SIZE - 1) == 0,
             "Address must be a multiple of page size"
@@ -77,12 +77,12 @@ impl<S: PageSize> Page<S> {
         );
 
         Page {
-            address,
+            address: address.try_into().expect("page address should not be zero"),
             _size: core::marker::PhantomData,
         }
     }
 
-    pub const fn containing(address: u64) -> Self {
+    pub fn containing(address: u64) -> Self {
         Self::new(address & !(S::PAGE_SIZE - 1))
     }
 }
@@ -327,11 +327,11 @@ impl<S: PageLevel + LvlSize> PageTable<'_, S> {
 
         entry.set_present(true);
         entry.set_larger_pages(S::Size::LARGE_PAGE);
-        entry.set_address(to.address);
+        entry.set_address(to.address.into());
         entry.set_read_write(true);
         entry.set_user_super(true);
 
-        Ok(Flusher(from.address))
+        Ok(Flusher(from.address.into()))
     }
 
     fn unmap_memory_inner(&mut self, page: Page<S::Size>) -> Result<Flusher, UnMapMemoryError> {
@@ -344,7 +344,7 @@ impl<S: PageLevel + LvlSize> PageTable<'_, S> {
         entry.set_present(false);
         entry.set_address(0);
 
-        Ok(Flusher(page.address))
+        Ok(Flusher(page.address.into()))
     }
 
     fn get_phys_addr_inner(&self, page: Page<S::Size>) -> Option<u64> {
@@ -391,6 +391,10 @@ where
 pub struct Flusher(u64);
 
 impl Flusher {
+    pub fn new(addr: u64) -> Self {
+        Self(addr)
+    }
+
     pub fn flush(self) {
         unsafe {
             core::arch::asm!("invlpg [{}]", in(reg) self.0, options(nostack, preserves_flags))
