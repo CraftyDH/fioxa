@@ -7,8 +7,7 @@ use conquer_once::spin::Lazy;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ids::{ProcessID, ServiceID},
-    proc::{PID, TID},
+    ids::{ProcessID, ServiceID, ThreadID},
     service::{SendError, ServiceMessage, ServiceTrackingNumber},
 };
 
@@ -98,7 +97,7 @@ pub fn yield_now() {
     unsafe { syscall!(YIELD_NOW) };
 }
 
-pub fn spawn_process<F>(func: F, args: &[u8], kernel: bool) -> PID
+pub fn spawn_process<F>(func: F, args: &[u8], kernel: bool) -> ProcessID
 where
     F: Fn() + Send + Sync + 'static,
 {
@@ -118,10 +117,10 @@ where
             => res
         )
     }
-    PID::from(res)
+    ProcessID(res)
 }
 
-pub fn spawn_thread<F>(func: F) -> TID
+pub fn spawn_thread<F>(func: F) -> ThreadID
 where
     F: FnOnce() + Send + Sync + 'static,
 {
@@ -129,7 +128,7 @@ where
     let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
     let res: u64;
     unsafe { syscall!(SPAWN_THREAD, raw => res) }
-    res.into()
+    ThreadID(res)
 }
 
 #[inline]

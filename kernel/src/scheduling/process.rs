@@ -64,6 +64,8 @@ impl ProcessPrivilige {
 }
 
 pub struct Process {
+    // a reference to the process so that we can clone it for threads (it is weak to avoid a circular chain)
+    this: Weak<Process>,
     pub pid: ProcessID,
     pub threads: Mutex<ProcessThreads>,
     privilege: ProcessPrivilige,
@@ -74,8 +76,6 @@ pub struct Process {
 
 #[derive(Default)]
 pub struct ProcessThreads {
-    // a reference to the process so that we can clone it for threads (it is weak to avoid a circular chain)
-    proc_reference: Weak<Process>,
     thread_next_id: u64,
     pub threads: BTreeMap<ThreadID, Arc<Thread>>,
 }
@@ -107,7 +107,8 @@ impl Process {
                 .ignore();
         }
 
-        let s = Arc::new(Self {
+        let s = Arc::new_cyclic(|this| Self {
+            this: this.clone(),
             pid: generate_next_process_id(),
             privilege,
             args: args.to_vec(),
@@ -118,7 +119,6 @@ impl Process {
             threads: Default::default(),
             service_messages: Default::default(),
         });
-        s.threads.lock().proc_reference = Arc::downgrade(&s);
         s
     }
 
@@ -147,7 +147,7 @@ impl Process {
         };
 
         let thread = Arc::new(Thread {
-            process: threads.proc_reference.upgrade().unwrap(),
+            process: self.this.upgrade().unwrap(),
             tid,
             context: Mutex::new(ThreadContext::Scheduled(
                 SavedThreadState {

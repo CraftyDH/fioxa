@@ -11,6 +11,5 @@ pub mod ids;
 pub mod input;
 pub mod net;
 pub mod pci;
-pub mod proc;
 pub mod service;
 pub mod syscall;

@@ -8,7 +8,7 @@ extern crate userspace_slaballoc;
 
 pub mod bitfields;
 
-use core::{mem::size_of, slice};
+use core::{iter::Cycle, mem::size_of, ops::Range, slice};
 
 use alloc::{sync::Arc, vec::Vec};
 use conquer_once::spin::Lazy;
@@ -193,7 +193,9 @@ pub struct PCNET<'b> {
     io: PCNETIOPort,
     init_block: &'b mut InitBlock,
     send_buffer_desc: &'b mut [BufferDescriptor],
+    send_buffer_pos: Cycle<Range<usize>>,
     recv_buffer_desc: &'b mut [BufferDescriptor],
+    revc_buffer_pos: Cycle<Range<usize>>,
     owned_pages: Vec<u32>,
 }
 
@@ -286,7 +288,9 @@ impl PCNET<'_> {
         let mut this = Self {
             io: port,
             init_block,
+            send_buffer_pos: (0..send_buffer_desc.len()).cycle(),
             send_buffer_desc,
+            revc_buffer_pos: (0..recv_buffer_desc.len()).cycle(),
             recv_buffer_desc,
             owned_pages,
         };
@@ -351,7 +355,12 @@ impl PCNET<'_> {
 
 impl PCNET<'_> {
     fn send_packet(&mut self, data: &[u8]) -> Result<(), SendError> {
-        for buffer_desc in self.send_buffer_desc.iter_mut() {
+        for buffer in self
+            .send_buffer_pos
+            .by_ref()
+            .take(self.send_buffer_desc.len())
+        {
+            let buffer_desc = &mut self.send_buffer_desc[buffer];
             // Find a buffer which we own
             if buffer_desc.flags & 0x80000000 == 0 {
                 let send_buffer = unsafe {
@@ -381,7 +390,12 @@ impl PCNET<'_> {
     }
 
     pub fn receive(&mut self) {
-        for buffer_desc in self.recv_buffer_desc.iter_mut() {
+        for buffer in self
+            .revc_buffer_pos
+            .by_ref()
+            .take(self.recv_buffer_desc.len())
+        {
+            let buffer_desc = &mut self.recv_buffer_desc[buffer];
             let flags = buffer_desc.flags;
             if flags & 0x80000000 == 0 {
                 if flags & 0x40000000 == 0 && flags & 0x03000000 > 0 {
