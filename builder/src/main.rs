@@ -32,22 +32,30 @@ const TO_BUILD: &[(&'static str, &'static str)] = &[
 ];
 
 fn main() -> Result<()> {
+    if args().any(|a| a == "clean") {
+        for (package, _) in TO_BUILD {
+            clean(package)?;
+        }
+        return Ok(());
+    }
+
     let mut dirs = DirBuilder::new();
 
     dirs.recursive(true).create("fioxa/EFI/BOOT")?;
     copy("assets/startup.nsh", "fioxa/startup.nsh")?;
     copy("assets/zap-light16.psf", "fioxa/font.psf")?;
 
+    let release = args().any(|a| a == "--release");
+
     for (package, out) in TO_BUILD {
-        let exec_path = build(package).with_context(|| format!("Failed to build {}", package))?;
+        let exec_path =
+            build(package, release).with_context(|| format!("Failed to build {}", package))?;
         copy(exec_path, format!("fioxa/{}", out)).with_context(|| {
             format!("Failed to copy the output of {} to fioxa/{}", package, out)
         })?;
     }
 
-    let mut args = args();
-
-    if args.any(|a| a == "qemu") {
+    if args().any(|a| a == "qemu") {
         qemu().context("Failed to launch qemu")?;
     }
 
@@ -139,15 +147,32 @@ fn qemu() -> Result<()> {
     Ok(())
 }
 
-fn build(name: &str) -> Result<Utf8PathBuf> {
+fn clean(name: &str) -> Result<()> {
     // Build subprocess
     let mut cargo = Command::new("cargo")
         .current_dir(format!("../{}", name))
-        .args([
-            "build",
-            // "--release",
-            "--message-format=json-render-diagnostics",
-        ])
+        .args(["clean"])
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Failed to clean")?;
+
+    if cargo.wait()?.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!("Failed to clean"))
+    }
+}
+
+fn build(name: &str, release: bool) -> Result<Utf8PathBuf> {
+    let mut args = vec!["build", "--message-format=json-render-diagnostics"];
+    if release {
+        args.push("--release");
+    }
+
+    // Build subprocess
+    let mut cargo = Command::new("cargo")
+        .current_dir(format!("../{}", name))
+        .args(args)
         .stdout(Stdio::piped())
         .spawn()
         .context("Failed to builds")?;

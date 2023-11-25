@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(pointer_byte_offsets)]
 
 #[allow(unused_imports)]
 #[macro_use]
