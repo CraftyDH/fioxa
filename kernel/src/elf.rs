@@ -67,7 +67,7 @@ pub fn load_elf<'a>(
             memory
                 .page_mapper
                 .insert_mapping_at(vstart as usize, PageMapping::new_lazy_prealloc(pages))
-                .unwrap();
+                .ok_or(LoadElfError::InternalError)?;
 
             // If all zeros we don't need to copy anything
             if let Some(first) = first {

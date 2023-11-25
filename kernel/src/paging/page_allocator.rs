@@ -3,7 +3,7 @@ use core::{
     ops::{Deref, DerefMut},
 };
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 use bit_field::{BitArray, BitField};
 
 use bootloader::uefi::table::boot::MemoryType;
@@ -185,7 +185,7 @@ pub struct MemoryRegion {
 }
 
 pub struct PageFrameAllocator {
-    page_bitmap: Box<[MemoryRegion]>,
+    page_bitmap: Vec<MemoryRegion>,
     /// Bitmap of memory region below 16 bits
     reserved_16bit_bitmap: u16,
     // 32 Megs of 32bit memory
@@ -218,7 +218,11 @@ impl PageFrameAllocator {
         // Memory types we will use
         let mut conventional = mmap
             .map(|r| unsafe { &*virt_addr_offset(r) })
-            .filter(|r| r.ty == MemoryType::CONVENTIONAL)
+            .filter(|r| {
+                r.ty == MemoryType::CONVENTIONAL
+                    || r.ty == MemoryType::BOOT_SERVICES_CODE
+                    || r.ty == MemoryType::BOOT_SERVICES_DATA
+            })
             .map(|r| MemAddr {
                 phys_start: r.phys_start,
                 page_count: r.page_count,
@@ -266,7 +270,7 @@ impl PageFrameAllocator {
 
         let total_usable_pages = conventional.clone().map(|m| m.page_count as usize).sum();
 
-        let page_bitmap: Box<[MemoryRegion]> = conventional
+        let page_bitmap: Vec<MemoryRegion> = conventional
             .map(|mut map| {
                 // the bump page alloctor doesn't hand out the first u32 page larger that reserved
                 if let None = reserved_32bit_mem_region {
@@ -300,6 +304,11 @@ impl PageFrameAllocator {
                 }
             })
             .collect();
+
+        println!(
+            "TOTAL FREE MEMORY: {} Mb",
+            total_usable_pages * 0x1000 / 1024 / 1024
+        );
 
         let mut alloc = Self {
             page_bitmap,

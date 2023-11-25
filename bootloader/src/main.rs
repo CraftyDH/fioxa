@@ -81,7 +81,7 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
     // Add a few extra bytes of space, since this allocation will increase the mmap size
     let size = mmap_size.map_size + 0x1000 - 1;
     let mmap_ptr = boot_services
-        .allocate_pool(MemoryType::BOOT_SERVICES_DATA, size)
+        .allocate_pool(MemoryType::LOADER_DATA, size)
         .unwrap();
 
     boot_info.mmap_buf = mmap_ptr;

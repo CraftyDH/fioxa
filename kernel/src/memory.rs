@@ -88,7 +88,10 @@ impl Iterator for MemoryMapUsuableIter {
         loop {
             let res = self.map.next()?;
             let val = unsafe { &*(virt_addr_offset(res)) };
-            if val.ty == MemoryType::CONVENTIONAL {
+            if val.ty == MemoryType::CONVENTIONAL
+                || val.ty == MemoryType::BOOT_SERVICES_CODE
+                || val.ty == MemoryType::BOOT_SERVICES_DATA
+            {
                 if !self.u32_bits_reserved {
                     // these things to skip are important as the proper allocator assumes they will not have been allocated
                     if val.phys_start <= u16::MAX.into() {
