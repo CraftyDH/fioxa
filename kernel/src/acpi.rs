@@ -2,10 +2,7 @@ use core::ptr::NonNull;
 
 use acpi::{AcpiError, AcpiHandler, AcpiTables, PhysicalMapping};
 
-use crate::paging::{
-    get_uefi_active_mapper,
-    page_table_manager::{Mapper, Page, Size4KB},
-};
+use crate::{cpu_localstorage::CPULocalStorageRW, paging::page_mapper::PageMapping};
 
 pub fn prepare_acpi(rsdp: usize) -> Result<AcpiTables<FioxaAcpiHandler>, AcpiError> {
     let root_acpi_handler = unsafe { acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, rsdp) }?;
@@ -26,37 +23,37 @@ impl AcpiHandler for FioxaAcpiHandler {
         physical_address: usize,
         size: usize,
     ) -> acpi::PhysicalMapping<Self, T> {
-        let mut mapper = get_uefi_active_mapper();
+        let thread = CPULocalStorageRW::get_current_task();
 
-        let start = physical_address & !0xFFF;
+        let base = physical_address & !0xFFF;
         let end = (physical_address + size + 0xFFF) & !0xFFF;
+        let mapped_size = end - base;
 
-        for page in (start..end).step_by(0x1000) {
-            mapper
-                .identity_map_memory(Page::<Size4KB>::new(page as u64))
-                .unwrap()
-                .flush();
-        }
+        let mut mem = thread.process.memory.lock();
+
+        let vaddr_base = mem
+            .page_mapper
+            .insert_mapping(PageMapping::new_mmap(base, mapped_size));
 
         PhysicalMapping::new(
-            start,
-            NonNull::new(physical_address as *mut T).unwrap(),
+            physical_address,
+            NonNull::new((vaddr_base + (physical_address & 0xFFF)) as *mut T).unwrap(),
             size,
-            end - start,
+            mapped_size,
             self.clone(),
         )
     }
 
     fn unmap_physical_region<T>(region: &acpi::PhysicalMapping<Self, T>) {
-        let mut mapper = unsafe { get_uefi_active_mapper() };
+        let thread = CPULocalStorageRW::get_current_task();
 
-        for page in (region.physical_start()..(region.physical_start() + region.mapped_length()))
-            .step_by(0x1000)
-        {
-            mapper
-                .unmap_memory(Page::<Size4KB>::new(page as u64))
-                .unwrap()
-                .flush();
+        let mut mem = thread.process.memory.lock();
+
+        let base = (region.virtual_start().as_ptr() as usize) & !0xFFF;
+
+        unsafe {
+            mem.page_mapper
+                .free_mapping(base..base + region.mapped_length())
         }
     }
 }

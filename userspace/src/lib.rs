@@ -3,4 +3,3 @@
 extern crate alloc;
 
 pub mod print;
-pub mod proc;

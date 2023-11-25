@@ -1,11 +1,10 @@
-use core::{cmp::Ordering, mem::MaybeUninit, ops::Range};
+use core::{cmp::Ordering, fmt::Debug, mem::MaybeUninit, ops::Range};
 
 use alloc::{boxed::Box, vec::Vec};
-use x86_64::{align_down, align_up};
 
 use super::{
-    page_allocator::{frame_alloc_exec, request_page, AllocatedPage},
-    page_table_manager::{Flusher, Mapper, Page, PageLvl4, PageTable, Size4KB},
+    page_allocator::{frame_alloc_exec, request_page, request_page_early, AllocatedPage},
+    page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB, UnMapMemoryError},
     MemoryLoc,
 };
 
@@ -14,15 +13,65 @@ pub struct PageMapperManager<'a> {
     page_mapper: PageTable<'a, PageLvl4>,
     // start offset, end offset, mapping
     // this should always be ordered
-    mappings: Vec<(Range<usize>, Box<[MaybeAllocatedPage]>)>,
+    mappings: Vec<(Range<usize>, PageMapping)>,
+}
+
+#[derive(Debug)]
+pub struct PageMapping {
+    size: usize,
+    mapping: PageMappingType,
+}
+
+pub enum PageMappingType {
+    MMAP { base_address: usize },
+    LazyMapping { pages: Box<[MaybeAllocatedPage]> },
+}
+
+impl Debug for PageMappingType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MMAP { base_address: _ } => f.debug_struct("MMAP").finish(),
+            Self::LazyMapping { pages: _ } => f.debug_struct("LazyMapping").finish(),
+        }
+    }
+}
+
+impl PageMapping {
+    pub fn new_lazy(size: usize) -> PageMapping {
+        let b = unsafe {
+            let mut b = Box::new_uninit_slice((size + 0xFFF) / 0x1000);
+            b.fill_with(|| MaybeUninit::new(MaybeAllocatedPage::new()));
+            b.assume_init()
+        };
+        PageMapping {
+            size,
+            mapping: PageMappingType::LazyMapping { pages: b },
+        }
+    }
+
+    pub fn new_lazy_prealloc(pages: Box<[MaybeAllocatedPage]>) -> Self {
+        Self {
+            size: pages.len() * 0x1000,
+            mapping: PageMappingType::LazyMapping { pages },
+        }
+    }
+
+    pub unsafe fn new_mmap(base_address: usize, size: usize) -> Self {
+        assert_eq!(base_address & 0xFFF, 0);
+        assert_eq!(size & 0xFFF, 0);
+        Self {
+            size,
+            mapping: PageMappingType::MMAP { base_address },
+        }
+    }
 }
 
 impl<'a> PageMapperManager<'a> {
     pub fn new() -> Self {
-        let pml4 = request_page().unwrap();
-        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(*pml4) };
+        let pml4 = unsafe { request_page_early().unwrap() };
+        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(pml4) };
         Self {
-            _pml4: pml4,
+            _pml4: unsafe { AllocatedPage::new(pml4) },
             page_mapper,
             mappings: Vec::new(),
         }
@@ -32,94 +81,45 @@ impl<'a> PageMapperManager<'a> {
         &mut self.page_mapper
     }
 
-    pub fn create_lazy_mapping(&mut self, start: usize, length: usize) -> usize {
-        let mut start = align_down(start as u64, 0x1000) as usize;
-        let length = align_up(length as u64, 0x1000) as usize;
-        let end;
+    pub fn insert_mapping_at(&mut self, base: usize, mapping: PageMapping) -> Option<()> {
+        assert!(base & 0xFFF == 0);
 
-        // get next available address
-        if start == 0 {
-            for maps in self.mappings.windows(2) {
-                // if there is enough space use it
-                if maps[0].0.end + 0x1000 + length <= maps[1].0.start {
-                    start = maps[0].0.end + 0x1000;
-                    break;
-                }
-            }
-            if start == 0 {
-                start = self.mappings.last().unwrap().0.end;
-            }
-            end = start + length;
-        } else {
-            end = start + length;
-            for (r, _) in &self.mappings {
-                if start <= r.end && r.start <= end {
-                    panic!("mapping already exists in the range")
-                }
-            }
-        }
-
-        if end > MemoryLoc::EndUserMem as usize {
-            panic!("cannot create kmapping")
-        }
-
-        let npages = length / 0x1000;
-        let b = unsafe {
-            let mut b = Box::new_uninit_slice(npages);
-            b.fill_with(|| MaybeUninit::new(MaybeAllocatedPage::new()));
-            b.assume_init()
-        };
-
-        let idx = self
-            .mappings
-            .binary_search_by(|(r, _)| r.start.cmp(&start))
-            .unwrap_err();
-
-        self.mappings.insert(idx, (start..end, b));
-        start
-    }
-
-    pub fn create_mapping_with_alloc(
-        &mut self,
-        start: usize,
-        length: usize,
-        pages: Box<[MaybeAllocatedPage]>,
-    ) {
-        assert_eq!(start & 0xFFF, 0);
-        let length = align_up(length as u64, 0x1000) as usize;
-        let end = start + length;
-        if end > MemoryLoc::EndUserMem as usize {
-            panic!("cannot create kmapping")
-        }
+        let end = base + mapping.size;
 
         for (r, _) in &self.mappings {
-            if start < r.end && r.start <= end {
-                panic!(
-                    "mapping already exists in the range {:#x}:{:#x} {:#x}:{:#x}",
-                    start, r.end, r.start, end
-                )
+            if base < r.end && r.start <= end {
+                panic!("mapping already exists in the range")
             }
-        }
-
-        // map all allocated pages
-        for (page, virt_addr) in pages
-            .iter()
-            .zip((start..).step_by(0x1000))
-            .filter_map(|(p, a)| Some((p.get()?, a)))
-        {
-            self.page_mapper
-                .map_memory(Page::new(virt_addr as u64), page)
-                // .map_err(|_| LoadElfError::InternalError)?
-                .unwrap()
-                .ignore();
         }
 
         let idx = self
             .mappings
-            .binary_search_by(|(r, _)| r.start.cmp(&start))
+            .binary_search_by(|(r, _)| r.start.cmp(&base))
             .unwrap_err();
 
-        self.mappings.insert(idx, (start..end, pages));
+        self.mappings.insert(idx, ((base..end), mapping));
+        Some(())
+    }
+
+    pub fn insert_mapping(&mut self, mapping: PageMapping) -> usize {
+        let idx = self
+            .mappings
+            .windows(2)
+            .position(|window| {
+                if let [left, right] = window {
+                    // add some padding
+                    left.0.end + 0x1000 + mapping.size <= right.0.start
+                } else {
+                    unreachable!()
+                }
+            })
+            .expect("there should've been space somewhere");
+
+        let base = self.mappings[idx].0.end + 0x1000;
+
+        self.mappings
+            .insert(idx + 1, ((base..base + mapping.size), mapping));
+        base
     }
 
     pub fn page_fault_handler(&mut self, address: usize) {
@@ -128,57 +128,61 @@ impl<'a> PageMapperManager<'a> {
         }
 
         // find the mapping that address is in
-        let idx = self
-            .mappings
-            .binary_search_by(|(r, _)| {
-                if r.start > address {
-                    Ordering::Greater
-                } else if r.end <= address {
-                    Ordering::Less
-                } else {
-                    Ordering::Equal
-                }
-            })
+        let idx = self.mappings.binary_search_by(|(r, _)| {
+            if r.start > address {
+                Ordering::Greater
+            } else if r.end <= address {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        });
+        let idx = idx
+            .map_err(|_| format!("couldn't find address {address:#x}"))
             .unwrap();
 
         let map = &mut self.mappings[idx];
-        let idx = ((address & !0xfff) - map.0.start) / 0x1000;
-        let page = &mut map.1[idx];
-        match page.0 {
-            Some(p) => {
-                // page was mapped but not flushed
-                Flusher::new(p.get_address()).flush();
+        let offset = address - map.0.start;
+        let phys = match &mut map.1.mapping {
+            PageMappingType::MMAP { base_address } => {
+                Page::containing((*base_address + offset) as u64)
             }
-            None => {
-                let apage = request_page().unwrap();
-                self.page_mapper
-                    .map_memory(Page::containing(address as u64), *apage)
-                    .unwrap()
-                    .flush();
-                page.set(apage);
+            PageMappingType::LazyMapping { pages } => {
+                let idx = offset / 0x1000;
+                let page = &mut pages[idx];
+                page.0.unwrap_or_else(|| {
+                    let apage = request_page().unwrap();
+                    let p = *apage;
+                    page.set(apage);
+                    p
+                })
             }
-        }
+        };
+        // Make the mapping
+        self.page_mapper
+            .map_memory(Page::<Size4KB>::containing(address as u64), phys)
+            .unwrap()
+            .flush()
     }
 
-    pub unsafe fn free_mapping(&mut self, start: usize, length: usize) {
-        assert_eq!(start & 0xFFF, 0);
-        let length = align_up(length as u64, 0x1000) as usize;
-        let end = start + length;
-
+    pub unsafe fn free_mapping(&mut self, range: Range<usize>) {
         let idx = self
             .mappings
-            .binary_search_by(|(r, _)| r.start.cmp(&start))
+            .binary_search_by(|el| el.0.clone().cmp(range.clone()))
             .unwrap();
+
         let m = self.mappings.remove(idx);
-        assert_eq!(m.0.len(), length);
-        for page in m.1.iter().zip((start..end).step_by(0x1000)) {
-            if let Some(_) = page.0 .0 {
-                self.page_mapper
-                    .unmap_memory(Page::<Size4KB>::new(page.1 as u64))
-                    .unwrap()
-                    .flush();
-                // TODO: Send IPI to flush on other threads
+        for page in m.0.step_by(0x1000) {
+            match self
+                .page_mapper
+                .unmap_memory(Page::<Size4KB>::new(page as u64))
+            {
+                Ok(f) => f.flush(),
+                Err(UnMapMemoryError::MemNotMapped(_)) => (),
+                Err(e) => panic!("Error unmapping {e:?}"),
             }
+
+            // TODO: Send IPI to flush on other threads
         }
     }
 }

@@ -10,7 +10,9 @@ use x86_64::{align_down, align_up};
 use crate::{
     assembly::registers::Registers,
     paging::{
-        page_allocator::frame_alloc_exec, page_mapper::MaybeAllocatedPage, virt_addr_for_phys,
+        page_allocator::frame_alloc_exec,
+        page_mapper::{MaybeAllocatedPage, PageMapping},
+        virt_addr_for_phys,
     },
     scheduling::{
         process::{Process, ProcessPrivilige},
@@ -62,11 +64,10 @@ pub fn load_elf<'a>(
                     .collect();
 
             let first = pages[0].get();
-            memory.page_mapper.create_mapping_with_alloc(
-                vstart as usize,
-                (vend - vstart) as usize,
-                pages,
-            );
+            memory
+                .page_mapper
+                .insert_mapping_at(vstart as usize, PageMapping::new_lazy_prealloc(pages))
+                .unwrap();
 
             // If all zeros we don't need to copy anything
             if let Some(first) = first {

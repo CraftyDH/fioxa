@@ -12,7 +12,9 @@ use crate::{
     assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
     gdt::TASK_SWITCH_INDEX,
-    paging::{page_allocator::frame_alloc_exec, page_table_manager::Mapper},
+    paging::{
+        page_allocator::frame_alloc_exec, page_mapper::PageMapping, page_table_manager::Mapper,
+    },
     scheduling::taskmanager,
     service,
     time::{pit::get_uptime, spin_sleep_ms},
@@ -157,7 +159,17 @@ fn mmap_page_handler(regs: &mut Registers) -> Result<(), &'static str> {
 
     let mut memory = task.process.memory.lock();
 
-    regs.rax = memory.page_mapper.create_lazy_mapping(regs.r8, regs.r9);
+    let lazy_page = PageMapping::new_lazy((regs.r9 + 0xFFF) & !0xFFF);
+
+    if regs.r8 == 0 {
+        regs.rax = memory.page_mapper.insert_mapping(lazy_page);
+    } else {
+        memory
+            .page_mapper
+            .insert_mapping_at(regs.r8, lazy_page)
+            .ok_or("MAPPING EXISTS")?;
+        regs.rax = regs.r8;
+    }
     Ok(())
 }
 
@@ -189,7 +201,9 @@ fn unmmap_page_handler(regs: &Registers) -> Result<(), String> {
     let mut memory = task.process.memory.lock();
 
     unsafe {
-        memory.page_mapper.free_mapping(regs.r8, regs.r9);
+        memory
+            .page_mapper
+            .free_mapping(regs.r8..regs.r8 + (regs.r9 + 0xFFF) & !0xFFF);
     }
     Ok(())
 }

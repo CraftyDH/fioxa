@@ -114,16 +114,15 @@ pub fn userspace_networking_main() {
     let sid = service_create();
     register_public_service("NETWORKING", sid, &mut Vec::new());
 
-    let pcnet;
     let mut buffer = Vec::new();
-    loop {
+    let pcnet = loop {
         if let Some(m) = get_public_service_id("PCNET", &mut buffer) {
-            pcnet = m;
-            service_subscribe(pcnet);
-            break;
+            break m;
         }
         yield_now();
-    }
+    };
+
+    service_subscribe(pcnet);
 
     println!("SIDS: {sid:?} {pcnet:?}");
 

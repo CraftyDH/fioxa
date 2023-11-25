@@ -4,6 +4,7 @@ use alloc::sync::Arc;
 use kernel_userspace::ids::{ProcessID, ThreadID};
 
 use crate::{
+    assembly::registers::Registers,
     gdt::CPULocalGDT,
     paging::{
         get_uefi_active_mapper,
@@ -11,7 +12,10 @@ use crate::{
         page_table_manager::{Mapper, Page},
         virt_addr_for_phys, MemoryLoc,
     },
-    scheduling::process::Thread,
+    scheduling::{
+        process::{Thread, ThreadContext},
+        taskmanager::PROCESSES,
+    },
 };
 
 #[repr(C, packed)]
@@ -131,14 +135,6 @@ impl CPULocalStorageRW {
         }
     }
 
-    pub unsafe fn set_core_mgmt_task(task: Arc<Thread>) {
-        let ptr = Arc::into_raw(task);
-
-        unsafe { localstorage_write!(ptr as u64 => core_mgmt_task_ptr: u64) }
-
-        let _ = task;
-    }
-
     pub fn get_current_task() -> Arc<Thread> {
         unsafe {
             let ptr = localstorage_read_imm!(current_task_ptr: u64);
@@ -190,6 +186,21 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     ls.current_tid = core_id as u64;
     ls.ticks_left = 0;
     ls.stay_scheduled = true;
+
+    let task = PROCESSES
+        .lock()
+        .get(&ProcessID(0))
+        .unwrap()
+        .new_thread_direct(0 as *const u64, Registers::default());
+
+    if task.tid.0 != core_id as u64 {
+        panic!("bad init order")
+    }
+
+    *task.context.lock() = ThreadContext::Running(None);
+
+    ls.core_mgmt_task_ptr = Arc::into_raw(task.clone()) as u64;
+    ls.current_task_ptr = Arc::into_raw(task) as u64;
 
     crate::gdt::create_gdt_for_core(unsafe { &mut *((vaddr_base + 0x1000) as *mut CPULocalGDT) });
 

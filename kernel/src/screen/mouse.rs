@@ -32,15 +32,13 @@ const MOUSE_POINTER: &[u16; 16] = &[
 
 pub fn monitor_cursor_task() {
     let mut buffer = Vec::new();
-    let mouse_id;
     // Poll the mouse until the service exists
-    loop {
+    let mouse_id = loop {
         if let Some(m) = get_public_service_id("INPUT:MOUSE", &mut buffer) {
-            mouse_id = m;
-            break;
+            break m;
         }
         yield_now();
-    }
+    };
     service_subscribe(mouse_id);
 
     let mut mouse_pos: Pos = Pos { x: 0, y: 0 };

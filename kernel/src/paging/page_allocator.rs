@@ -246,6 +246,9 @@ impl PageFrameAllocator {
             }
         }
 
+        // The boot ap trampoline using 0x8000
+        u16_mem.set_bit(0x8000 / 0x1000, true);
+
         // If there was mem the bitmap would have been cleared at that point
         if u16_mem == u16::MAX {
             panic!("No 16 bit memory found");

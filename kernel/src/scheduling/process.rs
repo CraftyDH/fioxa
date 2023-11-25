@@ -24,10 +24,9 @@ use crate::{
     assembly::registers::Registers,
     gdt,
     paging::{
-        offset_map::map_gop,
+        offset_map::{get_gop_range, map_gop},
         page_allocator::Allocated32Page,
-        page_mapper::PageMapperManager,
-        page_table_manager::{Mapper, Page, Size4KB},
+        page_mapper::{PageMapperManager, PageMapping},
         MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
     BOOT_INFO,
@@ -35,7 +34,7 @@ use crate::{
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 
-pub const STACK_SIZE: u64 = 1024 * 12;
+pub const STACK_SIZE: u64 = 0x10000;
 
 fn generate_next_process_id() -> ProcessID {
     static PID: AtomicU64 = AtomicU64::new(0);
@@ -101,10 +100,15 @@ impl Process {
             m.set_next_table(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
             m.set_next_table(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
             m.set_next_table(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
+
+            // We still need to map it gop otherwise println's can deadlock when mapping it lazily
             map_gop(m, &(*BOOT_INFO).gop);
-            m.identity_map_memory(Page::<Size4KB>::containing(0xfee000b0))
-                .unwrap()
-                .ignore();
+            let gop = get_gop_range(&(*BOOT_INFO).gop);
+            page_mapper.insert_mapping_at(gop.0, gop.1).unwrap();
+
+            page_mapper
+                .insert_mapping_at(0xfee00000, PageMapping::new_mmap(0xfee00000, 0x1000))
+                .unwrap();
         }
 
         let s = Arc::new_cyclic(|this| Self {
@@ -133,10 +137,13 @@ impl Process {
         // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0;
 
+        let stack = PageMapping::new_lazy(STACK_SIZE as usize);
+
         self.memory
             .lock()
             .page_mapper
-            .create_lazy_mapping(stack_base as usize, STACK_SIZE as usize);
+            .insert_mapping_at(stack_base as usize, stack)
+            .unwrap();
 
         let interrupt_frame = InterruptStackFrameValue {
             instruction_pointer: VirtAddr::from_ptr(entry_point),
@@ -195,7 +202,7 @@ impl Drop for Thread {
                 .memory
                 .lock()
                 .page_mapper
-                .free_mapping(stack_base as usize, STACK_SIZE as usize);
+                .free_mapping(stack_base as usize..(stack_base + STACK_SIZE) as usize);
         }
     }
 }

@@ -9,7 +9,10 @@ use crate::{
     },
 };
 
-use super::page_table_manager::{PageLvl3, PageLvl4, PageTable, Size4KB};
+use super::{
+    page_mapper::PageMapping,
+    page_table_manager::{PageLvl3, PageLvl4, PageTable, Size4KB},
+};
 
 pub unsafe fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMapIter) {
     // Only map actual memory
@@ -84,6 +87,16 @@ pub unsafe fn map_gop(mapper: &mut PageTable<PageLvl4>, gop: &GopInfo) {
             .unwrap()
             .ignore();
     }
+}
+
+pub unsafe fn get_gop_range(gop: &GopInfo) -> (usize, PageMapping) {
+    let fb_ptr = *gop.buffer.as_ptr() as usize;
+
+    let fb_base = fb_ptr & !0xFFF;
+
+    let fb_top = (fb_base + gop.buffer_size as usize + 0xFFF) & !0xFFF;
+
+    (fb_base, PageMapping::new_mmap(fb_base, fb_top - fb_base))
 }
 
 pub unsafe fn create_kernel_map(mapper: &mut PageTable<PageLvl3>, boot_info: &BootInfo) {

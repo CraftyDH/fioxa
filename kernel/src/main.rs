@@ -25,15 +25,16 @@ use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::{enable_localapic, map_lapic};
 use kernel::memory::{MemoryMapIter, MemoryMapPageIter, MemoryMapUsuableIter};
 use kernel::net::ethernet::userspace_networking_main;
-use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
-use kernel::paging::page_allocator::{request_page, BOOT_PAGE_ALLOCATOR};
+use kernel::paging::offset_map::{create_kernel_map, create_offset_map};
+use kernel::paging::page_allocator::BOOT_PAGE_ALLOCATOR;
+use kernel::paging::page_mapper::PageMapping;
 use kernel::paging::page_table_manager::{Mapper, Page, Size4KB};
 use kernel::paging::{
-    get_uefi_active_mapper, set_mem_offset, virt_addr_for_phys, virt_addr_offset, MemoryLoc,
-    KERNEL_HEAP_MAP, KERNEL_MAP,
+    get_uefi_active_mapper, set_mem_offset, virt_addr_offset, MemoryLoc, KERNEL_HEAP_MAP,
 };
 use kernel::pci::enumerate_pci;
-use kernel::scheduling::taskmanager::core_start_multitasking;
+use kernel::scheduling::process::Process;
+use kernel::scheduling::taskmanager::{core_start_multitasking, PROCESSES};
 use kernel::screen::gop::{self, Writer};
 use kernel::screen::psf1::{self};
 use kernel::time::init_time;
@@ -44,6 +45,7 @@ use kernel::{elf, gdt, paging, service, BOOT_INFO};
 use bootloader::uefi::table::cfg::ACPI2_GUID;
 use bootloader::uefi::table::{Runtime, SystemTable};
 use kernel_userspace::elf::spawn_elf_process;
+use kernel_userspace::ids::ProcessID;
 use kernel_userspace::service::{get_public_service_id, register_public_service, ServiceMessage};
 use kernel_userspace::syscall::{
     exit, receive_service_message_blocking, service_create, spawn_process, spawn_thread,
@@ -74,6 +76,7 @@ pub fn main(info: *const BootInfo) -> ! {
 
         // Initialize boot page allocator & heap
         unsafe {
+            BOOT_INFO = info;
             BOOT_PAGE_ALLOCATOR.init_once(|| {
                 MemoryMapPageIter::from(MemoryMapUsuableIter::from(mmap.clone().into_iter())).into()
             });
@@ -97,27 +100,39 @@ pub fn main(info: *const BootInfo) -> ! {
 
     log!("Welcome to Fioxa...");
 
+    let init_process = Process::new(kernel::scheduling::process::ProcessPrivilige::USER, &[]);
+    assert!(init_process.pid == ProcessID(0));
+
+    PROCESSES
+        .lock()
+        .insert(init_process.pid, init_process.clone());
+
     // remap and jump kernel to correct location
     unsafe {
-        let mut map = KERNEL_MAP.lock();
+        let map_addr = {
+            let mut mem = init_process.memory.lock();
 
-        create_offset_map(
-            &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::PhysMapOffset as u64)),
-            mmap,
-        );
-        // get boot_info
-        let boot_info = &*info;
+            // we need to set 0x8000 for the trampoline
+            mem.page_mapper
+                .insert_mapping_at(0x8000, PageMapping::new_mmap(0x8000, 0x1000));
 
-        create_kernel_map(
-            &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::KernelStart as u64)),
-            boot_info,
-        );
-        map_gop(&mut map, &boot_info.gop);
+            let map = mem.page_mapper.get_mapper_mut();
 
-        let map_addr = map.into_page().get_address();
-        drop(map);
+            create_offset_map(
+                &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::PhysMapOffset as u64)),
+                mmap,
+            );
+            // get boot_info
+            let boot_info = &*info;
+
+            create_kernel_map(
+                &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::KernelStart as u64)),
+                boot_info,
+            );
+
+            map.into_page().get_address()
+        };
         println!("Remapping to higher half");
-
         // load and jump stack
         core::arch::asm!(
             "add rsp, {}",
@@ -126,7 +141,9 @@ pub fn main(info: *const BootInfo) -> ! {
             in(reg) map_addr,
         );
         set_mem_offset(MemoryLoc::PhysMapOffset as u64);
-        KERNEL_MAP.lock().shift_table_to_offset();
+        let mut mem = init_process.memory.lock();
+        let map = mem.page_mapper.get_mapper_mut();
+        map.shift_table_to_offset();
     }
 
     let info = virt_addr_offset(info);
@@ -161,20 +178,6 @@ pub fn main(info: *const BootInfo) -> ! {
     log!("Setting up proper page allocator");
     unsafe { paging::page_allocator::init(mmap) };
 
-    unsafe {
-        let frame = request_page().unwrap();
-        let page = Page::new(0x400000000000);
-        KERNEL_MAP.lock().map_memory(page, *frame).unwrap().flush();
-        let f = virt_addr_for_phys(frame.get_address()) as *mut u64;
-
-        *f = 4493;
-        assert!(
-            *((0x400000000000 as u64) as *const u64) == 4493,
-            "Paging test failed"
-        );
-        KERNEL_MAP.lock().unmap_memory(page).unwrap().flush();
-    }
-
     log!("Loading UEFI runtime table");
     let config_tables = runtime_table.config_table();
 
@@ -191,14 +194,21 @@ pub fn main(info: *const BootInfo) -> ! {
         .unwrap()
         .unwrap();
 
-    map_lapic(&mut KERNEL_MAP.lock());
+    unsafe {
+        map_lapic(&mut init_process.memory.lock().page_mapper.get_mapper_mut());
+    }
     enable_localapic();
 
     unsafe { core::arch::asm!("sti") };
 
-    enable_apic(&madt, &mut KERNEL_MAP.lock());
+    unsafe {
+        enable_apic(
+            &madt,
+            &mut init_process.memory.lock().page_mapper.get_mapper_mut(),
+        );
+    }
 
-    boot_aps(&madt);
+    unsafe { boot_aps(&madt) };
     spawn_process(after_boot, &[], true);
 
     // Disable interrupts so when we enable switching this core can finish init.
@@ -212,6 +222,17 @@ pub fn main(info: *const BootInfo) -> ! {
 
 fn after_boot() {
     let boot_info = unsafe { &*BOOT_INFO };
+
+    {
+        // Load in 5 pages of stack
+        // TODO: Fix deadlock on debug mode
+        let rsp: u64;
+        unsafe { core::arch::asm!("mov {}, rsp", lateout(reg) rsp) }
+
+        for i in (rsp - 0x5000..rsp).step_by(0x500) {
+            unsafe { core::ptr::read_volatile(i as *const u8) };
+        }
+    }
 
     let mut map = unsafe { get_uefi_active_mapper() };
 

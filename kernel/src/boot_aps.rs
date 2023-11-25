@@ -6,30 +6,22 @@ use core::{
 
 use crate::{
     assembly::AP_TRAMPOLINE,
-    cpu_localstorage::new_cpu,
+    cpu_localstorage::{new_cpu, CPULocalStorageRW},
     gdt::CPULocalGDT,
     interrupts::IDT,
     ioapic::Madt,
     lapic::{enable_localapic, LAPIC_ADDR},
-    paging::{
-        page_allocator::frame_alloc_exec,
-        page_table_manager::{Mapper, Page, Size4KB},
-        MemoryLoc, KERNEL_MAP,
-    },
-    scheduling::taskmanager::{self, core_start_multitasking},
+    paging::MemoryLoc,
+    scheduling::taskmanager::core_start_multitasking,
     time::spin_sleep_ms,
 };
 
-pub fn boot_aps(madt: &Madt) {
+/// It is assumed that 0x8000 is identity mapped before this point
+pub unsafe fn boot_aps(madt: &Madt) {
     // Get current core id
     let bsp_addr = (unsafe { __cpuid(1) }.ebx >> 24) as u8;
-    frame_alloc_exec(|m| m.lock_reserved_16bit_page(0x8000)).unwrap();
 
-    KERNEL_MAP
-        .lock()
-        .identity_map_memory(Page::<Size4KB>::new(0x8000))
-        .unwrap()
-        .flush();
+    let task = CPULocalStorageRW::get_current_task();
 
     let bspdone;
     let aprunning;
@@ -43,8 +35,12 @@ pub fn boot_aps(madt: &Madt) {
         let end = 0x8000 + AP_TRAMPOLINE.len();
         bspdone = (end) as *mut u32;
         aprunning = &mut *((end + 4) as *mut AtomicU32);
-        *((end + 8) as *mut u32) = KERNEL_MAP
+        *((end + 8) as *mut u32) = task
+            .process
+            .memory
             .lock()
+            .page_mapper
+            .get_mapper_mut()
             .into_page()
             .get_address()
             .try_into()
@@ -118,16 +114,6 @@ pub fn boot_aps(madt: &Madt) {
         };
         unsafe { _mm_pause() }
     }
-
-    unsafe {
-        taskmanager::init(n_cores.try_into().unwrap());
-    }
-
-    KERNEL_MAP
-        .lock()
-        .unmap_memory(Page::<Size4KB>::new(0x8000))
-        .unwrap()
-        .flush();
 }
 
 #[no_mangle]

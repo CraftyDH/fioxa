@@ -6,18 +6,14 @@ use alloc::{
     vec::Vec,
 };
 
-use conquer_once::noblock::OnceCell;
 use crossbeam_queue::ArrayQueue;
-use kernel_userspace::ids::{ProcessID, ThreadID};
+use kernel_userspace::ids::ProcessID;
 use spin::{Lazy, Mutex};
 use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
-    assembly::registers::Registers,
-    cpu_localstorage::CPULocalStorageRW,
-    interrupts::check_interrupts,
-    scheduling::process::{ThreadContext, STACK_ADDR, STACK_SIZE},
-    time::pit::is_switching_tasks,
+    assembly::registers::Registers, cpu_localstorage::CPULocalStorageRW,
+    interrupts::check_interrupts, time::pit::is_switching_tasks,
 };
 
 use super::{
@@ -28,8 +24,6 @@ use super::{
 pub type ProcessesListType = BTreeMap<ProcessID, Arc<Process>>;
 pub static PROCESSES: Lazy<Mutex<ProcessesListType>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
 static TASK_QUEUE: Lazy<ArrayQueue<Weak<Thread>>> = Lazy::new(|| ArrayQueue::new(1000));
-
-pub static CORE_COUNT: OnceCell<u8> = OnceCell::uninit();
 
 static GO_INTO_CORE_MGMT: AtomicBool = AtomicBool::new(false);
 
@@ -54,53 +48,6 @@ pub unsafe fn core_start_multitasking() -> ! {
         core::arch::asm!("hlt");
     }
 
-    let cpuid = ThreadID(CPULocalStorageRW::get_core_id() as u64);
-    let cr3 = {
-        // initialize cpulocalstorage with task details
-        let process = PROCESSES
-            .lock()
-            .get(&ProcessID(0))
-            .expect("processID(0) should exist")
-            .clone();
-        let cr3 = process
-            .memory
-            .lock()
-            .page_mapper
-            .get_mapper_mut()
-            .into_page()
-            .get_address();
-        let mgmt_task = process
-            .threads
-            .lock()
-            .threads
-            .get(&cpuid)
-            .expect("thread for this core should exist")
-            .clone();
-
-        // we are running
-        *mgmt_task.context.lock() = ThreadContext::Running(None);
-
-        CPULocalStorageRW::set_core_mgmt_task(mgmt_task.clone());
-        CPULocalStorageRW::set_current_task(mgmt_task);
-
-        CPULocalStorageRW::set_current_pid(ProcessID(0));
-        CPULocalStorageRW::set_current_tid(cpuid);
-        cr3
-    };
-
-    let stack = STACK_ADDR + (STACK_SIZE + 0x1000) * cpuid.0 + STACK_SIZE;
-    let task = core_mgmt_task as u64;
-
-    core::arch::asm!(
-        "mov cr3, {}; mov rsp, {}; jmp {}",
-        in (reg) cr3,
-        in (reg) stack,
-        in (reg) task,
-        options(noreturn)
-    );
-}
-
-extern "C" fn core_mgmt_task() -> ! {
     // Init complete, start executing tasks
     CPULocalStorageRW::set_stay_scheduled(false);
 
@@ -135,20 +82,6 @@ fn get_next_task() -> Arc<Thread> {
             return CPULocalStorageRW::get_core_mgmt_task();
         }
     }
-}
-
-pub unsafe fn init(core_cnt: u8) {
-    CORE_COUNT
-        .try_init_once(|| core_cnt)
-        .expect("CORE_COUNT shouldn't have been inited yet");
-    let process = Process::new(crate::scheduling::process::ProcessPrivilige::USER, &[]);
-    assert!(process.pid == ProcessID(0));
-
-    for _ in 0..core_cnt {
-        process.new_thread_direct(0 as *const u64, Registers::default());
-    }
-    let pid = process.pid;
-    PROCESSES.lock().insert(pid, process);
 }
 
 fn save_current_task(stack_frame: &InterruptStackFrame, reg: &Registers) {

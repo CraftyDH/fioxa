@@ -30,22 +30,6 @@ pub static KERNEL_DATA_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3
 pub static KERNEL_HEAP_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
 pub static PER_CPU_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
 
-pub static KERNEL_MAP: Lazy<Mutex<PageTable<'static, PageLvl4>>> = Lazy::new(|| {
-    Mutex::new(unsafe {
-        // The AP startup code needs a 32 bit ptr
-        let page = request_page_early().unwrap();
-        assert!(page.get_address() <= u32::MAX as u64);
-        let mut lvl4 = PageTable::from_page(page);
-
-        lvl4.set_next_table(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
-        lvl4.set_next_table(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
-        lvl4.set_next_table(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
-        lvl4.set_next_table(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
-
-        lvl4
-    })
-});
-
 pub unsafe fn get_uefi_active_mapper() -> PageTable<'static, PageLvl4> {
     let (lv4_table, _) = Cr3::read();
 
