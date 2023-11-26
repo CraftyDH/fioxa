@@ -19,10 +19,10 @@ use spin::Mutex;
 use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
-    assembly::registers::Registers,
+    assembly::registers::{Registers, SavedThreadState},
     cpu_localstorage::CPULocalStorageRW,
     scheduling::{
-        process::{ProcessMessages, SavedThreadState, Thread, ThreadContext},
+        process::{ProcessMessages, Thread, ThreadContext},
         taskmanager::{load_new_task, push_task_queue, PROCESSES},
     },
 };

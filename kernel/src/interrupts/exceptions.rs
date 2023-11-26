@@ -7,6 +7,7 @@ use x86_64::{
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     gdt::{DOUBLE_FAULT_IST_INDEX, PAGE_FAULT_IST_INDEX},
+    scheduling::taskmanager::kill_bad_task,
     screen::gop::WRITER,
 };
 
@@ -17,7 +18,8 @@ macro_rules! exception_handler {
     ($handler: ident, $error:expr) => {
         pub extern "x86-interrupt" fn $handler(stack_frame: InterruptStackFrame) {
             // Find the relevent handler and call it
-            panic!("EXCEPTION: caught {}, frame: {:?}", $error, stack_frame)
+            println!("EXCEPTION: caught {}, frame: {:?}", $error, stack_frame);
+            kill_bad_task();
         }
     };
 }
@@ -92,10 +94,11 @@ extern "x86-interrupt" fn general_protection_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    panic!(
+    println!(
         "EXCEPTION: GENERAL PROTECTION FAULT Error: {}\n{:#?}",
         error_code, stack_frame
     );
+    kill_bad_task()
 }
 
 extern "x86-interrupt" fn invalid_tss(stack_frame: InterruptStackFrame, _error_code: u64) {
@@ -126,6 +129,13 @@ extern "x86-interrupt" fn page_fault_handler(
     } else {
         let process = &CPULocalStorageRW::get_current_task().process;
         let mut mem = process.memory.lock();
-        mem.page_mapper.page_fault_handler(addr.as_u64() as usize);
+        if mem
+            .page_mapper
+            .page_fault_handler(addr.as_u64() as usize)
+            .is_none()
+        {
+            println!("EXCEPTION: PAGE FAULT: Failed to map {:?}", addr);
+            kill_bad_task()
+        }
     }
 }

@@ -99,7 +99,7 @@ pub fn main(info: *const BootInfo) -> ! {
 
     log!("Welcome to Fioxa...");
 
-    let init_process = Process::new(kernel::scheduling::process::ProcessPrivilige::USER, &[]);
+    let init_process = Process::new(kernel::scheduling::process::ProcessPrivilige::KERNEL, &[]);
     assert!(init_process.pid == ProcessID(0));
 
     PROCESSES

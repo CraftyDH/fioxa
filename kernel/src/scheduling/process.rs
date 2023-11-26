@@ -21,7 +21,7 @@ use x86_64::{
 };
 
 use crate::{
-    assembly::registers::Registers,
+    assembly::registers::{Registers, SavedThreadState},
     gdt,
     paging::{
         offset_map::{get_gop_range, map_gop},
@@ -67,7 +67,7 @@ pub struct Process {
     this: Weak<Process>,
     pub pid: ProcessID,
     pub threads: Mutex<ProcessThreads>,
-    privilege: ProcessPrivilige,
+    pub privilege: ProcessPrivilige,
     pub args: Vec<u8>,
     pub memory: Mutex<ProcessMemory>,
     pub service_messages: Mutex<ProcessMessages>,
@@ -202,7 +202,8 @@ impl Drop for Thread {
                 .memory
                 .lock()
                 .page_mapper
-                .free_mapping(stack_base as usize..(stack_base + STACK_SIZE) as usize);
+                .free_mapping(stack_base as usize..(stack_base + STACK_SIZE) as usize)
+                .unwrap();
         }
     }
 }
@@ -213,25 +214,11 @@ pub type CurrentMessage = Option<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]
 #[derive(Debug)]
 pub enum ThreadContext {
     Invalid,
+    // The thread did something bad and got killed
+    Killed,
     Running(CurrentMessage),
     Scheduled(SavedThreadState, CurrentMessage),
     WaitingOn(SavedThreadState, ServiceID),
-}
-
-#[derive(Debug)]
-pub struct SavedThreadState {
-    pub register_state: Registers,
-    // Rest of the data inclusing rip & rsp
-    pub interrupt_frame: InterruptStackFrameValue,
-}
-
-impl SavedThreadState {
-    pub fn new(stack_frame: &InterruptStackFrame, reg: &Registers) -> Self {
-        SavedThreadState {
-            register_state: reg.clone(),
-            interrupt_frame: **stack_frame,
-        }
-    }
 }
 
 impl ThreadContext {

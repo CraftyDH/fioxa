@@ -54,6 +54,7 @@ impl AcpiHandler for FioxaAcpiHandler {
         unsafe {
             mem.page_mapper
                 .free_mapping(base..base + region.mapped_length())
+                .unwrap()
         }
     }
 }

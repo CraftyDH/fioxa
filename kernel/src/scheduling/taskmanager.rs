@@ -12,8 +12,11 @@ use spin::{Lazy, Mutex};
 use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
-    assembly::registers::Registers, cpu_localstorage::CPULocalStorageRW,
-    interrupts::check_interrupts, time::pit::is_switching_tasks,
+    assembly::registers::{jump_to_userspace, Registers},
+    cpu_localstorage::CPULocalStorageRW,
+    interrupts::check_interrupts,
+    scheduling::process::ThreadContext,
+    time::pit::is_switching_tasks,
 };
 
 use super::{
@@ -36,11 +39,6 @@ pub fn enter_core_mgmt() {
     GO_INTO_CORE_MGMT.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
-/// Used for sleeping each core after the task queue becomes empty
-/// Aka the end of the round robin cycle
-/// Or when an async task (like interrupts) need to be in an actual process to dispatch (to avoid deadlocks)
-/// This reduces CPU load normally (doesn't thrash every core to 100%)
-/// However is does reduce performance when there are actually tasks that could use the time
 pub unsafe fn core_start_multitasking() -> ! {
     // enable interrupts and wait for multitasking to start
     core::arch::asm!("sti");
@@ -48,6 +46,25 @@ pub unsafe fn core_start_multitasking() -> ! {
         core::arch::asm!("hlt");
     }
 
+    let state = {
+        let task = CPULocalStorageRW::get_current_task();
+        let mut ctx = task.context.lock();
+        match core::mem::replace(&mut *ctx, ThreadContext::Running(None)) {
+            ThreadContext::Scheduled(state, _) => state,
+            e => panic!("thread was not scheduled it was: {e:?}"),
+        }
+    };
+
+    // jump into the nop task address space
+    jump_to_userspace(&state)
+}
+
+/// Used for sleeping each core after the task queue becomes empty
+/// Aka the end of the round robin cycle
+/// Or when an async task (like interrupts) need to be in an actual process to dispatch (to avoid deadlocks)
+/// This reduces CPU load normally (doesn't thrash every core to 100%)
+/// However is does reduce performance when there are actually tasks that could use the time
+pub unsafe extern "C" fn nop_task() -> ! {
     // Init complete, start executing tasks
     CPULocalStorageRW::set_stay_scheduled(false);
 
@@ -115,6 +132,63 @@ pub fn load_new_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers)
     CPULocalStorageRW::set_current_tid(thread.tid);
     CPULocalStorageRW::set_current_task(thread);
     CPULocalStorageRW::set_ticks_left(5);
+}
+
+/// Kills the current task and jumps into a new one
+/// DO NOT HOLD ANYTHING BEFORE CALLING THIS
+pub fn kill_bad_task() -> ! {
+    let frame = {
+        let thread = CPULocalStorageRW::get_current_task();
+
+        println!(
+            "KILLING BAD TASK: PID: {:?}, TID: {:?}",
+            thread.process.pid, thread.tid
+        );
+
+        match thread.process.privilege {
+            crate::scheduling::process::ProcessPrivilige::KERNEL => {
+                panic!("STOPPING CORE AS KERNEL CANNOT DO BAD")
+            }
+            crate::scheduling::process::ProcessPrivilige::USER => (),
+        }
+
+        match core::mem::replace(&mut *thread.context.lock(), ThreadContext::Killed) {
+            ThreadContext::Running(_) => (),
+            e => panic!("thread was not running it was {e:?}"),
+        };
+
+        let thread = get_next_task();
+
+        if CPULocalStorageRW::get_current_pid() != thread.process.pid {
+            unsafe {
+                thread
+                    .process
+                    .memory
+                    .lock()
+                    .page_mapper
+                    .get_mapper_mut()
+                    .load_into_cr3()
+            }
+            CPULocalStorageRW::set_current_pid(thread.process.pid);
+        }
+
+        let state = {
+            let mut ctx = thread.context.lock();
+            match core::mem::replace(&mut *ctx, ThreadContext::Running(None)) {
+                ThreadContext::Scheduled(state, _) => state,
+                e => panic!("thread was not scheduled it was: {e:?}"),
+            }
+        };
+
+        CPULocalStorageRW::set_current_tid(thread.tid);
+        CPULocalStorageRW::set_current_task(thread);
+        CPULocalStorageRW::set_ticks_left(5);
+
+        state
+    };
+
+    // jump into the nop task address space
+    unsafe { jump_to_userspace(&frame) }
 }
 
 pub fn switch_task(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {

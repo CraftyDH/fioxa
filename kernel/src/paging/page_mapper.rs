@@ -88,7 +88,7 @@ impl<'a> PageMapperManager<'a> {
 
         for (r, _) in &self.mappings {
             if base < r.end && r.start <= end {
-                panic!("mapping already exists in the range")
+                return None;
             }
         }
 
@@ -122,9 +122,9 @@ impl<'a> PageMapperManager<'a> {
         base
     }
 
-    pub fn page_fault_handler(&mut self, address: usize) {
+    pub fn page_fault_handler(&mut self, address: usize) -> Option<()> {
         if address > MemoryLoc::EndUserMem as usize {
-            panic!("kmap page fault")
+            return None;
         }
 
         // find the mapping that address is in
@@ -137,9 +137,7 @@ impl<'a> PageMapperManager<'a> {
                 Ordering::Equal
             }
         });
-        let idx = idx
-            .map_err(|_| format!("couldn't find address {address:#x}"))
-            .unwrap();
+        let idx = idx.ok()?;
 
         let map = &mut self.mappings[idx];
         let offset = address - map.0.start;
@@ -162,14 +160,15 @@ impl<'a> PageMapperManager<'a> {
         self.page_mapper
             .map_memory(Page::<Size4KB>::containing(address as u64), phys)
             .unwrap()
-            .flush()
+            .flush();
+        Some(())
     }
 
-    pub unsafe fn free_mapping(&mut self, range: Range<usize>) {
+    pub unsafe fn free_mapping(&mut self, range: Range<usize>) -> Result<(), UnMapMemoryError> {
         let idx = self
             .mappings
             .binary_search_by(|el| el.0.clone().cmp(range.clone()))
-            .unwrap();
+            .map_err(|_| UnMapMemoryError::MemNotMapped(range.start as u64))?;
 
         let m = self.mappings.remove(idx);
         for page in m.0.step_by(0x1000) {
@@ -179,11 +178,12 @@ impl<'a> PageMapperManager<'a> {
             {
                 Ok(f) => f.flush(),
                 Err(UnMapMemoryError::MemNotMapped(_)) => (),
-                Err(e) => panic!("Error unmapping {e:?}"),
+                Err(e) => return Err(e),
             }
 
             // TODO: Send IPI to flush on other threads
         }
+        Ok(())
     }
 }
 

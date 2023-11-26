@@ -1,3 +1,5 @@
+use x86_64::structures::idt::{InterruptStackFrame, InterruptStackFrameValue};
+
 // See: https://github.com/xfoxfu/rust-xos/blob/8a07a69ef/kernel/src/interrupts/handlers.rs#L92
 #[repr(align(8), C)]
 #[derive(Debug, Clone, Default)]
@@ -70,4 +72,49 @@ macro_rules! wrap_function_registers {
             }
         }
     };
+}
+
+/// The order is very important
+#[derive(Debug)]
+#[repr(C)]
+pub struct SavedThreadState {
+    pub register_state: Registers,
+    // Rest of the data inclusing rip & rsp
+    pub interrupt_frame: InterruptStackFrameValue,
+}
+
+impl SavedThreadState {
+    pub fn new(stack_frame: &InterruptStackFrame, reg: &Registers) -> Self {
+        SavedThreadState {
+            register_state: reg.clone(),
+            interrupt_frame: **stack_frame,
+        }
+    }
+}
+
+/// This works by using first setting the stack pointer to the frame
+/// where we can then set all the registers and finally "return from interrupt"
+/// to the userspace destination
+pub unsafe fn jump_to_userspace(frame: &SavedThreadState) -> ! {
+    core::arch::asm!(
+        "mov rsp, {}",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop r11",
+        "pop r10",
+        "pop r9",
+        "pop r8",
+        "pop rdi",
+        "pop rsi",
+        "pop rdx",
+        "pop rcx",
+        "pop rbx",
+        "pop rax",
+        "pop rbp",
+        "iretq",
+        in(reg) frame,
+        options(noreturn)
+    )
 }

@@ -13,8 +13,8 @@ use crate::{
         virt_addr_for_phys, MemoryLoc,
     },
     scheduling::{
-        process::{Thread, ThreadContext},
-        taskmanager::PROCESSES,
+        process::Thread,
+        taskmanager::{nop_task, PROCESSES},
     },
 };
 
@@ -191,13 +191,7 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
         .lock()
         .get(&ProcessID(0))
         .unwrap()
-        .new_thread_direct(0 as *const u64, Registers::default());
-
-    if task.tid.0 != core_id as u64 {
-        panic!("bad init order")
-    }
-
-    *task.context.lock() = ThreadContext::Running(None);
+        .new_thread_direct(nop_task as *const u64, Registers::default());
 
     ls.core_mgmt_task_ptr = Arc::into_raw(task.clone()) as u64;
     ls.current_task_ptr = Arc::into_raw(task) as u64;

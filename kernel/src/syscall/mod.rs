@@ -1,6 +1,5 @@
 use core::ptr::slice_from_raw_parts_mut;
 
-use alloc::string::String;
 use kernel_userspace::{
     ids::ServiceID,
     service::ServiceTrackingNumber,
@@ -15,7 +14,7 @@ use crate::{
     paging::{
         page_allocator::frame_alloc_exec, page_mapper::PageMapping, page_table_manager::Mapper,
     },
-    scheduling::taskmanager,
+    scheduling::taskmanager::{self, kill_bad_task},
     service,
     time::{pit::get_uptime, spin_sleep_ms},
     wrap_function_registers,
@@ -32,57 +31,68 @@ pub fn set_syscall_idt(idt: &mut InterruptDescriptorTable) {
 
 wrap_function_registers!(syscall_handler => wrapped_syscall_handler);
 
+#[derive(Debug)]
+pub enum SyscallError {
+    OutofBoundsMem,
+    MappingExists,
+    OutOfMemory,
+    UnMapError,
+}
+
 extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
     // Run syscalls without interrupts
     // This means execution should not be interrupted
     use kernel_userspace::syscall::*;
-    match regs.rax {
+    let res = match regs.rax {
         ECHO => echo_handler(regs),
-        YIELD_NOW => taskmanager::yield_now(stack_frame, regs),
-        SPAWN_PROCESS => taskmanager::spawn_process(stack_frame, regs),
-        SPAWN_THREAD => taskmanager::spawn_thread(stack_frame, regs),
+        YIELD_NOW => Ok(taskmanager::yield_now(stack_frame, regs)),
+        SPAWN_PROCESS => Ok(taskmanager::spawn_process(stack_frame, regs)),
+        SPAWN_THREAD => Ok(taskmanager::spawn_thread(stack_frame, regs)),
         // SLEEP => task_manager.sleep(stack_frame, regs),
-        EXIT_THREAD => taskmanager::exit_thread(stack_frame, regs),
-        MMAP_PAGE => {
-            if let Err(e) = mmap_page_handler(regs) {
-                println!("{e}");
-                taskmanager::exit_thread(stack_frame, regs);
-            };
-            taskmanager::yield_now(stack_frame, regs);
-        }
-        MMAP_PAGE32 => {
-            if let Err(e) = mmap_page32_handler(regs) {
-                println!("{e}");
-                taskmanager::exit_thread(stack_frame, regs);
-            };
-            taskmanager::yield_now(stack_frame, regs);
-        }
+        EXIT_THREAD => Ok(taskmanager::exit_thread(stack_frame, regs)),
+        MMAP_PAGE => mmap_page_handler(regs),
+        MMAP_PAGE32 => mmap_page32_handler(regs),
         UNMMAP_PAGE => {
             // ! TODO: THIS IS VERY BAD
             // Another thread can still write to the memory
-            if let Err(e) = unmmap_page_handler(regs) {
-                println!("{e}");
-                taskmanager::exit_thread(stack_frame, regs);
-            };
-            taskmanager::yield_now(stack_frame, regs);
+            unmmap_page_handler(regs)
         }
         SERVICE => service_handler(stack_frame, regs),
         READ_ARGS => read_args_handler(regs),
-        GET_PID => regs.rax = CPULocalStorageRW::get_current_pid().0 as usize,
-        _ => println!("Unknown syscall class: {}", regs.rax),
+        GET_PID => {
+            regs.rax = CPULocalStorageRW::get_current_pid().0 as usize;
+            Ok(())
+        }
+        _ => {
+            println!("Unknown syscall class: {}", regs.rax);
+            Ok(())
+        }
+    };
+    match res {
+        Ok(()) => (),
+        Err(e) => {
+            println!("Error occored during syscall {e:?}");
+            kill_bad_task()
+        }
     }
-
-    // Ack interrupt
-    unsafe { *(0xfee000b0 as *mut u32) = 0 }
 }
 
-fn echo_handler(regs: &mut Registers) {
+pub fn check_mem_bounds(mem: usize) -> Result<usize, SyscallError> {
+    if mem <= crate::paging::MemoryLoc::EndUserMem as usize {
+        Ok(mem)
+    } else {
+        Err(SyscallError::OutofBoundsMem)
+    }
+}
+
+fn echo_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     println!("Echoing: {}", regs.r8);
     unsafe { core::arch::asm!("cli") }
-    regs.rax = regs.r8
+    regs.rax = regs.r8;
+    Ok(())
 }
 
-fn read_args_handler(regs: &mut Registers) {
+fn read_args_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     let task = CPULocalStorageRW::get_current_task();
 
     let proc = &task.process;
@@ -94,9 +104,13 @@ fn read_args_handler(regs: &mut Registers) {
         let buf = unsafe { &mut *slice_from_raw_parts_mut(regs.r8 as *mut u8, bytes.len()) };
         buf.copy_from_slice(bytes);
     }
+    Ok(())
 }
 
-fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
+fn service_handler(
+    stack_frame: &mut InterruptStackFrame,
+    regs: &mut Registers,
+) -> Result<(), SyscallError> {
     match regs.r8 {
         syscall::SERVICE_CREATE => {
             let pid = CPULocalStorageRW::get_current_pid();
@@ -150,10 +164,11 @@ fn service_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
         }
         _ => (),
     }
+    Ok(())
 }
 
-fn mmap_page_handler(regs: &mut Registers) -> Result<(), &'static str> {
-    assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
+fn mmap_page_handler(regs: &mut Registers) -> Result<(), SyscallError> {
+    check_mem_bounds(regs.r8)?;
 
     let task = CPULocalStorageRW::get_current_task();
 
@@ -167,16 +182,17 @@ fn mmap_page_handler(regs: &mut Registers) -> Result<(), &'static str> {
         memory
             .page_mapper
             .insert_mapping_at(regs.r8, lazy_page)
-            .ok_or("MAPPING EXISTS")?;
+            .ok_or(SyscallError::MappingExists)?;
         regs.rax = regs.r8;
     }
     Ok(())
 }
 
-fn mmap_page32_handler(regs: &mut Registers) -> Result<(), &'static str> {
+fn mmap_page32_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     let task = CPULocalStorageRW::get_current_task();
 
-    let page = frame_alloc_exec(|m| m.request_32bit_reserved_page()).ok_or("OOM32")?;
+    let page =
+        frame_alloc_exec(|m| m.request_32bit_reserved_page()).ok_or(SyscallError::OutOfMemory)?;
 
     regs.rax = page.get_address() as usize;
 
@@ -186,15 +202,15 @@ fn mmap_page32_handler(regs: &mut Registers) -> Result<(), &'static str> {
             .page_mapper
             .get_mapper_mut()
             .identity_map_memory(*page)
-            .map_err(|_| "FAULT (failed to map)")?
+            .map_err(|_| SyscallError::MappingExists)?
             .flush();
     }
     memory.owned32_pages.push(page);
     Ok(())
 }
 
-fn unmmap_page_handler(regs: &Registers) -> Result<(), String> {
-    assert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
+fn unmmap_page_handler(regs: &Registers) -> Result<(), SyscallError> {
+    check_mem_bounds(regs.r8)?;
 
     let task = CPULocalStorageRW::get_current_task();
 
@@ -203,9 +219,9 @@ fn unmmap_page_handler(regs: &Registers) -> Result<(), String> {
     unsafe {
         memory
             .page_mapper
-            .free_mapping(regs.r8..regs.r8 + (regs.r9 + 0xFFF) & !0xFFF);
+            .free_mapping(regs.r8..regs.r8 + (regs.r9 + 0xFFF) & !0xFFF)
+            .map_err(|_| SyscallError::UnMapError)
     }
-    Ok(())
 }
 
 pub fn sleep(ms: usize) {
