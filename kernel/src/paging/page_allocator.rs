@@ -6,12 +6,12 @@ use core::{
 use alloc::{boxed::Box, vec::Vec};
 use bit_field::{BitArray, BitField};
 
-use bootloader::uefi::table::boot::MemoryType;
+use bootloader::{MemoryClass, MemoryMapEntry, MemoryMapEntrySlice};
 use conquer_once::spin::OnceCell;
 use spin::mutex::Mutex;
 
 use crate::{
-    memory::{MemoryMapIter, MemoryMapPageIter, RESERVED_32BIT_MEM_PAGES},
+    memory::{BootPageAllocator, RESERVED_32BIT_MEM_PAGES},
     scheduling::without_context_switch,
 };
 
@@ -20,7 +20,7 @@ use super::{
     virt_addr_for_phys, virt_addr_offset,
 };
 
-pub static BOOT_PAGE_ALLOCATOR: OnceCell<Mutex<MemoryMapPageIter>> = OnceCell::uninit();
+pub static BOOT_PAGE_ALLOCATOR: OnceCell<Mutex<BootPageAllocator>> = OnceCell::uninit();
 static GLOBAL_FRAME_ALLOCATOR: OnceCell<Mutex<PageFrameAllocator>> = OnceCell::uninit();
 
 pub fn frame_alloc_exec<T, F>(closure: F) -> T
@@ -30,7 +30,7 @@ where
     without_context_switch(|| closure(&mut GLOBAL_FRAME_ALLOCATOR.get().unwrap().lock()))
 }
 
-pub unsafe fn init(mmap: MemoryMapIter) {
+pub unsafe fn init(mmap: MemoryMapEntrySlice) {
     let alloc = unsafe { PageFrameAllocator::new(mmap).into() };
     GLOBAL_FRAME_ALLOCATOR.init_once(|| alloc)
 }
@@ -171,12 +171,6 @@ impl Drop for Allocated32Page {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MemAddr {
-    phys_start: u64,
-    page_count: u64,
-}
-
 pub struct MemoryRegion {
     phys_start: u64,
     phys_end: u64,
@@ -205,7 +199,7 @@ const fn bitmap_size(elements: u64) -> u64 {
 
 impl PageFrameAllocator {
     /// Unsafe because this must only be called once (ever) since it hands out pages based on it's own state
-    pub unsafe fn new(mmap: MemoryMapIter) -> Self {
+    pub unsafe fn new(mmap: MemoryMapEntrySlice) -> Self {
         // Can inner self to get safe type checking
         Self::new_inner(mmap)
     }
@@ -214,19 +208,13 @@ impl PageFrameAllocator {
         self.free_pages
     }
 
-    fn new_inner(mmap: MemoryMapIter) -> Self {
+    fn new_inner(mmap: MemoryMapEntrySlice) -> Self {
         // Memory types we will use
         let mut conventional = mmap
-            .map(|r| unsafe { &*virt_addr_offset(r) })
-            .filter(|r| {
-                r.ty == MemoryType::CONVENTIONAL
-                    || r.ty == MemoryType::BOOT_SERVICES_CODE
-                    || r.ty == MemoryType::BOOT_SERVICES_DATA
-            })
-            .map(|r| MemAddr {
-                phys_start: r.phys_start,
-                page_count: r.page_count,
-            });
+            .iter()
+            .map(|r| unsafe { &*virt_addr_offset(r as *const MemoryMapEntry) })
+            .filter(|r| r.class == MemoryClass::Free)
+            .cloned();
 
         let u16_mem_iter = conventional
             .by_ref()
@@ -259,7 +247,8 @@ impl PageFrameAllocator {
         }
 
         // Add excess memory back into iterator
-        let excess = MemAddr {
+        let excess = MemoryMapEntry {
+            class: bootloader::MemoryClass::Free,
             phys_start: 1 << 16,
             page_count: u16_regect_mem,
         };

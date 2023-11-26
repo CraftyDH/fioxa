@@ -22,7 +22,7 @@ use kernel::interrupts::{self};
 
 use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::{enable_localapic, map_lapic};
-use kernel::memory::{MemoryMapIter, MemoryMapPageIter, MemoryMapUsuableIter};
+use kernel::memory::BootPageAllocator;
 use kernel::net::ethernet::userspace_networking_main;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map};
 use kernel::paging::page_allocator::BOOT_PAGE_ALLOCATOR;
@@ -64,21 +64,10 @@ pub fn main(info: *const BootInfo) -> ! {
         // get boot_info
         let boot_info = unsafe { info.read() };
 
-        // get memory map
-        let mmap = unsafe {
-            MemoryMapIter::new(
-                boot_info.mmap_buf,
-                boot_info.mmap_entry_size,
-                boot_info.mmap_len,
-            )
-        };
-
         // Initialize boot page allocator & heap
         unsafe {
             BOOT_INFO = info;
-            BOOT_PAGE_ALLOCATOR.init_once(|| {
-                MemoryMapPageIter::from(MemoryMapUsuableIter::from(mmap.clone().into_iter())).into()
-            });
+            BOOT_PAGE_ALLOCATOR.init_once(|| BootPageAllocator::from(boot_info.mmap.iter()).into());
             // ensure that allocations that happen during init carry over
             let mut uefi = get_uefi_active_mapper();
             uefi.set_next_table(MemoryLoc::KernelHeap as u64, &mut KERNEL_HEAP_MAP.lock());
@@ -94,7 +83,11 @@ pub fn main(info: *const BootInfo) -> ! {
         gop::WRITER.get().unwrap().lock().fill_screen(0xFF_FF_FF);
         gop::WRITER.get().unwrap().lock().fill_screen(0x00_00_00);
 
-        mmap
+        log!("Setting up proper page allocator");
+        unsafe { paging::page_allocator::init(boot_info.mmap) };
+        let boot_info = unsafe { info.read() };
+
+        boot_info.mmap
     };
 
     log!("Welcome to Fioxa...");
@@ -129,9 +122,11 @@ pub fn main(info: *const BootInfo) -> ! {
                 boot_info,
             );
 
+            println!("Remapping to higher half");
+            map.shift_table_to_offset();
+            set_mem_offset(MemoryLoc::PhysMapOffset as u64);
             map.into_page().get_address()
         };
-        println!("Remapping to higher half");
         // load and jump stack
         core::arch::asm!(
             "add rsp, {}",
@@ -139,10 +134,6 @@ pub fn main(info: *const BootInfo) -> ! {
             in(reg) MemoryLoc::PhysMapOffset as u64,
             in(reg) map_addr,
         );
-        set_mem_offset(MemoryLoc::PhysMapOffset as u64);
-        let mut mem = init_process.memory.lock();
-        let map = mem.page_mapper.get_mapper_mut();
-        map.shift_table_to_offset();
     }
 
     let info = virt_addr_offset(info);
@@ -165,17 +156,6 @@ pub fn main(info: *const BootInfo) -> ! {
     let runtime_table =
         unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
             .unwrap();
-
-    let mmap = unsafe {
-        MemoryMapIter::new(
-            boot_info.mmap_buf,
-            boot_info.mmap_entry_size,
-            boot_info.mmap_len,
-        )
-    };
-
-    log!("Setting up proper page allocator");
-    unsafe { paging::page_allocator::init(mmap) };
 
     log!("Loading UEFI runtime table");
     let config_tables = runtime_table.config_table();

@@ -15,6 +15,9 @@ use core::{mem::size_of, slice};
 
 use uefi::{prelude::BootServices, table::boot::MemoryType};
 
+pub const KERNEL_RECLAIM: MemoryType = MemoryType::custom(0x80000000);
+pub const KERNEL_MEMORY: MemoryType = MemoryType::custom(0x80000001);
+
 /// Struct that frees the memory of the buffer once this object is dropped
 pub struct OwnedBuffer<'s, 'b> {
     pub bt: &'s BootServices,
@@ -55,14 +58,89 @@ pub unsafe fn get_buffer_as_type<'b, T>(bt: &BootServices) -> &'b mut T {
 
 /// The struct that is passed from bootloader to the kernel
 #[derive(Debug)]
+#[repr(C)]
 pub struct BootInfo {
     pub uefi_runtime_table: u64,
     pub gop: gop::GopInfo,
-    pub mmap_buf: *const u8,
-    pub mmap_entry_size: usize,
-    pub mmap_len: usize,
+    pub mmap: MemoryMapEntrySlice,
     pub kernel_start: u64,
     pub kernel_pages: u64,
+}
+
+#[derive(Debug)]
+#[repr(C)]
+pub struct MemoryMapEntrySlice {
+    ptr: *mut MemoryMapEntry,
+    capacity: usize,
+    len: usize,
+}
+
+impl MemoryMapEntrySlice {
+    pub unsafe fn new(ptr: *mut MemoryMapEntry, capacity: usize) -> Self {
+        Self {
+            ptr,
+            capacity,
+            len: 0,
+        }
+    }
+
+    pub fn push(&mut self, e: MemoryMapEntry) {
+        assert!(self.capacity >= self.len + 1);
+        unsafe { *self.ptr.add(self.len) = e };
+        self.len += 1;
+    }
+
+    pub fn get(&self, idx: usize) -> &MemoryMapEntry {
+        assert!(idx < self.len);
+        unsafe { &*self.ptr.add(idx) }
+    }
+
+    pub fn iter(&self) -> MemoryMapEntrySliceIter {
+        MemoryMapEntrySliceIter {
+            ptr: self.ptr,
+            len: self.len,
+            pos: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryMapEntrySliceIter {
+    ptr: *const MemoryMapEntry,
+    len: usize,
+    pos: usize,
+}
+
+impl Iterator for MemoryMapEntrySliceIter {
+    type Item = *const MemoryMapEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos + 1 == self.len {
+            None
+        } else {
+            self.pos += 1;
+            Some(unsafe { self.ptr.add(self.pos - 1) })
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct MemoryMapEntry {
+    pub class: MemoryClass,
+    /// Starting physical address.
+    pub phys_start: u64,
+    /// Number of 4 KiB pages contained in this range.
+    pub page_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub enum MemoryClass {
+    Free,
+    KernelReclaim,
+    KernelMemory,
+    Unusable,
 }
 
 pub type EntryPoint = fn(*const BootInfo) -> !;

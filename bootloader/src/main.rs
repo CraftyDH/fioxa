@@ -1,17 +1,18 @@
 #![no_std]
 #![no_main]
 
-use core::slice;
-
 use bootloader::{
     fs, gop,
     kernel::load_kernel,
     paging::{clone_pml4, get_uefi_active_mapper},
-    BootInfo,
+    BootInfo, MemoryClass, MemoryMapEntry, MemoryMapEntrySlice, KERNEL_MEMORY, KERNEL_RECLAIM,
 };
 use uefi::{
     prelude::{entry, BootServices},
-    table::{boot::MemoryType, Boot, SystemTable},
+    table::{
+        boot::{AllocateType, MemoryType},
+        Boot, SystemTable,
+    },
     Handle, Status,
 };
 
@@ -64,8 +65,8 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
 
     let stack = unsafe {
         let stack = boot_services
-            .allocate_pool(MemoryType::LOADER_DATA, 0x1000 * 25) // 100 KB
-            .unwrap();
+            .allocate_pages(AllocateType::AnyPages, KERNEL_RECLAIM, 25) // 100 KB
+            .unwrap() as *mut u8;
         core::ptr::write_bytes(stack, 0, 0x1000 * 25);
         stack.add(0x1000 * 25)
     };
@@ -76,36 +77,74 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
     let entry_point = load_system(&boot_services, &mut image_handle, &mut boot_info);
 
     let mmap_size = boot_services.memory_map_size();
-    boot_info.mmap_entry_size = mmap_size.entry_size;
 
-    // Add a few extra bytes of space, since this allocation will increase the mmap size
-    let size = mmap_size.map_size + 0x1000 - 1;
+    // Add a few extra zones to ensure that we will be able to describe everything
+    let max_entries = (mmap_size.map_size + 10) / mmap_size.entry_size;
+
     let mmap_ptr = boot_services
-        .allocate_pool(MemoryType::LOADER_DATA, size)
+        .allocate_pool(
+            KERNEL_RECLAIM,
+            max_entries * core::mem::size_of::<MemoryMapEntry>(),
+        )
         .unwrap();
 
-    boot_info.mmap_buf = mmap_ptr;
+    let mut memory_map_buffer =
+        unsafe { MemoryMapEntrySlice::new(mmap_ptr as *mut MemoryMapEntry, max_entries) };
 
-    let memory_map_buffer = {
-        let buffer = unsafe { slice::from_raw_parts_mut(mmap_ptr, size) };
-        buffer
-    };
-
-    let mut mmap = boot_services.memory_map(memory_map_buffer).unwrap();
-
-    mmap.sort();
-
-    boot_info.mmap_len = mmap.entries().len();
-
-    let (runtime_table, _mmap) = system_table.exit_boot_services();
+    let (runtime_table, mut mmap) = system_table.exit_boot_services();
     // No point printing anything since once we get the GOP buffer the UEFI sdout stops working
 
     boot_info.uefi_runtime_table = runtime_table.get_current_system_table_addr();
+
+    mmap.sort();
+
+    let mut entries = mmap.entries().peekable();
+    while let Some(e) = entries.next() {
+        let mut page_count = e.page_count;
+
+        let class = get_memtype_class(e.ty);
+
+        // Colapse entries which are usability
+        while let Some(next) = entries.peek() {
+            if e.phys_start + page_count * 0x1000 == next.phys_start
+                && get_memtype_class(next.ty) == class
+            {
+                page_count += entries.next().unwrap().page_count;
+            } else {
+                break;
+            }
+        }
+
+        memory_map_buffer.push(MemoryMapEntry {
+            class,
+            phys_start: e.phys_start,
+            page_count,
+        });
+    }
+
+    boot_info.mmap = memory_map_buffer;
 
     unsafe {
         core::arch::asm!("mov rsp, {}; push 0; jmp {}", in(reg) stack, in (reg) entry_point, in("rdi") boot_info as *const BootInfo)
     }
     unreachable!()
+}
+
+fn get_memtype_class(ty: MemoryType) -> MemoryClass {
+    if ty == MemoryType::CONVENTIONAL
+        || ty == MemoryType::BOOT_SERVICES_CODE
+        || ty == MemoryType::BOOT_SERVICES_DATA
+        || ty == MemoryType::LOADER_CODE
+        || ty == MemoryType::LOADER_DATA
+    {
+        MemoryClass::Free
+    } else if ty == KERNEL_RECLAIM {
+        MemoryClass::KernelReclaim
+    } else if ty == KERNEL_MEMORY {
+        MemoryClass::KernelMemory
+    } else {
+        MemoryClass::Unusable
+    }
 }
 
 fn load_system(

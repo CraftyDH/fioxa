@@ -1,4 +1,4 @@
-use uefi::table::boot::MemoryType;
+use crate::KERNEL_RECLAIM;
 
 use super::{
     page_directory::{PageDirectoryEntry, PageTable},
@@ -79,11 +79,7 @@ impl PageTableManager {
             return unsafe { Some(&mut *(pde.get_address() as *mut PageTable)) };
         }
         let new_page = bt
-            .allocate_pages(
-                uefi::table::boot::AllocateType::AnyPages,
-                MemoryType::LOADER_DATA,
-                1,
-            )
+            .allocate_pages(uefi::table::boot::AllocateType::AnyPages, KERNEL_RECLAIM, 1)
             .unwrap();
         unsafe {
             core::ptr::write_bytes(new_page as *mut u8, 0, 0x1000);
