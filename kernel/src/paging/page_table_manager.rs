@@ -8,7 +8,7 @@ use thiserror::Error;
 use crate::paging::page_allocator::free_page_early;
 
 use super::{
-    get_uefi_active_mapper, page_allocator::request_page_early, page_directory::PageDirectoryEntry,
+    get_uefi_active_mapper, page_allocator::request_page, page_directory::PageDirectoryEntry,
     phys_addr_for_virt, virt_addr_for_phys,
 };
 
@@ -180,7 +180,7 @@ impl PhysPageTable {
         if entry.present() {
             addr = virt_addr_for_phys(entry.get_address()) as *mut PhysPageTable;
         } else {
-            let new_page = unsafe { request_page_early().unwrap() };
+            let new_page = unsafe { request_page().unwrap().leak() };
             addr = virt_addr_for_phys(new_page.get_address()) as *mut PhysPageTable;
 
             entry.set_address(new_page.get_address());

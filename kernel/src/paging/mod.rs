@@ -2,10 +2,9 @@ use conquer_once::spin::Lazy;
 use spin::Mutex;
 use x86_64::registers::control::Cr3;
 
-use self::{
-    page_allocator::request_page_early,
-    page_table_manager::{Page, PageLvl3, PageLvl4, PageTable},
-};
+use crate::paging::page_allocator::request_page;
+
+use self::page_table_manager::{Page, PageLvl3, PageLvl4, PageTable};
 
 pub mod offset_map;
 pub mod page_allocator;
@@ -17,7 +16,7 @@ pub const fn gen_lvl3_map() -> Lazy<Mutex<PageTable<'static, PageLvl3>>> {
     Lazy::new(|| {
         Mutex::new(unsafe {
             // The AP startup code needs a 32 bit ptr
-            let page = request_page_early().unwrap();
+            let page = request_page().unwrap().leak();
             assert!(page.get_address() <= u32::MAX as u64);
             PageTable::from_page(page)
         })
@@ -67,6 +66,10 @@ pub fn virt_addr_for_phys(phys: u64) -> u64 {
 
 pub fn virt_addr_offset<T>(t: *const T) -> *const T {
     virt_addr_for_phys(t as u64) as *const T
+}
+
+pub fn virt_addr_offset_mut<T>(t: *mut T) -> *mut T {
+    virt_addr_for_phys(t as u64) as *mut T
 }
 
 pub fn phys_addr_for_virt(virt: u64) -> u64 {

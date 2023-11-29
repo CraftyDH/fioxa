@@ -8,7 +8,7 @@ use crate::{
     gdt::CPULocalGDT,
     paging::{
         get_uefi_active_mapper,
-        page_allocator::{frame_alloc_exec, request_page_early},
+        page_allocator::{frame_alloc_exec, request_page},
         page_table_manager::{Mapper, Page},
         virt_addr_for_phys, MemoryLoc,
     },
@@ -176,7 +176,7 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     let mut map = get_uefi_active_mapper();
 
     for page in (vaddr_base..vaddr_base + gdt_size + 0xfff).step_by(0x1000) {
-        let phys = request_page_early().unwrap();
+        let phys = request_page().unwrap().leak();
         map.map_memory(Page::new(page), phys).unwrap().flush();
     }
 

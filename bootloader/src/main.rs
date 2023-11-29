@@ -133,12 +133,13 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
 fn get_memtype_class(ty: MemoryType) -> MemoryClass {
     if ty == MemoryType::CONVENTIONAL
         || ty == MemoryType::BOOT_SERVICES_CODE
-        || ty == MemoryType::BOOT_SERVICES_DATA
         || ty == MemoryType::LOADER_CODE
-        || ty == MemoryType::LOADER_DATA
     {
         MemoryClass::Free
-    } else if ty == KERNEL_RECLAIM {
+    } else if ty == KERNEL_RECLAIM
+        || ty == MemoryType::BOOT_SERVICES_DATA
+        || ty == MemoryType::LOADER_DATA
+    {
         MemoryClass::KernelReclaim
     } else if ty == KERNEL_MEMORY {
         MemoryClass::KernelMemory

@@ -3,7 +3,7 @@ use core::{cmp::Ordering, fmt::Debug, mem::MaybeUninit, ops::Range};
 use alloc::{boxed::Box, vec::Vec};
 
 use super::{
-    page_allocator::{frame_alloc_exec, request_page, request_page_early, AllocatedPage},
+    page_allocator::{frame_alloc_exec, request_page, AllocatedPage},
     page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB, UnMapMemoryError},
     MemoryLoc,
 };
@@ -68,10 +68,10 @@ impl PageMapping {
 
 impl<'a> PageMapperManager<'a> {
     pub fn new() -> Self {
-        let pml4 = unsafe { request_page_early().unwrap() };
-        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(pml4) };
+        let pml4 = request_page().unwrap();
+        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(*pml4) };
         Self {
-            _pml4: unsafe { AllocatedPage::new(pml4) },
+            _pml4: pml4,
             page_mapper,
             mappings: Vec::new(),
         }
@@ -157,10 +157,14 @@ impl<'a> PageMapperManager<'a> {
             }
         };
         // Make the mapping
-        self.page_mapper
+        match self
+            .page_mapper
             .map_memory(Page::<Size4KB>::containing(address as u64), phys)
-            .unwrap()
-            .flush();
+        {
+            Ok(f) => f.flush(),
+            Err(_) => (), // Already mapped ??
+        }
+
         Some(())
     }
 

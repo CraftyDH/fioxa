@@ -11,13 +11,18 @@ use crate::{
     interrupts::IDT,
     ioapic::Madt,
     lapic::{enable_localapic, LAPIC_ADDR},
-    paging::MemoryLoc,
+    paging::{page_allocator::frame_alloc_exec, MemoryLoc},
     scheduling::taskmanager::core_start_multitasking,
     time::spin_sleep_ms,
 };
 
 /// It is assumed that 0x8000 is identity mapped before this point
 pub unsafe fn boot_aps(madt: &Madt) {
+    if !frame_alloc_exec(|a| a.captured_0x8000()) {
+        println!("WARNING: SINGLE CORE BOOT -- The physical memory region `0x8000` was not availble during initialization.");
+        return;
+    }
+
     // Get current core id
     let bsp_addr = (unsafe { __cpuid(1) }.ebx >> 24) as u8;
 

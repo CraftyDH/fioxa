@@ -4,7 +4,7 @@ use crate::{
     locked_mutex::Locked,
     paging::{
         get_uefi_active_mapper,
-        page_allocator::{free_page_early, request_page_early},
+        page_allocator::{free_page_early, request_page},
         page_table_manager::{Mapper, Page, Size4KB},
     },
     scheduling::without_context_switch,
@@ -54,7 +54,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                         // No block exists in list => allocate new block
                         let block_size = SLAB_SIZES[index];
                         // Only works if all blocks are powers of 2
-                        let frame = request_page_early().unwrap();
+                        let frame = request_page().unwrap().leak();
 
                         let base = allocator.base_address;
                         allocator.base_address += 0x1000;
@@ -83,7 +83,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
 
                     let mut mapper = get_uefi_active_mapper();
                     for page in (base..(base + length)).step_by(0x1000) {
-                        let frame = request_page_early().unwrap();
+                        let frame = request_page().unwrap().leak();
 
                         mapper.map_memory(Page::new(page), frame).unwrap().flush();
                     }

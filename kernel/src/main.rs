@@ -17,20 +17,17 @@ use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
 use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER, TERMINAL_ELF};
 use kernel::cpu_localstorage::init_bsp_task;
+use kernel::elf::load_elf;
 use kernel::fs::{self, FSDRIVES};
 use kernel::interrupts::{self};
 
 use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::{enable_localapic, map_lapic};
-use kernel::memory::BootPageAllocator;
 use kernel::net::ethernet::userspace_networking_main;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map};
-use kernel::paging::page_allocator::BOOT_PAGE_ALLOCATOR;
 use kernel::paging::page_mapper::PageMapping;
 use kernel::paging::page_table_manager::{Mapper, Page, Size4KB};
-use kernel::paging::{
-    get_uefi_active_mapper, set_mem_offset, virt_addr_offset, MemoryLoc, KERNEL_HEAP_MAP,
-};
+use kernel::paging::{get_uefi_active_mapper, set_mem_offset, virt_addr_offset, MemoryLoc};
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::Process;
 use kernel::scheduling::taskmanager::{core_start_multitasking, PROCESSES};
@@ -43,9 +40,9 @@ use kernel::{elf, gdt, paging, service, BOOT_INFO};
 
 use bootloader::uefi::table::cfg::ACPI2_GUID;
 use bootloader::uefi::table::{Runtime, SystemTable};
-use kernel_userspace::elf::spawn_elf_process;
+
 use kernel_userspace::ids::ProcessID;
-use kernel_userspace::service::{get_public_service_id, register_public_service, ServiceMessage};
+use kernel_userspace::service::{register_public_service, ServiceMessage};
 use kernel_userspace::syscall::{
     exit, receive_service_message_blocking, service_create, spawn_process, spawn_thread,
 };
@@ -54,24 +51,17 @@ use kernel_userspace::syscall::{
 entry_point!(main);
 
 pub fn main(info: *const BootInfo) -> ! {
-    let mmap = {
+    let mmap = unsafe {
         x86_64::instructions::interrupts::disable();
 
         // init gdt & idt
-        unsafe { gdt::init_bootgdt() };
+        gdt::init_bootgdt();
         interrupts::init_idt();
 
-        // get boot_info
-        let boot_info = unsafe { info.read() };
-
-        // Initialize boot page allocator & heap
-        unsafe {
-            BOOT_INFO = info;
-            BOOT_PAGE_ALLOCATOR.init_once(|| BootPageAllocator::from(boot_info.mmap.iter()).into());
-            // ensure that allocations that happen during init carry over
-            let mut uefi = get_uefi_active_mapper();
-            uefi.set_next_table(MemoryLoc::KernelHeap as u64, &mut KERNEL_HEAP_MAP.lock());
-        };
+        BOOT_INFO = info;
+        let boot_info = info.read();
+        // Initialize page allocator
+        paging::page_allocator::init(&boot_info.mmap);
 
         // Initalize GOP stdout
         let font = psf1::load_psf1_font(DEFAULT_FONT).expect("cannot load psf1 font");
@@ -82,10 +72,6 @@ pub fn main(info: *const BootInfo) -> ! {
         gop::WRITER.get().unwrap().lock().fill_screen(0x00_00_FF);
         gop::WRITER.get().unwrap().lock().fill_screen(0xFF_FF_FF);
         gop::WRITER.get().unwrap().lock().fill_screen(0x00_00_00);
-
-        log!("Setting up proper page allocator");
-        unsafe { paging::page_allocator::init(boot_info.mmap) };
-        let boot_info = unsafe { info.read() };
 
         boot_info.mmap
     };
@@ -200,18 +186,15 @@ pub fn main(info: *const BootInfo) -> ! {
 }
 
 fn after_boot() {
+    println!("After boot");
+
+    // TODO: Reclaim memory, but first need to drop any references to the memory region
+    // unsafe {
+    //     let reclaim = frame_alloc_exec(|f| f.reclaim_memory());
+    //     println!("RECLAIMED MEMORY: {}Mb", reclaim * 0x1000 / 1024 / 1024);
+    // }
+
     let boot_info = unsafe { &*BOOT_INFO };
-
-    {
-        // Load in 5 pages of stack
-        // TODO: Fix deadlock on debug mode
-        let rsp: u64;
-        unsafe { core::arch::asm!("mov {}, rsp", lateout(reg) rsp) }
-
-        for i in (rsp - 0x5000..rsp).step_by(0x500) {
-            unsafe { core::ptr::read_volatile(i as *const u8) };
-        }
-    }
 
     let mut map = unsafe { get_uefi_active_mapper() };
 
@@ -245,13 +228,9 @@ fn after_boot() {
 
     spawn_thread(|| FSDRIVES.lock().identify());
 
-    spawn_thread(|| {
-        let mut buffer = Vec::new();
-        let elf = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
-        // TODO: Use IO permissions instead of kernel
-        spawn_elf_process(elf, PS2_DRIVER, &[], true, &mut buffer).unwrap();
-        spawn_elf_process(elf, TERMINAL_ELF, &[], false, &mut buffer).unwrap();
-    });
+    // TODO: Use IO permissions instead of kernel
+    load_elf(PS2_DRIVER, &[], true).unwrap();
+    load_elf(TERMINAL_ELF, &[], false).unwrap();
 
     // For testing, accepts all inputs
     spawn_process(
