@@ -15,9 +15,7 @@ pub mod page_table_manager;
 pub const fn gen_lvl3_map() -> Lazy<Mutex<PageTable<'static, PageLvl3>>> {
     Lazy::new(|| {
         Mutex::new(unsafe {
-            // The AP startup code needs a 32 bit ptr
             let page = request_page().unwrap().leak();
-            assert!(page.get_address() <= u32::MAX as u64);
             PageTable::from_page(page)
         })
     })

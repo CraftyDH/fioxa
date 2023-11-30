@@ -1,8 +1,11 @@
 use core::cmp::{max, min};
 
-use uefi::{prelude::BootServices, table::boot::AllocateType};
+use uefi::{
+    prelude::BootServices,
+    table::boot::{AllocateType, MemoryType},
+};
 
-use crate::{paging::get_uefi_active_mapper, BootInfo, OwnedBuffer, KERNEL_MEMORY};
+use crate::{paging::get_uefi_active_mapper, BootInfo, OwnedBuffer};
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -91,13 +94,16 @@ pub fn load_kernel(
     let size = size - base;
     let pages = size / 4096 + 1;
 
-    let page =
-        match boot_services.allocate_pages(AllocateType::AnyPages, KERNEL_MEMORY, pages as usize) {
-            Err(err) => {
-                panic!("Couldn't allocate page {:?}", err);
-            }
-            Ok(p) => p,
-        };
+    let page = match boot_services.allocate_pages(
+        AllocateType::AnyPages,
+        MemoryType::LOADER_DATA,
+        pages as usize,
+    ) {
+        Err(err) => {
+            panic!("Couldn't allocate page {:?}", err);
+        }
+        Ok(p) => p,
+    };
 
     boot_info.kernel_start = page;
     boot_info.kernel_pages = pages;

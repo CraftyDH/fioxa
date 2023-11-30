@@ -23,6 +23,7 @@ use kernel::interrupts::{self};
 
 use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::{enable_localapic, map_lapic};
+use kernel::memory::MemoryMapIter;
 use kernel::net::ethernet::userspace_networking_main;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map};
 use kernel::paging::page_mapper::PageMapping;
@@ -32,7 +33,7 @@ use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::Process;
 use kernel::scheduling::taskmanager::{core_start_multitasking, PROCESSES};
 use kernel::screen::gop::{self, Writer};
-use kernel::screen::psf1::{self};
+use kernel::screen::psf1;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
@@ -60,8 +61,15 @@ pub fn main(info: *const BootInfo) -> ! {
 
         BOOT_INFO = info;
         let boot_info = info.read();
+        // get memory map
+        let mmap = MemoryMapIter::new(
+            boot_info.mmap_buf,
+            boot_info.mmap_entry_size,
+            boot_info.mmap_len,
+        );
+
         // Initialize page allocator
-        paging::page_allocator::init(&boot_info.mmap);
+        paging::page_allocator::init(mmap.clone());
 
         // Initalize GOP stdout
         let font = psf1::load_psf1_font(DEFAULT_FONT).expect("cannot load psf1 font");
@@ -73,7 +81,7 @@ pub fn main(info: *const BootInfo) -> ! {
         gop::WRITER.get().unwrap().lock().fill_screen(0xFF_FF_FF);
         gop::WRITER.get().unwrap().lock().fill_screen(0x00_00_00);
 
-        boot_info.mmap
+        mmap
     };
 
     log!("Welcome to Fioxa...");

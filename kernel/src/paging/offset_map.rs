@@ -1,7 +1,8 @@
-use bootloader::{gop::GopInfo, BootInfo, MemoryMapEntrySlice};
+use bootloader::{gop::GopInfo, BootInfo};
 
 use crate::{
     kernel_memory_loc,
+    memory::MemoryMapIter,
     paging::{
         page_table_manager::{get_chunked_page_range, Mapper, Page},
         virt_addr_offset, MemoryLoc,
@@ -13,11 +14,11 @@ use super::{
     page_table_manager::{PageLvl3, PageLvl4, PageTable, Size4KB},
 };
 
-pub unsafe fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMapEntrySlice) {
+pub unsafe fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMapIter) {
     // Only map actual memory
     // This means we will get a page fault on access to a non ram in the offset table
     // (instead of accessing memory holes/complely non existend addresses)
-    for r in mmap.iter() {
+    for r in mmap {
         print!(".");
         let r = unsafe { &*virt_addr_offset(r) };
 

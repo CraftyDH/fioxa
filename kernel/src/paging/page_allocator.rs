@@ -1,11 +1,13 @@
 use core::ops::{Deref, DerefMut};
 
-use alloc::vec::Vec;
-use bootloader::{MemoryClass, MemoryMapEntrySlice};
+use bootloader::uefi::table::boot::MemoryType;
 use conquer_once::spin::OnceCell;
 use spin::mutex::Mutex;
 
-use crate::{memory::RESERVED_32BIT_MEM_PAGES, scheduling::without_context_switch};
+use crate::{
+    memory::{MemoryMapIter, RESERVED_32BIT_MEM_PAGES},
+    scheduling::without_context_switch,
+};
 
 use super::{
     get_uefi_active_mapper,
@@ -22,25 +24,13 @@ where
     without_context_switch(|| closure(&mut GLOBAL_FRAME_ALLOCATOR.get().unwrap().lock()))
 }
 
-pub unsafe fn init(mmap: &MemoryMapEntrySlice) {
+pub unsafe fn init(mmap: MemoryMapIter) {
     let alloc = unsafe { PageFrameAllocator::new(mmap).into() };
     GLOBAL_FRAME_ALLOCATOR.init_once(|| alloc);
 
     // ensure that allocations that happen during init carry over
     let mut uefi = get_uefi_active_mapper();
     uefi.set_next_table(MemoryLoc::KernelHeap as u64, &mut KERNEL_HEAP_MAP.lock());
-
-    let free = mmap
-        .iter()
-        .map(|e| &*e)
-        .map(|e| SectionPageMapping {
-            phys_start: e.phys_start as usize,
-            page_count: e.page_count as usize,
-            map_type: e.class,
-        })
-        .collect();
-
-    GLOBAL_FRAME_ALLOCATOR.get_unchecked().lock().mappings = free;
 }
 
 pub fn request_page() -> Option<AllocatedPage> {
@@ -181,22 +171,15 @@ pub struct PageMetadata32 {
 // This counts a 1gb zone
 const MAX_ORDER: usize = 18;
 
-/// TODO: Implement a bitmap to determine when we can coalese blocks back together 
+/// TODO: Implement a bitmap to determine when we can coalese blocks back together
 
 pub struct PageFrameAllocator {
-    free_lists: [Option<*mut PageMetadata>; MAX_ORDER],
+    free_lists: [Option<*mut PageMetadata>; MAX_ORDER + 1],
     reserved_32bit: Option<*mut PageMetadata32>,
 
     // we reserve 0x8000 specifically for the purpose of booting AP's
     captured_0x8000: bool,
     total_free: usize,
-    mappings: Vec<SectionPageMapping>,
-}
-
-pub struct SectionPageMapping {
-    phys_start: usize,
-    page_count: usize,
-    map_type: MemoryClass,
 }
 
 unsafe impl Send for PageFrameAllocator {}
@@ -207,20 +190,17 @@ pub fn pages_in_order(order: usize) -> usize {
 }
 
 impl PageFrameAllocator {
-    pub unsafe fn new(mmap: &MemoryMapEntrySlice) -> Self {
+    pub unsafe fn new(mmap: MemoryMapIter) -> Self {
         let mut this = Self {
             free_lists: Default::default(),
             captured_0x8000: false,
             reserved_32bit: None,
             total_free: 0,
-            // This is fine as vec will not allocate until pushed
-            mappings: Vec::new(),
         };
 
         let mut free = mmap
-            .iter()
             .map(|e| &*e)
-            .filter(|e| e.class == MemoryClass::Free);
+            .filter(|e| e.ty == MemoryType::CONVENTIONAL);
 
         // Capture the reserved pages
         let mut free_found = 0;
@@ -268,39 +248,6 @@ impl PageFrameAllocator {
             this.insert_free_of_range(start_addr, pages_left);
         }
         this
-    }
-
-    pub unsafe fn reclaim_memory(&mut self) -> usize {
-        let mut map = core::mem::take(&mut self.mappings);
-
-        let mut reclaim = 0;
-        let mut last = None;
-        for el in map.iter_mut() {
-            match el.map_type {
-                MemoryClass::Free => last = Some(el),
-                MemoryClass::KernelReclaim => {
-                    self.total_free += el.page_count;
-                    reclaim += el.page_count;
-                    self.insert_free_of_range(el.phys_start, el.page_count);
-
-                    if last
-                        .as_ref()
-                        .is_some_and(|l| l.phys_start + l.page_count * 0x1000 == el.phys_start)
-                    {
-                        // The last node is good for collapsing
-                        last.as_mut().unwrap().page_count += el.page_count;
-                    } else {
-                        el.map_type = MemoryClass::Free;
-                        last = Some(el);
-                    }
-                }
-                _ => last = None,
-            }
-        }
-
-        map.retain(|e| e.map_type != MemoryClass::KernelReclaim);
-        self.mappings = map;
-        reclaim
     }
 
     pub fn captured_0x8000(&self) -> bool {
