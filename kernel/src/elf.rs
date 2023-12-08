@@ -1,19 +1,16 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
     elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
     ids::ProcessID,
     service::{register_public_service, SendServiceMessageDest, ServiceMessage},
     syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
 };
-use x86_64::{align_down, align_up};
+use x86_64::{align_down, align_up, instructions::interrupts::without_interrupts};
 
 use crate::{
     assembly::registers::Registers,
-    paging::{
-        page_allocator::frame_alloc_exec,
-        page_mapper::{MaybeAllocatedPage, PageMapping},
-        virt_addr_for_phys,
-    },
+    cpu_localstorage::CPULocalStorageRW,
+    paging::page_mapper::PageMapping,
     scheduling::{
         process::{Process, ProcessPrivilige},
         taskmanager::{push_task_queue, PROCESSES},
@@ -47,38 +44,39 @@ pub fn load_elf<'a>(
 
     let mut memory = process.memory.lock();
 
+    let this_mem = &CPULocalStorageRW::get_current_task().process.memory;
+
     println!("COPYING MEM...");
     // Iterate over each header
     for program_header in headers {
         if program_header.p_type == PT_LOAD {
             let vstart = align_down(program_header.p_vaddr, 0x1000);
-            let vallocend = align_up(program_header.p_vaddr + program_header.p_filesz, 0x1000);
+            // let vallocend = align_up(program_header.p_vaddr + program_header.p_filesz, 0x1000);
             let vend = align_up(program_header.p_vaddr + program_header.p_memsz, 0x1000);
 
-            let pages: Box<[_]> =
-                frame_alloc_exec(|c| c.request_cont_pages((vallocend - vstart) as usize / 0x1000))
-                    .ok_or(LoadElfError::InternalError)?
-                    .map(|a| MaybeAllocatedPage::from(a))
-                    // if there is extra space lazy allocate the zeros
-                    .chain((0..((vend - vallocend) / 0x1000)).map(|_| MaybeAllocatedPage::new()))
-                    .collect();
+            let size = (vend - vstart) as usize;
+            let mem = PageMapping::new_lazy(size);
 
-            let first = pages[0].get();
+            // Map into the new processes address space
             memory
                 .page_mapper
-                .insert_mapping_at(vstart as usize, PageMapping::new_lazy_prealloc(pages))
+                .insert_mapping_at(vstart as usize, mem.clone())
                 .ok_or(LoadElfError::InternalError)?;
 
-            // If all zeros we don't need to copy anything
-            if let Some(first) = first {
-                let start = first.get_address();
-                unsafe {
-                    core::ptr::copy_nonoverlapping::<u8>(
-                        data.as_ptr().add(program_header.p_offset as usize),
-                        virt_addr_for_phys(start + program_header.p_vaddr - vstart) as *mut u8,
-                        program_header.p_filesz as usize,
-                    )
-                }
+            unsafe {
+                // Map into our address space
+                let base = without_interrupts(|| this_mem.lock().page_mapper.insert_mapping(mem));
+
+                // Copy the contents
+                core::ptr::copy_nonoverlapping::<u8>(
+                    data.as_ptr().add(program_header.p_offset as usize),
+                    (base + (program_header.p_vaddr & 0xFFF) as usize) as *mut u8,
+                    program_header.p_filesz as usize,
+                );
+
+                // Unmap from our address space
+                without_interrupts(|| this_mem.lock().page_mapper.free_mapping(base..base + size))
+                    .unwrap();
             }
         }
     }

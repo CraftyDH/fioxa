@@ -1,4 +1,6 @@
+use alloc::sync::Arc;
 use bootloader::{gop::GopInfo, BootInfo};
+use conquer_once::spin::OnceCell;
 
 use crate::{
     kernel_memory_loc,
@@ -89,14 +91,19 @@ pub unsafe fn map_gop(mapper: &mut PageTable<PageLvl4>, gop: &GopInfo) {
     }
 }
 
-pub unsafe fn get_gop_range(gop: &GopInfo) -> (usize, PageMapping) {
-    let fb_ptr = *gop.buffer.as_ptr() as usize;
+pub unsafe fn get_gop_range(gop: &GopInfo) -> (usize, Arc<PageMapping>) {
+    static GOP_RANGE: OnceCell<(usize, Arc<PageMapping>)> = OnceCell::uninit();
+    GOP_RANGE
+        .get_or_init(|| {
+            let fb_ptr = *gop.buffer.as_ptr() as usize;
 
-    let fb_base = fb_ptr & !0xFFF;
+            let fb_base = fb_ptr & !0xFFF;
 
-    let fb_top = (fb_base + gop.buffer_size as usize + 0xFFF) & !0xFFF;
+            let fb_top = (fb_base + gop.buffer_size as usize + 0xFFF) & !0xFFF;
 
-    (fb_base, PageMapping::new_mmap(fb_base, fb_top - fb_base))
+            (fb_base, PageMapping::new_mmap(fb_base, fb_top - fb_base))
+        })
+        .clone()
 }
 
 pub unsafe fn create_kernel_map(mapper: &mut PageTable<PageLvl3>, boot_info: &BootInfo) {

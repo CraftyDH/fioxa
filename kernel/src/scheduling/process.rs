@@ -11,7 +11,7 @@ use kernel_userspace::{
     service::ServiceTrackingNumber,
     syscall::exit,
 };
-use spin::Mutex;
+use spin::{Lazy, Mutex};
 use x86_64::{
     structures::{
         gdt::SegmentSelector,
@@ -106,8 +106,11 @@ impl Process {
             let gop = get_gop_range(&(*BOOT_INFO).gop);
             page_mapper.insert_mapping_at(gop.0, gop.1).unwrap();
 
+            static APIC_LOCATION: Lazy<Arc<PageMapping>> =
+                Lazy::new(|| unsafe { PageMapping::new_mmap(0xfee00000, 0x1000) });
+
             page_mapper
-                .insert_mapping_at(0xfee00000, PageMapping::new_mmap(0xfee00000, 0x1000))
+                .insert_mapping_at(0xfee00000, APIC_LOCATION.clone())
                 .unwrap();
         }
 

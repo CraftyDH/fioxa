@@ -1,6 +1,7 @@
 use core::{cmp::Ordering, fmt::Debug, mem::MaybeUninit, ops::Range};
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use spin::Mutex;
 
 use super::{
     page_allocator::{frame_alloc_exec, request_page, AllocatedPage},
@@ -13,7 +14,7 @@ pub struct PageMapperManager<'a> {
     page_mapper: PageTable<'a, PageLvl4>,
     // start offset, end offset, mapping
     // this should always be ordered
-    mappings: Vec<(Range<usize>, PageMapping)>,
+    mappings: Vec<(Range<usize>, Arc<PageMapping>)>,
 }
 
 #[derive(Debug)]
@@ -22,9 +23,19 @@ pub struct PageMapping {
     mapping: PageMappingType,
 }
 
+impl PageMapping {
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
 pub enum PageMappingType {
-    MMAP { base_address: usize },
-    LazyMapping { pages: Box<[MaybeAllocatedPage]> },
+    MMAP {
+        base_address: usize,
+    },
+    LazyMapping {
+        pages: Mutex<Box<[MaybeAllocatedPage]>>,
+    },
 }
 
 impl Debug for PageMappingType {
@@ -37,32 +48,34 @@ impl Debug for PageMappingType {
 }
 
 impl PageMapping {
-    pub fn new_lazy(size: usize) -> PageMapping {
+    pub fn new_lazy(size: usize) -> Arc<PageMapping> {
         let b = unsafe {
             let mut b = Box::new_uninit_slice((size + 0xFFF) / 0x1000);
             b.fill_with(|| MaybeUninit::new(MaybeAllocatedPage::new()));
             b.assume_init()
         };
-        PageMapping {
+        Arc::new(PageMapping {
             size,
-            mapping: PageMappingType::LazyMapping { pages: b },
-        }
+            mapping: PageMappingType::LazyMapping { pages: b.into() },
+        })
     }
 
-    pub fn new_lazy_prealloc(pages: Box<[MaybeAllocatedPage]>) -> Self {
-        Self {
+    pub fn new_lazy_prealloc(pages: Box<[MaybeAllocatedPage]>) -> Arc<Self> {
+        Arc::new(Self {
             size: pages.len() * 0x1000,
-            mapping: PageMappingType::LazyMapping { pages },
-        }
+            mapping: PageMappingType::LazyMapping {
+                pages: pages.into(),
+            },
+        })
     }
 
-    pub unsafe fn new_mmap(base_address: usize, size: usize) -> Self {
+    pub unsafe fn new_mmap(base_address: usize, size: usize) -> Arc<Self> {
         assert_eq!(base_address & 0xFFF, 0);
         assert_eq!(size & 0xFFF, 0);
-        Self {
+        Arc::new(Self {
             size,
             mapping: PageMappingType::MMAP { base_address },
-        }
+        })
     }
 }
 
@@ -81,7 +94,7 @@ impl<'a> PageMapperManager<'a> {
         &mut self.page_mapper
     }
 
-    pub fn insert_mapping_at(&mut self, base: usize, mapping: PageMapping) -> Option<()> {
+    pub fn insert_mapping_at(&mut self, base: usize, mapping: Arc<PageMapping>) -> Option<()> {
         assert!(base & 0xFFF == 0);
 
         let end = base + mapping.size;
@@ -101,7 +114,7 @@ impl<'a> PageMapperManager<'a> {
         Some(())
     }
 
-    pub fn insert_mapping(&mut self, mapping: PageMapping) -> usize {
+    pub fn insert_mapping(&mut self, mapping: Arc<PageMapping>) -> usize {
         let idx = self
             .mappings
             .windows(2)
@@ -141,13 +154,13 @@ impl<'a> PageMapperManager<'a> {
 
         let map = &mut self.mappings[idx];
         let offset = address - map.0.start;
-        let phys = match &mut map.1.mapping {
+        let phys = match &map.1.mapping {
             PageMappingType::MMAP { base_address } => {
                 Page::containing((*base_address + offset) as u64)
             }
             PageMappingType::LazyMapping { pages } => {
                 let idx = offset / 0x1000;
-                let page = &mut pages[idx];
+                let page = &mut pages.lock()[idx];
                 page.0.unwrap_or_else(|| {
                     let apage = request_page().unwrap();
                     let p = *apage;
