@@ -4,7 +4,10 @@ use core::{arch::x86_64::_mm_pause, mem::transmute, ptr::read_volatile};
 
 use acpi::HpetInfo;
 
-use crate::paging::page_table_manager::{ident_map_curr_process, Page, Size4KB};
+use crate::paging::{
+    page_table_manager::{ensure_ident_map_curr_process, Page, Size4KB},
+    MemoryMappingFlags,
+};
 
 use self::bitfields::CapabilitiesIDRegister;
 
@@ -18,7 +21,12 @@ pub struct HPET {
 
 impl HPET {
     pub fn new(hpet: HpetInfo) -> Self {
-        unsafe { ident_map_curr_process(Page::<Size4KB>::new(hpet.base_address as u64), true) };
+        unsafe {
+            ensure_ident_map_curr_process(
+                Page::<Size4KB>::new(hpet.base_address as u64),
+                MemoryMappingFlags::WRITEABLE,
+            )
+        };
         let x = unsafe { core::ptr::read_volatile(hpet.base_address as *const u64) };
         let capabilities: CapabilitiesIDRegister = unsafe { transmute(x) };
 

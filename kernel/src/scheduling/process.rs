@@ -27,7 +27,7 @@ use crate::{
         offset_map::{get_gop_range, map_gop},
         page_allocator::Allocated32Page,
         page_mapper::{PageMapperManager, PageMapping},
-        MemoryLoc, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
+        MemoryLoc, MemoryMappingFlags, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
     BOOT_INFO,
 };
@@ -104,13 +104,19 @@ impl Process {
             // We still need to map it gop otherwise println's can deadlock when mapping it lazily
             map_gop(m, &(*BOOT_INFO).gop);
             let gop = get_gop_range(&(*BOOT_INFO).gop);
-            page_mapper.insert_mapping_at(gop.0, gop.1).unwrap();
+            page_mapper
+                .insert_mapping_at(gop.0, gop.1, MemoryMappingFlags::WRITEABLE)
+                .unwrap();
 
             static APIC_LOCATION: Lazy<Arc<PageMapping>> =
                 Lazy::new(|| unsafe { PageMapping::new_mmap(0xfee00000, 0x1000) });
 
             page_mapper
-                .insert_mapping_at(0xfee00000, APIC_LOCATION.clone())
+                .insert_mapping_at(
+                    0xfee00000,
+                    APIC_LOCATION.clone(),
+                    MemoryMappingFlags::WRITEABLE,
+                )
                 .unwrap();
         }
 
@@ -145,7 +151,7 @@ impl Process {
         self.memory
             .lock()
             .page_mapper
-            .insert_mapping_at(stack_base as usize, stack)
+            .insert_mapping_at(stack_base as usize, stack, MemoryMappingFlags::all())
             .unwrap();
 
         let interrupt_frame = InterruptStackFrameValue {

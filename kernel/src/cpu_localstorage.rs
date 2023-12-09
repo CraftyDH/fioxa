@@ -10,7 +10,7 @@ use crate::{
         get_uefi_active_mapper,
         page_allocator::{frame_alloc_exec, request_page},
         page_table_manager::{Mapper, Page},
-        virt_addr_for_phys, MemoryLoc,
+        virt_addr_for_phys, MemoryLoc, MemoryMappingFlags,
     },
     scheduling::{
         process::Thread,
@@ -177,7 +177,9 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
 
     for page in (vaddr_base..vaddr_base + gdt_size + 0xfff).step_by(0x1000) {
         let phys = request_page().unwrap().leak();
-        map.map_memory(Page::new(page), phys).unwrap().flush();
+        map.map_memory(Page::new(page), phys, MemoryMappingFlags::WRITEABLE)
+            .unwrap()
+            .flush();
     }
 
     let ls = unsafe { &mut *(vaddr_base as *mut CPULocalStorage) };

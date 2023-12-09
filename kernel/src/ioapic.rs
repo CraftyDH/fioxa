@@ -16,6 +16,7 @@ use crate::{
     paging::{
         get_uefi_active_mapper,
         page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
+        MemoryMappingFlags,
     },
 };
 
@@ -27,7 +28,10 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
     for apic in &io_apics {
         println!("APIC: {:?}", apic);
         mapper
-            .identity_map_memory(Page::<Size4KB>::new(apic.apic_addr.into()))
+            .identity_map_memory(
+                Page::<Size4KB>::new(apic.apic_addr.into()),
+                MemoryMappingFlags::WRITEABLE,
+            )
             .unwrap()
             .flush();
     }
@@ -99,7 +103,10 @@ pub fn mask_entry(irq: u8, enable: bool) {
 
     let page = Page::<Size4KB>::new(apic_base as u64);
 
-    mapper.identity_map_memory(page).unwrap().flush();
+    mapper
+        .identity_map_memory(page, MemoryMappingFlags::WRITEABLE)
+        .unwrap()
+        .flush();
     let mut low = read_ioapic_register(apic_base, 0x10 + 2 * irq);
 
     low.set_bit(16, !enable);

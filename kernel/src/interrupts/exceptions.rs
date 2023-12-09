@@ -115,8 +115,13 @@ extern "x86-interrupt" fn page_fault_handler(
     // WRITER.lock().fill_screen(0xFF_00_00);
     // WRITER.lock().pos.y = 0;
     let addr = Cr2::read();
-
-    if error_code.contains(PageFaultErrorCode::complement(
+    if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
+        println!(
+            "EXCEPTION: PAGE FAULT: Protection violation at {:?} {error_code:?}",
+            addr
+        );
+        kill_bad_task()
+    } else if error_code.contains(PageFaultErrorCode::complement(
         PageFaultErrorCode::CAUSED_BY_WRITE
             | PageFaultErrorCode::USER_MODE
             | PageFaultErrorCode::INSTRUCTION_FETCH,

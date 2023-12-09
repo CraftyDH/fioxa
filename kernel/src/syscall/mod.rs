@@ -13,6 +13,7 @@ use crate::{
     gdt::TASK_SWITCH_INDEX,
     paging::{
         page_allocator::frame_alloc_exec, page_mapper::PageMapping, page_table_manager::Mapper,
+        MemoryMappingFlags,
     },
     scheduling::taskmanager::{self, kill_bad_task},
     service,
@@ -177,11 +178,13 @@ fn mmap_page_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     let lazy_page = PageMapping::new_lazy((regs.r9 + 0xFFF) & !0xFFF);
 
     if regs.r8 == 0 {
-        regs.rax = memory.page_mapper.insert_mapping(lazy_page);
+        regs.rax = memory
+            .page_mapper
+            .insert_mapping(lazy_page, MemoryMappingFlags::all());
     } else {
         memory
             .page_mapper
-            .insert_mapping_at(regs.r8, lazy_page)
+            .insert_mapping_at(regs.r8, lazy_page, MemoryMappingFlags::all())
             .ok_or(SyscallError::MappingExists)?;
         regs.rax = regs.r8;
     }
@@ -201,7 +204,7 @@ fn mmap_page32_handler(regs: &mut Registers) -> Result<(), SyscallError> {
         memory
             .page_mapper
             .get_mapper_mut()
-            .identity_map_memory(*page)
+            .identity_map_memory(*page, MemoryMappingFlags::all())
             .map_err(|_| SyscallError::MappingExists)?
             .flush();
     }

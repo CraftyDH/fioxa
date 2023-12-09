@@ -14,6 +14,7 @@ use crate::{
 use super::{
     page_mapper::PageMapping,
     page_table_manager::{PageLvl3, PageLvl4, PageTable, Size4KB},
+    MemoryMappingFlags,
 };
 
 pub unsafe fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMapIter) {
@@ -41,6 +42,7 @@ pub unsafe fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMa
                     .map_memory(
                         Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),
                         page,
+                        MemoryMappingFlags::WRITEABLE,
                     )
                     .unwrap()
                     .ignore();
@@ -53,6 +55,7 @@ pub unsafe fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMa
                     .map_memory(
                         Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),
                         page,
+                        MemoryMappingFlags::WRITEABLE,
                     )
                     .unwrap()
                     .ignore();
@@ -64,6 +67,7 @@ pub unsafe fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMa
                 .map_memory(
                     Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),
                     page,
+                    MemoryMappingFlags::WRITEABLE,
                 )
                 .unwrap()
                 .ignore();
@@ -85,7 +89,7 @@ pub unsafe fn map_gop(mapper: &mut PageTable<PageLvl4>, gop: &GopInfo) {
 
     for i in (fb_base..fb_size + 0xFFF).step_by(0x1000) {
         mapper
-            .identity_map_memory(Page::<Size4KB>::new(i))
+            .identity_map_memory(Page::<Size4KB>::new(i), MemoryMappingFlags::WRITEABLE)
             .unwrap()
             .ignore();
     }
@@ -118,6 +122,7 @@ pub unsafe fn create_kernel_map(mapper: &mut PageTable<PageLvl3>, boot_info: &Bo
             .map_memory(
                 Page::<Size4KB>::new(MemoryLoc::KernelStart as u64 + i),
                 Page::<Size4KB>::new(base + i),
+                MemoryMappingFlags::WRITEABLE,
             )
             .unwrap()
             .ignore();

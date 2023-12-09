@@ -6,6 +6,7 @@ use crate::{
         get_uefi_active_mapper,
         page_allocator::{free_page_early, request_page},
         page_table_manager::{Mapper, Page, Size4KB},
+        MemoryMappingFlags,
     },
     scheduling::without_context_switch,
 };
@@ -60,7 +61,10 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                         allocator.base_address += 0x1000;
 
                         let mut mapper = get_uefi_active_mapper();
-                        mapper.map_memory(Page::new(base), frame).unwrap().flush();
+                        mapper
+                            .map_memory(Page::new(base), frame, MemoryMappingFlags::WRITEABLE)
+                            .unwrap()
+                            .flush();
 
                         let mut current_node = None;
                         for block in (base..(base + 0x1000)).step_by(block_size) {
@@ -85,7 +89,10 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     for page in (base..(base + length)).step_by(0x1000) {
                         let frame = request_page().unwrap().leak();
 
-                        mapper.map_memory(Page::new(page), frame).unwrap().flush();
+                        mapper
+                            .map_memory(Page::new(page), frame, MemoryMappingFlags::WRITEABLE)
+                            .unwrap()
+                            .flush();
                     }
                     base as *mut u8
                 }

@@ -52,6 +52,14 @@ pub enum MemoryLoc64bit48bits {
     KernelStart = 0xffff_FF8000000000,       // 511
 }
 
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy)]
+    pub struct MemoryMappingFlags: u8 {
+        const WRITEABLE  = 1 << 0;
+        const USERSPACE  = 1 << 1;
+    }
+}
+
 static mut MEM_OFFSET: u64 = 0;
 pub unsafe fn set_mem_offset(n: u64) {
     unsafe { MEM_OFFSET = n }

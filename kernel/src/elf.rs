@@ -10,13 +10,31 @@ use x86_64::{align_down, align_up, instructions::interrupts::without_interrupts}
 use crate::{
     assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
-    paging::page_mapper::PageMapping,
+    paging::{page_mapper::PageMapping, MemoryMappingFlags},
     scheduling::{
         process::{Process, ProcessPrivilige},
         taskmanager::{push_task_queue, PROCESSES},
         without_context_switch,
     },
 };
+
+bitflags::bitflags! {
+    struct ElfSegmentFlags: u32 {
+        const PF_X = 0x1;
+        const PF_W = 0x2;
+        const PF_R = 0x4;
+    }
+}
+
+impl ElfSegmentFlags {
+    pub fn to_mapping_flags(&self) -> MemoryMappingFlags {
+        let mut flags = MemoryMappingFlags::USERSPACE;
+        if self.contains(ElfSegmentFlags::PF_W) {
+            flags |= MemoryMappingFlags::WRITEABLE;
+        }
+        flags
+    }
+}
 
 pub fn load_elf<'a>(
     data: &'a [u8],
@@ -57,15 +75,22 @@ pub fn load_elf<'a>(
             let size = (vend - vstart) as usize;
             let mem = PageMapping::new_lazy(size);
 
+            let flags = ElfSegmentFlags::from_bits_truncate(program_header.p_flags);
+
             // Map into the new processes address space
             memory
                 .page_mapper
-                .insert_mapping_at(vstart as usize, mem.clone())
+                .insert_mapping_at(vstart as usize, mem.clone(), flags.to_mapping_flags())
                 .ok_or(LoadElfError::InternalError)?;
 
             unsafe {
                 // Map into our address space
-                let base = without_interrupts(|| this_mem.lock().page_mapper.insert_mapping(mem));
+                let base = without_interrupts(|| {
+                    this_mem
+                        .lock()
+                        .page_mapper
+                        .insert_mapping(mem, MemoryMappingFlags::all())
+                });
 
                 // Copy the contents
                 core::ptr::copy_nonoverlapping::<u8>(

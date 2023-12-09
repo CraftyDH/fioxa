@@ -27,8 +27,10 @@ use kernel::memory::MemoryMapIter;
 use kernel::net::ethernet::userspace_networking_main;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map};
 use kernel::paging::page_mapper::PageMapping;
-use kernel::paging::page_table_manager::{Mapper, Page, Size4KB};
-use kernel::paging::{get_uefi_active_mapper, set_mem_offset, virt_addr_offset, MemoryLoc};
+use kernel::paging::page_table_manager::{ensure_ident_map_curr_process, Mapper, Page, Size4KB};
+use kernel::paging::{
+    get_uefi_active_mapper, set_mem_offset, virt_addr_offset, MemoryLoc, MemoryMappingFlags,
+};
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::Process;
 use kernel::scheduling::taskmanager::{core_start_multitasking, PROCESSES};
@@ -99,8 +101,11 @@ pub fn main(info: *const BootInfo) -> ! {
             let mut mem = init_process.memory.lock();
 
             // we need to set 0x8000 for the trampoline
-            mem.page_mapper
-                .insert_mapping_at(0x8000, PageMapping::new_mmap(0x8000, 0x1000));
+            mem.page_mapper.insert_mapping_at(
+                0x8000,
+                PageMapping::new_mmap(0x8000, 0x1000),
+                MemoryMappingFlags::WRITEABLE,
+            );
 
             let map = mem.page_mapper.get_mapper_mut();
 
@@ -142,7 +147,10 @@ pub fn main(info: *const BootInfo) -> ! {
 
     unsafe {
         get_uefi_active_mapper()
-            .identity_map_memory(Page::<Size4KB>::containing(boot_info.uefi_runtime_table))
+            .identity_map_memory(
+                Page::<Size4KB>::containing(boot_info.uefi_runtime_table),
+                MemoryMappingFlags::empty(),
+            )
             .unwrap()
             .ignore();
     }
@@ -204,11 +212,12 @@ fn after_boot() {
 
     let boot_info = unsafe { &*BOOT_INFO };
 
-    let mut map = unsafe { get_uefi_active_mapper() };
-
-    map.identity_map_memory(Page::<Size4KB>::containing(boot_info.uefi_runtime_table))
-        .unwrap()
-        .ignore();
+    unsafe {
+        ensure_ident_map_curr_process(
+            Page::<Size4KB>::containing(boot_info.uefi_runtime_table),
+            MemoryMappingFlags::empty(),
+        )
+    };
 
     let runtime_table =
         unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
@@ -256,7 +265,7 @@ fn after_boot() {
             }
         },
         &[],
-        false,
+        true,
     );
 
     // spawn_thread(|| {

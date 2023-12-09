@@ -9,7 +9,7 @@ use crate::paging::page_allocator::free_page_early;
 
 use super::{
     get_uefi_active_mapper, page_allocator::request_page, page_directory::PageDirectoryEntry,
-    phys_addr_for_virt, virt_addr_for_phys,
+    phys_addr_for_virt, virt_addr_for_phys, MemoryMappingFlags,
 };
 
 #[derive(Error, Debug)]
@@ -96,10 +96,19 @@ impl<S: PageSize> Clone for Page<S> {
 }
 
 pub trait Mapper<S: PageSize> {
-    fn map_memory(&mut self, from: Page<S>, to: Page<S>) -> Result<Flusher, MapMemoryError>;
+    fn map_memory(
+        &mut self,
+        from: Page<S>,
+        to: Page<S>,
+        flags: MemoryMappingFlags,
+    ) -> Result<Flusher, MapMemoryError>;
     #[inline]
-    fn identity_map_memory(&mut self, page: Page<S>) -> Result<Flusher, MapMemoryError> {
-        self.map_memory(page, page)
+    fn identity_map_memory(
+        &mut self,
+        page: Page<S>,
+        flags: MemoryMappingFlags,
+    ) -> Result<Flusher, MapMemoryError> {
+        self.map_memory(page, page, flags)
     }
     fn unmap_memory(&mut self, page: Page<S>) -> Result<Flusher, UnMapMemoryError>;
     fn get_phys_addr(&mut self, page: Page<S>) -> Option<u64>;
@@ -309,6 +318,7 @@ impl<S: PageLevel + LvlSize> PageTable<'_, S> {
         &mut self,
         from: Page<S::Size>,
         to: Page<S::Size>,
+        flags: MemoryMappingFlags,
     ) -> Result<Flusher, MapMemoryError> {
         let entry = self.get_entry_mut(from);
 
@@ -328,8 +338,8 @@ impl<S: PageLevel + LvlSize> PageTable<'_, S> {
         entry.set_present(true);
         entry.set_larger_pages(S::Size::LARGE_PAGE);
         entry.set_address(to.address.into());
-        entry.set_read_write(true);
-        entry.set_user_super(true);
+        entry.set_read_write(flags.contains(MemoryMappingFlags::WRITEABLE));
+        entry.set_user_super(flags.contains(MemoryMappingFlags::USERSPACE));
 
         Ok(Flusher(from.address.into()))
     }
@@ -363,20 +373,12 @@ impl<S: PageLevel + LvlSize> PageTable<'_, S> {
     }
 }
 
-pub unsafe fn ident_map_curr_process<S: PageSize>(page: Page<S>, _write: bool)
+pub unsafe fn ensure_ident_map_curr_process<S: PageSize>(page: Page<S>, flags: MemoryMappingFlags)
 where
     for<'a> PageTable<'a, PageLvl4>: Mapper<S>,
 {
     let mut mapper = get_uefi_active_mapper();
-    mapper.identity_map_memory(page).unwrap().flush();
-}
-
-pub unsafe fn ensure_ident_map_curr_process<S: PageSize>(page: Page<S>, _write: bool)
-where
-    for<'a> PageTable<'a, PageLvl4>: Mapper<S>,
-{
-    let mut mapper = get_uefi_active_mapper();
-    match mapper.identity_map_memory(page) {
+    match mapper.identity_map_memory(page, flags) {
         Ok(f) => f.flush(),
         Err(MapMemoryError::MemAlreadyMapped {
             from: _,

@@ -3,7 +3,7 @@ use modular_bitfield::{
     specifiers::{B12, B3, B40},
 };
 
-#[bitfield]
+#[bitfield(bits = 64)]
 pub struct PageDirectoryEntry {
     pub present: bool,
     pub read_write: bool,

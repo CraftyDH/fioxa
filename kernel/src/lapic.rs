@@ -1,4 +1,7 @@
-use crate::paging::page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB};
+use crate::paging::{
+    page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
+    MemoryMappingFlags,
+};
 
 // Local APIC
 /// Do not use before this has been initialized in enable_apic
@@ -6,7 +9,10 @@ pub const LAPIC_ADDR: u64 = 0xfee00000;
 
 pub fn map_lapic(mapper: &mut PageTable<PageLvl4>) {
     mapper
-        .identity_map_memory(Page::<Size4KB>::new(0xfee00000))
+        .identity_map_memory(
+            Page::<Size4KB>::new(0xfee00000),
+            MemoryMappingFlags::WRITEABLE,
+        )
         .unwrap()
         .flush();
 }

@@ -6,7 +6,7 @@ use spin::Mutex;
 use super::{
     page_allocator::{frame_alloc_exec, request_page, AllocatedPage},
     page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB, UnMapMemoryError},
-    MemoryLoc,
+    MemoryLoc, MemoryMappingFlags,
 };
 
 pub struct PageMapperManager<'a> {
@@ -14,7 +14,7 @@ pub struct PageMapperManager<'a> {
     page_mapper: PageTable<'a, PageLvl4>,
     // start offset, end offset, mapping
     // this should always be ordered
-    mappings: Vec<(Range<usize>, Arc<PageMapping>)>,
+    mappings: Vec<(Range<usize>, Arc<PageMapping>, MemoryMappingFlags)>,
 }
 
 #[derive(Debug)]
@@ -94,12 +94,17 @@ impl<'a> PageMapperManager<'a> {
         &mut self.page_mapper
     }
 
-    pub fn insert_mapping_at(&mut self, base: usize, mapping: Arc<PageMapping>) -> Option<()> {
+    pub fn insert_mapping_at(
+        &mut self,
+        base: usize,
+        mapping: Arc<PageMapping>,
+        flags: MemoryMappingFlags,
+    ) -> Option<()> {
         assert!(base & 0xFFF == 0);
 
         let end = base + mapping.size;
 
-        for (r, _) in &self.mappings {
+        for (r, ..) in &self.mappings {
             if base < r.end && r.start <= end {
                 return None;
             }
@@ -107,14 +112,18 @@ impl<'a> PageMapperManager<'a> {
 
         let idx = self
             .mappings
-            .binary_search_by(|(r, _)| r.start.cmp(&base))
+            .binary_search_by(|(r, ..)| r.start.cmp(&base))
             .unwrap_err();
 
-        self.mappings.insert(idx, ((base..end), mapping));
+        self.mappings.insert(idx, ((base..end), mapping, flags));
         Some(())
     }
 
-    pub fn insert_mapping(&mut self, mapping: Arc<PageMapping>) -> usize {
+    pub fn insert_mapping(
+        &mut self,
+        mapping: Arc<PageMapping>,
+        flags: MemoryMappingFlags,
+    ) -> usize {
         let idx = self
             .mappings
             .windows(2)
@@ -131,7 +140,7 @@ impl<'a> PageMapperManager<'a> {
         let base = self.mappings[idx].0.end + 0x1000;
 
         self.mappings
-            .insert(idx + 1, ((base..base + mapping.size), mapping));
+            .insert(idx + 1, ((base..base + mapping.size), mapping, flags));
         base
     }
 
@@ -141,7 +150,7 @@ impl<'a> PageMapperManager<'a> {
         }
 
         // find the mapping that address is in
-        let idx = self.mappings.binary_search_by(|(r, _)| {
+        let idx = self.mappings.binary_search_by(|(r, ..)| {
             if r.start > address {
                 Ordering::Greater
             } else if r.end <= address {
@@ -172,7 +181,7 @@ impl<'a> PageMapperManager<'a> {
         // Make the mapping
         match self
             .page_mapper
-            .map_memory(Page::<Size4KB>::containing(address as u64), phys)
+            .map_memory(Page::<Size4KB>::containing(address as u64), phys, map.2)
         {
             Ok(f) => f.flush(),
             Err(_) => (), // Already mapped ??

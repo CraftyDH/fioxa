@@ -3,7 +3,8 @@ use core::ptr::NonNull;
 use acpi::{AcpiError, AcpiHandler, AcpiTables, PhysicalMapping};
 
 use crate::{
-    cpu_localstorage::CPULocalStorageRW, paging::page_mapper::PageMapping,
+    cpu_localstorage::CPULocalStorageRW,
+    paging::{page_mapper::PageMapping, MemoryMappingFlags},
     scheduling::without_context_switch,
 };
 
@@ -35,9 +36,10 @@ impl AcpiHandler for FioxaAcpiHandler {
         without_context_switch(|| {
             let mut mem = thread.process.memory.lock();
 
-            let vaddr_base = mem
-                .page_mapper
-                .insert_mapping(PageMapping::new_mmap(base, mapped_size));
+            let vaddr_base = mem.page_mapper.insert_mapping(
+                PageMapping::new_mmap(base, mapped_size),
+                MemoryMappingFlags::WRITEABLE,
+            );
 
             PhysicalMapping::new(
                 physical_address,
