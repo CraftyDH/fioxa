@@ -4,12 +4,13 @@ pub mod walk;
 use core::{marker::PhantomData, num::NonZeroU64};
 
 use thiserror::Error;
+use x86_64::instructions::interrupts::without_interrupts;
 
-use crate::paging::page_allocator::free_page_early;
+use crate::{cpu_localstorage::CPULocalStorageRW, paging::page_allocator::free_page_early};
 
 use super::{
-    get_uefi_active_mapper, page_allocator::request_page, page_directory::PageDirectoryEntry,
-    phys_addr_for_virt, virt_addr_for_phys, MemoryMappingFlags,
+    page_allocator::request_page, page_directory::PageDirectoryEntry, phys_addr_for_virt,
+    virt_addr_for_phys, MemoryMappingFlags,
 };
 
 #[derive(Error, Debug)]
@@ -377,16 +378,20 @@ pub unsafe fn ensure_ident_map_curr_process<S: PageSize>(page: Page<S>, flags: M
 where
     for<'a> PageTable<'a, PageLvl4>: Mapper<S>,
 {
-    let mut mapper = get_uefi_active_mapper();
-    match mapper.identity_map_memory(page, flags) {
-        Ok(f) => f.flush(),
-        Err(MapMemoryError::MemAlreadyMapped {
-            from: _,
-            to,
-            current,
-        }) if to == current => (),
-        Err(e) => panic!("cannot ident map because {e:?}"),
-    }
+    without_interrupts(|| {
+        let proc = &CPULocalStorageRW::get_current_task().process;
+        let mut mem = proc.memory.lock();
+        let mapper = mem.page_mapper.get_mapper_mut();
+        match mapper.identity_map_memory(page, flags) {
+            Ok(f) => f.flush(),
+            Err(MapMemoryError::MemAlreadyMapped {
+                from: _,
+                to,
+                current,
+            }) if to == current => (),
+            Err(e) => panic!("cannot ident map because {e:?}"),
+        }
+    })
 }
 
 #[must_use = "TLB must be flushed or can be ignored"]

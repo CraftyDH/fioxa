@@ -60,6 +60,18 @@ impl PageMapping {
         })
     }
 
+    pub fn new_lazy_filled(size: usize) -> Arc<PageMapping> {
+        let b = unsafe {
+            let mut b = Box::new_uninit_slice((size + 0xFFF) / 0x1000);
+            b.fill_with(|| MaybeUninit::new(request_page().unwrap().into()));
+            b.assume_init()
+        };
+        Arc::new(PageMapping {
+            size,
+            mapping: PageMappingType::LazyMapping { pages: b.into() },
+        })
+    }
+
     pub fn new_lazy_prealloc(pages: Box<[MaybeAllocatedPage]>) -> Arc<Self> {
         Arc::new(Self {
             size: pages.len() * 0x1000,
@@ -116,6 +128,64 @@ impl<'a> PageMapperManager<'a> {
             .unwrap_err();
 
         self.mappings.insert(idx, ((base..end), mapping, flags));
+        Some(())
+    }
+
+    pub fn insert_mapping_at_set(
+        &mut self,
+        base: usize,
+        mapping: Arc<PageMapping>,
+        flags: MemoryMappingFlags,
+    ) -> Option<()> {
+        assert!(base & 0xFFF == 0);
+
+        let end = base + mapping.size;
+
+        for (r, ..) in &self.mappings {
+            if base < r.end && r.start <= end {
+                return None;
+            }
+        }
+
+        let idx = self
+            .mappings
+            .binary_search_by(|(r, ..)| r.start.cmp(&base))
+            .unwrap_err();
+
+        match &mapping.mapping {
+            PageMappingType::MMAP { base_address } => {
+                for (phys, virt) in
+                    ((*base_address..).step_by(0x1000)).zip((base..end).step_by(0x1000))
+                {
+                    self.page_mapper
+                        .map_memory(
+                            Page::<Size4KB>::containing(virt as u64),
+                            Page::<Size4KB>::new(phys as u64),
+                            flags,
+                        )
+                        .unwrap()
+                        .ignore();
+                }
+            }
+            PageMappingType::LazyMapping { pages } => {
+                for page in pages
+                    .lock()
+                    .iter()
+                    .zip((base..end).step_by(0x1000))
+                    .filter_map(|(a, i)| a.get().map(|p| (p, i)))
+                {
+                    self.page_mapper
+                        .map_memory(Page::<Size4KB>::containing(page.1 as u64), page.0, flags)
+                        .unwrap()
+                        .ignore();
+                }
+            }
+        }
+
+        self.mappings.insert(idx, ((base..end), mapping, flags));
+
+        // let m = self.mappings.remove(idx);
+
         Some(())
     }
 

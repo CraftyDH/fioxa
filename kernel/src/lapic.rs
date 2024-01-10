@@ -1,5 +1,5 @@
 use crate::paging::{
-    page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
+    page_table_manager::{MapMemoryError, Mapper, Page, PageLvl4, PageTable, Size4KB},
     MemoryMappingFlags,
 };
 
@@ -8,13 +8,18 @@ use crate::paging::{
 pub const LAPIC_ADDR: u64 = 0xfee00000;
 
 pub fn map_lapic(mapper: &mut PageTable<PageLvl4>) {
-    mapper
-        .identity_map_memory(
-            Page::<Size4KB>::new(0xfee00000),
-            MemoryMappingFlags::WRITEABLE,
-        )
-        .unwrap()
-        .flush();
+    match mapper.identity_map_memory(
+        Page::<Size4KB>::new(0xfee00000),
+        MemoryMappingFlags::WRITEABLE,
+    ) {
+        Ok(f) => f.flush(),
+        Err(MapMemoryError::MemAlreadyMapped {
+            from: _,
+            to,
+            current,
+        }) if to == current => (),
+        Err(e) => panic!("cannot ident map because {e:?}"),
+    }
 }
 
 pub fn enable_localapic() {

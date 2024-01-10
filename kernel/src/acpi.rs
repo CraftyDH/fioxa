@@ -1,6 +1,7 @@
 use core::ptr::NonNull;
 
 use acpi::{AcpiError, AcpiHandler, AcpiTables, PhysicalMapping};
+use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
@@ -33,7 +34,7 @@ impl AcpiHandler for FioxaAcpiHandler {
         let end = (physical_address + size + 0xFFF) & !0xFFF;
         let mapped_size = end - base;
 
-        without_context_switch(|| {
+        without_interrupts(|| {
             let mut mem = thread.process.memory.lock();
 
             let vaddr_base = mem.page_mapper.insert_mapping(

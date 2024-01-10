@@ -101,18 +101,16 @@ impl Process {
             m.set_next_table(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
             m.set_next_table(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
 
-            // We still need to map it gop otherwise println's can deadlock when mapping it lazily
-            map_gop(m, &(*BOOT_INFO).gop);
             let gop = get_gop_range(&(*BOOT_INFO).gop);
             page_mapper
-                .insert_mapping_at(gop.0, gop.1, MemoryMappingFlags::WRITEABLE)
+                .insert_mapping_at_set(gop.0, gop.1, MemoryMappingFlags::WRITEABLE)
                 .unwrap();
 
             static APIC_LOCATION: Lazy<Arc<PageMapping>> =
                 Lazy::new(|| unsafe { PageMapping::new_mmap(0xfee00000, 0x1000) });
 
             page_mapper
-                .insert_mapping_at(
+                .insert_mapping_at_set(
                     0xfee00000,
                     APIC_LOCATION.clone(),
                     MemoryMappingFlags::WRITEABLE,
@@ -146,12 +144,15 @@ impl Process {
         // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0;
 
-        let stack = PageMapping::new_lazy(STACK_SIZE as usize);
+        let stack = match self.privilege {
+            ProcessPrivilige::KERNEL => PageMapping::new_lazy_filled(STACK_SIZE as usize),
+            ProcessPrivilige::USER => PageMapping::new_lazy(STACK_SIZE as usize),
+        };
 
         self.memory
             .lock()
             .page_mapper
-            .insert_mapping_at(stack_base as usize, stack, MemoryMappingFlags::all())
+            .insert_mapping_at_set(stack_base as usize, stack, MemoryMappingFlags::all())
             .unwrap();
 
         let interrupt_frame = InterruptStackFrameValue {
