@@ -250,15 +250,6 @@ pub static PUBLIC_SERVICES: Mutex<BTreeMap<String, ServiceID>> = Mutex::new(BTre
 pub fn start_mgmt() {
     let pid = CPULocalStorageRW::get_current_pid();
     let sid = ServiceID(1);
-    SERVICES.lock().insert(
-        sid,
-        ServiceInfo {
-            owner: pid,
-            subscribers: Default::default(),
-        },
-    );
-
-    let pid = ProcessID(pid.0);
 
     let mut buffer = Vec::new();
     spawn_thread(move || loop {

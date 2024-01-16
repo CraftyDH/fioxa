@@ -44,7 +44,7 @@ pub fn load_elf<'a>(
     // Transpose the header as an elf header
     let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
-    validate_elf_header(&elf_header)?;
+    validate_elf_header(elf_header)?;
 
     let process = Process::new(
         if kernel {

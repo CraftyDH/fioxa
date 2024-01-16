@@ -2,11 +2,12 @@
 #![no_main]
 
 use kernel_userspace::{
+    backoff_sleep,
     elf::spawn_elf_process,
     fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
     ids::ServiceID,
     service::get_public_service_id,
-    syscall::{exit, receive_service_message_blocking, service_subscribe},
+    syscall::{exit, receive_service_message_blocking, service_subscribe, sleep},
 };
 
 extern crate alloc;
@@ -100,9 +101,9 @@ pub extern "C" fn main() {
     let mut buffer = Vec::new();
     let mut file_buffer = Vec::new();
 
-    let fs_sid = get_public_service_id("FS", &mut buffer).unwrap();
-    let keyboard_sid = get_public_service_id("INPUT:KB", &mut buffer).unwrap();
-    let elf_loader_sid = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
+    let fs_sid = backoff_sleep(|| get_public_service_id("FS", &mut buffer));
+    let keyboard_sid = backoff_sleep(|| get_public_service_id("INPUT:KB", &mut buffer));
+    let elf_loader_sid = backoff_sleep(|| get_public_service_id("ELF_LOADER", &mut buffer));
 
     service_subscribe(keyboard_sid);
 
@@ -278,6 +279,10 @@ pub extern "C" fn main() {
             //     uptime /= 60;
             //     println!("Up: {:02}:{:02}:{:02}", uptime, minutes, seconds)
             // }
+            "sleep" => match rest.parse::<u64>() {
+                Ok(n) => sleep(n),
+                Err(e) => println!("sleep: {e:?}"),
+            },
             _ => {
                 println!("{command}: command not found")
             }

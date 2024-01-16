@@ -16,6 +16,8 @@ use crate::{
     wrap_function_registers,
 };
 
+use super::{SLEEP_TARGET, SLEEP_WAKER};
+
 const PIT_BASE_FREQUENCY: u64 = 1193182;
 
 /// This is measured in milliseconds
@@ -106,7 +108,11 @@ extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) 
         // Get the amount of milliseconds per interrupt
         let freq = 1000 / get_frequency();
         // Increment the uptime counter
-        TIME_SINCE_BOOT.fetch_add(freq, Ordering::Relaxed);
+        let uptime = TIME_SINCE_BOOT.fetch_add(freq, Ordering::Relaxed) + freq;
+        // If we have a sleep target, wake up the job
+        if uptime >= SLEEP_TARGET.load(Ordering::Relaxed) {
+            SLEEP_WAKER.wake()
+        }
     }
 
     // If timer is used for switching tasks switch task

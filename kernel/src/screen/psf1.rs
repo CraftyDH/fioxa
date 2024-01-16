@@ -24,7 +24,7 @@ const PSF1_HEADER_SIZE: usize = size_of::<PSF1FontHeader>();
 #[error("psf1 font invalid header, expected ({PSF1_MAGIC:?}), found ({0:?})")]
 pub struct LoadFontInvMagic([u8; 2]);
 
-pub fn load_psf1_font<'a>(file: &'a [u8]) -> Result<PSF1Font<'a>, LoadFontInvMagic> {
+pub fn load_psf1_font(file: &[u8]) -> Result<PSF1Font<'_>, LoadFontInvMagic> {
     let psf1_header = unsafe { &*(file.as_ptr() as *const PSF1FontHeader) };
 
     if psf1_header.magic != PSF1_MAGIC {

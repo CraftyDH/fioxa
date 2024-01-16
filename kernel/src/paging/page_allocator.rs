@@ -316,7 +316,7 @@ impl PageFrameAllocator {
             large_block.base
         };
 
-        Some(AllocatedPageOrder { order, base: base })
+        Some(AllocatedPageOrder { order, base })
     }
 
     pub fn request_page(&mut self) -> Option<AllocatedPage> {

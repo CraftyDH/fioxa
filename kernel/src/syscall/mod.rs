@@ -1,23 +1,28 @@
 use core::ptr::slice_from_raw_parts_mut;
 
+use alloc::sync::Arc;
 use kernel_userspace::{
     ids::ServiceID,
     service::ServiceTrackingNumber,
-    syscall::{self, yield_now, SYSCALL_NUMBER},
+    syscall::{self, SYSCALL_NUMBER},
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
-    assembly::registers::Registers,
+    assembly::registers::{Registers, SavedThreadState},
     cpu_localstorage::CPULocalStorageRW,
     gdt::TASK_SWITCH_INDEX,
+    interrupts,
     paging::{
         page_allocator::frame_alloc_exec, page_mapper::PageMapping, page_table_manager::Mapper,
         MemoryMappingFlags,
     },
-    scheduling::taskmanager::{self, kill_bad_task},
+    scheduling::{
+        process::ThreadContext,
+        taskmanager::{self, kill_bad_task, load_new_task},
+    },
     service,
-    time::{pit::get_uptime, spin_sleep_ms},
+    time::{self, pit, SLEEP_TARGET, SLEPT_PROCCESSES},
     wrap_function_registers,
 };
 
@@ -38,6 +43,7 @@ pub enum SyscallError {
     MappingExists,
     OutOfMemory,
     UnMapError,
+    KernelOnlySyscall,
 }
 
 extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
@@ -49,7 +55,7 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
         YIELD_NOW => Ok(taskmanager::yield_now(stack_frame, regs)),
         SPAWN_PROCESS => Ok(taskmanager::spawn_process(stack_frame, regs)),
         SPAWN_THREAD => Ok(taskmanager::spawn_thread(stack_frame, regs)),
-        // SLEEP => task_manager.sleep(stack_frame, regs),
+        SLEEP => Ok(sleep_handler(stack_frame, regs)),
         EXIT_THREAD => Ok(taskmanager::exit_thread(stack_frame, regs)),
         MMAP_PAGE => mmap_page_handler(regs),
         MMAP_PAGE32 => mmap_page32_handler(regs),
@@ -64,6 +70,7 @@ extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut 
             regs.rax = CPULocalStorageRW::get_current_pid().0 as usize;
             Ok(())
         }
+        INTERNAL_KERNEL_WAKER => internal_kernel_waker_handler(stack_frame, regs),
         _ => {
             println!("Unknown syscall class: {}", regs.rax);
             Ok(())
@@ -222,19 +229,73 @@ fn unmmap_page_handler(regs: &Registers) -> Result<(), SyscallError> {
     unsafe {
         memory
             .page_mapper
-            .free_mapping(regs.r8..regs.r8 + (regs.r9 + 0xFFF) & !0xFFF)
+            .free_mapping(regs.r8..(regs.r8 + regs.r9 + 0xFFF) & !0xFFF)
             .map_err(|_| SyscallError::UnMapError)
     }
 }
 
-pub fn sleep(ms: usize) {
-    // unsafe { syscall1(SLEEP, ms) };
-    spin_sleep_ms(ms as u64)
+pub const INTERNAL_KERNEL_WAKER_INTERRUPTS: usize = 0;
+pub const INTERNAL_KERNEL_WAKER_SLEEPD: usize = 1;
+
+fn internal_kernel_waker_handler(
+    stack_frame: &mut InterruptStackFrame,
+    regs: &mut Registers,
+) -> Result<(), SyscallError> {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    match thread.process.privilege {
+        crate::scheduling::process::ProcessPrivilige::KERNEL => (),
+        crate::scheduling::process::ProcessPrivilige::USER => {
+            return Err(SyscallError::KernelOnlySyscall);
+        }
+    };
+
+    {
+        let mut ctx = thread.context.lock();
+
+        match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
+            ThreadContext::Running(msg) => {
+                *ctx = ThreadContext::Blocked(SavedThreadState::new(stack_frame, regs), msg)
+            }
+            e => panic!("thread was not running it was: {e:?}"),
+        }
+    }
+
+    let res = match regs.r8 {
+        INTERNAL_KERNEL_WAKER_INTERRUPTS => interrupts::DISPATCH_WAKER.set_waker(thread),
+        INTERNAL_KERNEL_WAKER_SLEEPD => time::SLEEP_WAKER.set_waker(thread),
+        _ => todo!(),
+    };
+    // Set successfully
+    if res {
+        taskmanager::load_new_task(stack_frame, regs);
+    } else {
+        // Race condition, it was set so return
+        let thread = CPULocalStorageRW::get_current_task();
+        let mut ctx = thread.context.lock();
+        match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
+            ThreadContext::Blocked(_, msg) => *ctx = ThreadContext::Running(msg),
+            e => panic!("thread was not blocked it was: {e:?}"),
+        }
+    }
+    Ok(())
 }
 
-pub fn syssleep(ms: u64) {
-    let end = get_uptime() + ms;
-    while end > get_uptime() {
-        yield_now()
-    }
+fn sleep_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
+    let time = pit::get_uptime() + regs.r8 as u64;
+    let thread = CPULocalStorageRW::get_current_task();
+    thread.context.lock().save(stack_frame, regs);
+
+    SLEPT_PROCCESSES
+        .lock()
+        .insert(time, Arc::downgrade(&thread));
+
+    // Ensure that the sleep waker is called if this was a shorter timeout
+    let _ = SLEEP_TARGET.fetch_update(
+        core::sync::atomic::Ordering::SeqCst,
+        core::sync::atomic::Ordering::SeqCst,
+        |val| Some(val.min(time)),
+    );
+
+    load_new_task(stack_frame, regs);
 }

@@ -25,7 +25,7 @@ pub struct MemoryMapIter {
     len: usize,
 }
 
-impl<'buf> MemoryMapIter {
+impl MemoryMapIter {
     pub unsafe fn new(buffer: *const u8, entry_size: usize, len: usize) -> Self {
         Self {
             buffer,

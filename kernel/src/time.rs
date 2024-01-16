@@ -1,7 +1,16 @@
+use core::sync::atomic::AtomicU64;
+
 use acpi::AcpiTables;
+use alloc::{collections::BTreeMap, sync::Weak};
+use conquer_once::spin::Lazy;
 use spin::Mutex;
 
-use crate::acpi::FioxaAcpiHandler;
+use crate::{
+    acpi::FioxaAcpiHandler,
+    scheduling::{process::Thread, taskmanager::push_task_queue},
+    syscall::INTERNAL_KERNEL_WAKER_SLEEPD,
+    thread_waker::{atomic_waker_loop, AtomicThreadWaker},
+};
 
 use self::pit::ProgrammableIntervalTimer;
 
@@ -34,4 +43,28 @@ pub fn uptime() -> u64 {
         Some(hpet) => hpet.get_uptime(),
         None => pit::get_uptime(),
     }
+}
+
+pub static SLEEP_WAKER: AtomicThreadWaker = AtomicThreadWaker::new();
+pub static SLEEP_TARGET: AtomicU64 = AtomicU64::new(u64::MAX);
+pub static SLEPT_PROCCESSES: Lazy<Mutex<BTreeMap<u64, Weak<Thread>>>> =
+    Lazy::new(|| Mutex::new(BTreeMap::new()));
+
+pub fn sleepd() {
+    atomic_waker_loop(&SLEEP_WAKER, INTERNAL_KERNEL_WAKER_SLEEPD, || {
+        let time = pit::get_uptime();
+        let mut procs = SLEPT_PROCCESSES.lock();
+        procs.retain(|&req_time, el| {
+            if req_time <= time {
+                push_task_queue(el.clone()).unwrap();
+                false
+            } else {
+                true
+            }
+        });
+        SLEEP_TARGET.store(
+            procs.first_key_value().map(|(&k, _)| k).unwrap_or(u64::MAX),
+            core::sync::atomic::Ordering::Relaxed,
+        )
+    });
 }

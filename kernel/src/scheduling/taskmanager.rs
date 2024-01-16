@@ -1,9 +1,8 @@
-use core::{ptr::slice_from_raw_parts, sync::atomic::AtomicBool};
+use core::ptr::slice_from_raw_parts;
 
 use alloc::{
     collections::BTreeMap,
     sync::{Arc, Weak},
-    vec::Vec,
 };
 
 use crossbeam_queue::ArrayQueue;
@@ -14,7 +13,6 @@ use x86_64::structures::idt::InterruptStackFrame;
 use crate::{
     assembly::registers::{jump_to_userspace, Registers},
     cpu_localstorage::CPULocalStorageRW,
-    interrupts::check_interrupts,
     scheduling::process::ThreadContext,
     time::pit::is_switching_tasks,
 };
@@ -28,15 +26,8 @@ pub type ProcessesListType = BTreeMap<ProcessID, Arc<Process>>;
 pub static PROCESSES: Lazy<Mutex<ProcessesListType>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
 static TASK_QUEUE: Lazy<ArrayQueue<Weak<Thread>>> = Lazy::new(|| ArrayQueue::new(1000));
 
-static GO_INTO_CORE_MGMT: AtomicBool = AtomicBool::new(false);
-
 pub fn push_task_queue(val: Weak<Thread>) -> Result<(), Weak<Thread>> {
     without_context_switch(|| TASK_QUEUE.push(val))
-}
-
-#[inline(always)]
-pub fn enter_core_mgmt() {
-    GO_INTO_CORE_MGMT.store(true, core::sync::atomic::Ordering::Relaxed);
 }
 
 pub unsafe fn core_start_multitasking() -> ! {
@@ -68,25 +59,13 @@ pub unsafe extern "C" fn nop_task() -> ! {
     // Init complete, start executing tasks
     CPULocalStorageRW::set_stay_scheduled(false);
 
-    let mut buf = Vec::new();
     loop {
-        // Check interrupts
-        if check_interrupts(&mut buf) {
-            // try scheduling another task
-            kernel_userspace::syscall::yield_now();
-        } else {
-            // no interrupts to handle so sleep
-            unsafe { core::arch::asm!("hlt") };
-        }
+        // nothing to do so sleep
+        unsafe { core::arch::asm!("hlt") };
     }
 }
 
 fn get_next_task() -> Arc<Thread> {
-    // if there is a task that needs core mgmt
-    if GO_INTO_CORE_MGMT.swap(false, core::sync::atomic::Ordering::Relaxed) {
-        return CPULocalStorageRW::get_core_mgmt_task();
-    }
-
     // get the next available task or run core mgmt
     loop {
         if let Some(task) = TASK_QUEUE.pop() {

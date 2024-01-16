@@ -45,6 +45,7 @@ pub mod pci;
 pub mod scheduling;
 pub mod service;
 pub mod syscall;
+pub mod thread_waker;
 pub mod time;
 pub mod uefi;
 

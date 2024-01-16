@@ -257,15 +257,14 @@ use super::psf1::PSF1Font;
 pub fn _print(args: Arguments) {
     loop {
         // Prevent task from being scheduled away with mutex
-        if without_context_switch(|| {
+        let res = without_context_switch(|| {
             if let Some(mut w) = WRITER.get().unwrap().try_lock() {
                 w.write_fmt(args).unwrap();
                 return Some(());
             }
             None
-        })
-        .is_some()
-        {
+        });
+        if let Some(()) = res {
             return;
         }
     }

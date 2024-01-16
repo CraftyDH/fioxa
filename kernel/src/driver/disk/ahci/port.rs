@@ -4,7 +4,10 @@ use core::{
 };
 
 use alloc::boxed::Box;
-use kernel_userspace::{disk::ata::ATADiskIdentify, syscall::yield_now};
+use kernel_userspace::{
+    disk::ata::ATADiskIdentify,
+    syscall::{sleep, yield_now},
+};
 
 use crate::{
     driver::disk::{
@@ -18,7 +21,6 @@ use crate::{
         get_uefi_active_mapper,
         page_table_manager::{Mapper, Page, Size4KB},
     },
-    syscall::sleep,
 };
 
 use super::{

@@ -20,9 +20,9 @@ pub mod pic;
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     gdt::TASK_SWITCH_INDEX,
-    scheduling::taskmanager::enter_core_mgmt,
     service::{self, PUBLIC_SERVICES},
-    syscall,
+    syscall::{self, INTERNAL_KERNEL_WAKER_INTERRUPTS},
+    thread_waker::{atomic_waker_loop, AtomicThreadWaker},
     time::pit::tick_handler,
 };
 
@@ -143,6 +143,8 @@ pub fn spurious(s: InterruptStackFrame) {
 /// We pack the interrupts into an atomic because that reduces atomic contention in the highly polled check_interrupts.
 static INT_VEC: AtomicU8 = AtomicU8::new(0);
 
+pub static DISPATCH_WAKER: AtomicThreadWaker = AtomicThreadWaker::new();
+
 const KB_INT: u8 = 0;
 const MOUSE_INT: u8 = 1;
 const PCI_INT: u8 = 2;
@@ -150,7 +152,7 @@ const PCI_INT: u8 = 2;
 #[inline(always)]
 fn int_interrupt_handler(vector: u8) {
     INT_VEC.fetch_or(1 << vector, core::sync::atomic::Ordering::Relaxed);
-    enter_core_mgmt();
+    DISPATCH_WAKER.wake();
 }
 
 interrupt_handler!(kb_interrupt_handler => keyboard_int_handler);
@@ -183,20 +185,21 @@ pub static INTERRUPT_HANDLERS: Lazy<[ServiceID; 3]> = Lazy::new(|| {
 });
 
 /// Returns true if there were any interrupt events dispatched
-pub fn check_interrupts(send_buffer: &mut Vec<u8>) -> bool {
-    let interrupts = INT_VEC.swap(0, core::sync::atomic::Ordering::Relaxed);
-    let handlers = INTERRUPT_HANDLERS.as_ref();
-    if interrupts & (1 << KB_INT) > 0 {
-        send_int_message(handlers[KB_INT as usize], send_buffer);
-    }
-    if interrupts & (1 << MOUSE_INT) > 0 {
-        send_int_message(handlers[MOUSE_INT as usize], send_buffer)
-    }
-    if interrupts & (1 << PCI_INT) > 0 {
-        send_int_message(handlers[PCI_INT as usize], send_buffer);
-    }
-    // check if at least 1 interrupt occured
-    interrupts != 0
+pub fn check_interrupts() {
+    let mut send_buffer = Vec::new();
+    atomic_waker_loop(&DISPATCH_WAKER, INTERNAL_KERNEL_WAKER_INTERRUPTS, || {
+        let interrupts = INT_VEC.swap(0, core::sync::atomic::Ordering::Relaxed);
+        let handlers = INTERRUPT_HANDLERS.as_ref();
+        if interrupts & (1 << KB_INT) > 0 {
+            send_int_message(handlers[KB_INT as usize], &mut send_buffer);
+        }
+        if interrupts & (1 << MOUSE_INT) > 0 {
+            send_int_message(handlers[MOUSE_INT as usize], &mut send_buffer);
+        }
+        if interrupts & (1 << PCI_INT) > 0 {
+            send_int_message(handlers[PCI_INT as usize], &mut send_buffer);
+        }
+    })
 }
 
 fn send_int_message(service: ServiceID, send_buffer: &mut Vec<u8>) {

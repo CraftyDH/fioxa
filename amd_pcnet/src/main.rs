@@ -16,6 +16,7 @@ use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 use kernel_userspace::{
+    backoff_sleep,
     ids::ServiceID,
     net::{PhysicalNet, PhysicalNetResp},
     pci::PCIDevice,
@@ -80,7 +81,7 @@ pub extern "C" fn main() {
     spawn_thread(move || {
         let mut buffer = Vec::new();
 
-        let pci_event = get_public_service_id("INTERRUPTS:PCI", &mut buffer).unwrap();
+        let pci_event = backoff_sleep(|| get_public_service_id("INTERRUPTS:PCI", &mut buffer));
         service_subscribe(pci_event);
 
         loop {

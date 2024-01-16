@@ -5,6 +5,7 @@ use core::{
 
 use alloc::vec::Vec;
 use kernel_userspace::{
+    backoff_sleep,
     ids::ServiceID,
     net::{ArpResponse, IPAddr, Networking, NetworkingResp, NotSameSubnetError},
     service::{
@@ -14,7 +15,7 @@ use kernel_userspace::{
     syscall::{
         receive_service_message_blocking, receive_service_message_blocking_tracking,
         send_and_get_response_service_message, send_service_message, service_create,
-        service_subscribe, spawn_thread, yield_now,
+        service_subscribe, spawn_thread,
     },
 };
 use modular_bitfield::{bitfield, specifiers::B48};
@@ -115,12 +116,7 @@ pub fn userspace_networking_main() {
     register_public_service("NETWORKING", sid, &mut Vec::new());
 
     let mut buffer = Vec::new();
-    let pcnet = loop {
-        if let Some(m) = get_public_service_id("PCNET", &mut buffer) {
-            break m;
-        }
-        yield_now();
-    };
+    let pcnet = backoff_sleep(|| get_public_service_id("PCNET", &mut buffer));
 
     service_subscribe(pcnet);
 

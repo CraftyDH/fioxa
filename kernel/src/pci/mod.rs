@@ -3,6 +3,7 @@ use crate::{
     bootfs::AMD_PCNET_DRIVER,
     cpu_localstorage::CPULocalStorageRW,
     driver::{disk::ahci::AHCIDriver, driver::Driver},
+    elf,
     fs::FSDRIVES,
     pci::mcfg::get_mcfg,
 };
@@ -10,9 +11,8 @@ use crate::{
 use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 
 use kernel_userspace::{
-    elf::spawn_elf_process,
     ids::ServiceID,
-    service::{get_public_service_id, ServiceMessage},
+    service::ServiceMessage,
     syscall::{send_service_message, spawn_thread},
 };
 use spin::Mutex;
@@ -214,16 +214,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                 println!("AMD PCnet");
                 let sid = pci_dev_handler(pci_bus, segment, bus, device, function);
 
-                let mut buffer = Vec::new();
-                let elf = get_public_service_id("ELF_LOADER", &mut buffer).unwrap();
-                spawn_elf_process(
-                    elf,
-                    AMD_PCNET_DRIVER,
-                    &sid.0.to_ne_bytes(),
-                    true,
-                    &mut buffer,
-                )
-                .unwrap();
+                elf::load_elf(AMD_PCNET_DRIVER, &sid.0.to_ne_bytes(), true).unwrap();
                 return;
             }
             _ => (),

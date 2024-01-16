@@ -41,6 +41,8 @@ pub const GET_PID: usize = 9;
 pub const UNMMAP_PAGE: usize = 10;
 pub const MMAP_PAGE32: usize = 11;
 
+pub const INTERNAL_KERNEL_WAKER: usize = 12;
+
 // ! BEWARE, DO NOT USE THIS FROM THE KERNEL
 // As it is static is won't give the correct answer
 pub static CURRENT_PID: Lazy<ProcessID> = Lazy::new(get_pid);
@@ -343,10 +345,20 @@ pub fn exit() -> ! {
     }
 }
 
+pub fn sleep(ms: u64) {
+    unsafe { syscall!(SLEEP, ms) }
+}
+
 pub fn get_pid() -> ProcessID {
     unsafe {
         let pid: u64;
         syscall!(GET_PID => pid);
         ProcessID(pid)
+    }
+}
+
+pub fn internal_kernel_waker_wait(id: usize) {
+    unsafe {
+        syscall!(INTERNAL_KERNEL_WAKER, id);
     }
 }

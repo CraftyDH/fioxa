@@ -24,13 +24,15 @@ use crate::{
     assembly::registers::{Registers, SavedThreadState},
     gdt,
     paging::{
-        offset_map::{get_gop_range, map_gop},
+        offset_map::get_gop_range,
         page_allocator::Allocated32Page,
         page_mapper::{PageMapperManager, PageMapping},
         MemoryLoc, MemoryMappingFlags, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
     BOOT_INFO,
 };
+
+use super::taskmanager::push_task_queue;
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 
@@ -118,7 +120,7 @@ impl Process {
                 .unwrap();
         }
 
-        let s = Arc::new_cyclic(|this| Self {
+        Arc::new_cyclic(|this| Self {
             this: this.clone(),
             pid: generate_next_process_id(),
             privilege,
@@ -129,8 +131,7 @@ impl Process {
             }),
             threads: Default::default(),
             service_messages: Default::default(),
-        });
-        s
+        })
     }
 
     pub fn new_thread_direct(
@@ -163,7 +164,8 @@ impl Process {
             stack_segment: self.privilege.get_data_segment().0 as u64,
         };
 
-        let thread = Arc::new(Thread {
+        let thread = Arc::new_cyclic(|this| Thread {
+            this: this.clone(),
             process: self.this.upgrade().unwrap(),
             tid,
             context: Mutex::new(ThreadContext::Scheduled(
@@ -198,9 +200,24 @@ impl ProcessThreads {
 }
 
 pub struct Thread {
+    this: Weak<Thread>,
     pub process: Arc<Process>,
     pub tid: ThreadID,
     pub context: Mutex<ThreadContext>,
+}
+
+impl Thread {
+    /// Called from the wake up handler
+    pub fn internal_wake(&self) {
+        let mut ctx = self.context.lock();
+        match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
+            ThreadContext::Blocked(a, b) => {
+                *ctx = ThreadContext::Scheduled(a, b);
+            }
+            e => panic!("thread wasn't blocked it was {e:?}"),
+        }
+        push_task_queue(self.this.clone()).unwrap()
+    }
 }
 
 impl Drop for Thread {
@@ -228,6 +245,7 @@ pub enum ThreadContext {
     Killed,
     Running(CurrentMessage),
     Scheduled(SavedThreadState, CurrentMessage),
+    Blocked(SavedThreadState, CurrentMessage),
     WaitingOn(SavedThreadState, ServiceID),
 }
 
