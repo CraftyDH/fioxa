@@ -1,7 +1,6 @@
 use core::sync::atomic::AtomicU64;
 
 use alloc::{
-    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     string::{String, ToString},
     sync::Arc,
@@ -10,21 +9,17 @@ use alloc::{
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     service::{
-        self, PublicServiceMessage, SendError, SendServiceMessageDest, ServiceMessage,
-        ServiceTrackingNumber,
+        make_message, PublicServiceMessage, SendError, SendServiceMessageDest, ServiceMessageDesc,
+        ServiceMessageK, ServiceTrackingNumber,
     },
     syscall::{receive_service_message_blocking, send_service_message, spawn_thread},
 };
 use spin::Mutex;
-use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
-    assembly::registers::{Registers, SavedThreadState},
     cpu_localstorage::CPULocalStorageRW,
-    scheduling::{
-        process::{ProcessMessages, Thread, ThreadContext},
-        taskmanager::{load_new_task, push_task_queue, PROCESSES},
-    },
+    message::{KMessage, KMessageProcRefcount},
+    scheduling::{process::Thread, taskmanager::PROCESSES},
 };
 
 pub static SERVICES: Mutex<BTreeMap<ServiceID, ServiceInfo>> = Mutex::new(BTreeMap::new());
@@ -57,191 +52,124 @@ pub fn subscribe(pid: ProcessID, id: ServiceID) {
     }
 }
 
-pub fn push(current_pid: ProcessID, msg: Box<[u8]>) -> Result<(), SendError> {
-    // Read as () to ensure that we can parse the header of any valid message
-    let message: ServiceMessage<()> =
-        service::parse_message(&msg).map_err(|_| SendError::ParseError)?;
-
+pub fn push(current_pid: ProcessID, msg: &ServiceMessageK) -> Result<(), SendError> {
     let mut s = SERVICES.lock();
 
-    let service = s
-        .get_mut(&message.service_id)
-        .ok_or(SendError::NoSuchService)?;
+    let service = s.get_mut(&msg.service_id).ok_or(SendError::NoSuchService)?;
 
-    if message.sender_pid != current_pid {
+    if msg.sender_pid != current_pid {
         return Err(SendError::NotYourPID);
     }
 
-    let dest = message.destination;
+    let thread = CPULocalStorageRW::get_current_task();
 
-    let m = Arc::new((message.service_id, message.tracking_number, msg));
+    let dest = msg.destination;
+
+    let data = thread
+        .process
+        .service_messages
+        .lock()
+        .messages
+        .get(&msg.descriptor)
+        .ok_or(SendError::ParseError)?
+        .msg
+        .clone();
+
+    let m = Arc::new((
+        ServiceMessageDesc {
+            service_id: msg.service_id,
+            sender_pid: msg.sender_pid,
+            tracking_number: msg.tracking_number,
+            destination: msg.destination,
+        },
+        data,
+    ));
 
     match dest {
         SendServiceMessageDest::ToProvider => send_message(service.owner, m),
         SendServiceMessageDest::ToProcess(pid) => send_message(pid, m),
         SendServiceMessageDest::ToSubscribers => {
             for pid in &service.subscribers {
-                send_message(*pid, m.clone())?;
+                send_message(*pid, m.clone());
             }
-            Ok(())
         }
     }
+    Ok(())
 }
 
-fn send_message(
-    pid: ProcessID,
-    message: Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>,
-) -> Result<(), SendError> {
-    let proc = PROCESSES
-        .lock()
-        .get(&pid)
-        .ok_or(SendError::TargetNotExists)?
-        .clone();
+fn send_message(pid: ProcessID, message: Arc<(ServiceMessageDesc, Arc<KMessage>)>) {
+    let Some(proc) = PROCESSES.lock().get(&pid).cloned() else {
+        println!("WARNING: subscribed process died.");
+        return;
+    };
 
     let mut service_messages = proc.service_messages.lock();
-    let waiters = &mut service_messages.waiters;
 
-    loop {
-        // Try getting the list asking for a specific message, then the list asking for a specific service, this the list asking for anything
-        let tid = match waiters.get_mut(&(message.0, message.1)) {
-            Some(t) if !t.is_empty() => t.pop().expect("list should have at least 1 element"),
-            _ => match waiters.get_mut(&(message.0, ServiceTrackingNumber(u64::MAX))) {
-                Some(t) if !t.is_empty() => t.pop().expect("list should have at least 1 element"),
-                _ => match waiters.get_mut(&(ServiceID(u64::MAX), ServiceTrackingNumber(u64::MAX)))
-                {
-                    Some(t) if !t.is_empty() => {
-                        t.pop().expect("list should have at least 1 element")
-                    }
-                    _ => break,
-                },
-            },
-        };
-
-        let t = proc.threads.lock();
-        let Some(thread) = t.threads.get(&tid) else {
-            // thread doesn't exist anymore, try again
-            continue;
-        };
-
-        let mut ctx = thread.context.lock();
-
-        match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
-            ThreadContext::WaitingOn(mut state, id)
-                if id == message.0 || id == ServiceID(u64::MAX) =>
-            {
-                state.register_state.rax = message.2.len();
-                *ctx = ThreadContext::Scheduled(state, Some(message));
-                push_task_queue(Arc::downgrade(thread)).unwrap();
-            }
-            e => panic!("thread was not waiting it was {e:?}"),
-        }
-        return Ok(());
-    }
+    let queue = service_messages
+        .queue
+        .entry(message.0.service_id)
+        .or_default();
 
     // try to avoid OOM by restricting max packets in queue.
-    if service_messages.queue.len() >= 0x10000 {
+    if queue.message_queue.len() >= 0x10000 {
         println!("queue for {} is full dropping old packets", pid.0);
-        service_messages.queue.pop_front();
+        queue.message_queue.pop_front();
     }
     // otherwise add it to the queue
-    service_messages.queue.push_back(message);
-    Ok(())
+    queue.message_queue.push_back(message);
+
+    while let Some(thread) = queue.wakers.pop() {
+        if let Some(t) = thread.upgrade() {
+            t.internal_wake();
+        }
+    }
 }
 
 pub fn try_find_message(
     thread: &Thread,
-    narrow_by_sid: ServiceID,
+    sid: ServiceID,
     narrow_by_tracking: ServiceTrackingNumber,
-    messages: &mut ProcessMessages,
-) -> Option<usize> {
-    let msg = if narrow_by_sid.0 == u64::MAX {
-        messages.queue.pop_front()?
+) -> Option<ServiceMessageK> {
+    let mut messages = thread.process.service_messages.lock();
+
+    let queue = messages.queue.entry(sid).or_default();
+
+    let msg = if narrow_by_tracking.0 == u64::MAX {
+        queue.message_queue.pop_front()?
     } else {
-        let mut iter = messages.queue.iter();
-        let index = if narrow_by_tracking.0 == u64::MAX {
-            iter.position(|x| x.0 == narrow_by_sid)?
-        } else {
-            iter.position(|x| x.0 == narrow_by_sid && x.1 == narrow_by_tracking)?
-        };
-        messages.queue.remove(index)?
+        let mut iter = queue.message_queue.iter();
+        let index = iter.position(|x| x.0.tracking_number == narrow_by_tracking)?;
+        queue.message_queue.remove(index).unwrap()
     };
 
-    let length = msg.2.len();
+    let mid = msg.1.id;
+    messages
+        .messages
+        .entry(mid)
+        .or_insert_with(|| KMessageProcRefcount {
+            msg: msg.1.clone(),
+            ref_count: 0,
+        })
+        .ref_count += 1;
 
-    match &mut *thread.context.lock() {
-        ThreadContext::Running(m) => *m = Some(msg),
-        e => panic!("thread should be running but was {e:?}"),
-    }
-
-    Some(length)
+    Some(ServiceMessageK {
+        service_id: msg.0.service_id,
+        sender_pid: msg.0.sender_pid,
+        tracking_number: msg.0.tracking_number,
+        destination: msg.0.destination,
+        descriptor: mid,
+    })
 }
 
-pub fn find_message(
-    thread: &Thread,
-    narrow_by_sid: ServiceID,
-    narrow_by_tracking: ServiceTrackingNumber,
-) -> Option<usize> {
-    try_find_message(
-        thread,
-        narrow_by_sid,
-        narrow_by_tracking,
-        &mut thread.process.service_messages.lock(),
-    )
-}
+pub fn service_wait(thread: Arc<Thread>, sid: ServiceID) -> bool {
+    let mut messages = thread.process.service_messages.lock();
+    let queue = messages.queue.entry(sid).or_default();
 
-pub fn find_or_wait_message(
-    stack_frame: &mut InterruptStackFrame,
-    reg: &mut Registers,
-    current_thread: &Thread,
-    narrow_by_sid: ServiceID,
-    narrow_by_tracking: ServiceTrackingNumber,
-) {
-    let mut messages = current_thread.process.service_messages.lock();
-
-    if let Some(msg) = try_find_message(
-        current_thread,
-        narrow_by_sid,
-        narrow_by_tracking,
-        &mut messages,
-    ) {
-        reg.rax = msg;
+    if queue.message_queue.is_empty() {
+        queue.wakers.push(Arc::downgrade(&thread));
+        true
     } else {
-        let key = (narrow_by_sid, narrow_by_tracking);
-        match messages.waiters.get_mut(&key) {
-            Some(vec) => vec.push(current_thread.tid),
-            None => {
-                messages.waiters.insert(key, vec![current_thread.tid]);
-            }
-        }
-        reg.rax = 0;
-        {
-            let threads = current_thread.process.threads.lock();
-            let t = threads.threads.get(&current_thread.tid).unwrap();
-            let mut ctx = t.context.lock();
-            match &*ctx {
-                ThreadContext::Running(_) => {
-                    *ctx = ThreadContext::WaitingOn(
-                        SavedThreadState::new(stack_frame, reg),
-                        narrow_by_sid,
-                    )
-                }
-                e => panic!("thread was not running it was: {e:?}"),
-            }
-        }
-
-        load_new_task(stack_frame, reg);
-    }
-}
-
-pub fn get_message(thread: &Thread, buffer: &mut [u8]) -> Option<()> {
-    let mut ctx = thread.context.lock();
-
-    match &mut *ctx {
-        ThreadContext::Running(msg) => {
-            buffer.copy_from_slice(&msg.take()?.2);
-            Some(())
-        }
-        e => panic!("thread was not running it was: {e:?}"),
+        false
     }
 }
 
@@ -253,9 +181,9 @@ pub fn start_mgmt() {
 
     let mut buffer = Vec::new();
     spawn_thread(move || loop {
-        let query = receive_service_message_blocking(sid, &mut buffer).unwrap();
+        let query = receive_service_message_blocking(sid);
 
-        let resp = match query.message {
+        let resp = match query.read(&mut buffer).unwrap() {
             PublicServiceMessage::Request(name) => {
                 let s = PUBLIC_SERVICES.lock();
 
@@ -272,15 +200,13 @@ pub fn start_mgmt() {
         };
 
         send_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: sid,
                 sender_pid: pid,
                 tracking_number: query.tracking_number,
                 destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-                message: resp,
             },
-            &mut buffer,
-        )
-        .unwrap();
+            &make_message(&resp, &mut buffer),
+        );
     });
 }

@@ -46,7 +46,7 @@ use bootloader::uefi::table::cfg::ACPI2_GUID;
 use bootloader::uefi::table::{Runtime, SystemTable};
 
 use kernel_userspace::ids::{ProcessID, ServiceID};
-use kernel_userspace::service::{register_public_service, ServiceMessage};
+use kernel_userspace::service::register_public_service;
 use kernel_userspace::syscall::{
     exit, receive_service_message_blocking, service_create, spawn_process, spawn_thread,
 };
@@ -267,11 +267,9 @@ fn after_boot() {
         || {
             let sid = service_create();
             register_public_service("ACCEPTER", sid, &mut Vec::new());
-            let mut buffer = Vec::new();
 
             for i in 0.. {
-                let _: ServiceMessage<()> =
-                    receive_service_message_blocking(sid, &mut buffer).unwrap();
+                receive_service_message_blocking(sid);
                 if i % 10000 == 0 {
                     println!("ACCEPTER: {i}")
                 }

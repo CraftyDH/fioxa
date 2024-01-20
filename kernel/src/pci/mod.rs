@@ -12,7 +12,7 @@ use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
 
 use kernel_userspace::{
     ids::ServiceID,
-    service::ServiceMessage,
+    service::{make_message, ServiceMessageDesc},
     syscall::{send_service_message, spawn_thread},
 };
 use spin::Mutex;
@@ -271,9 +271,8 @@ fn pci_dev_handler(
 
     spawn_thread(move || loop {
         let mut buf = Vec::new();
-        let req =
-            kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buf).unwrap();
-        let resp = match req.message {
+        let req = kernel_userspace::syscall::receive_service_message_blocking(sid);
+        let resp = match req.read(&mut buf).unwrap() {
             kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
                 kernel_userspace::pci::PCIDevCmd::Data(device.read_u32(offset))
             },
@@ -284,18 +283,16 @@ fn pci_dev_handler(
             _ => kernel_userspace::pci::PCIDevCmd::UnknownCommand,
         };
         send_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: sid,
                 sender_pid: CPULocalStorageRW::get_current_pid(),
                 tracking_number: req.tracking_number,
                 destination: kernel_userspace::service::SendServiceMessageDest::ToProcess(
                     req.sender_pid,
                 ),
-                message: resp,
             },
-            &mut buf,
-        )
-        .unwrap();
+            &make_message(&resp, &mut buf),
+        );
     });
 
     sid

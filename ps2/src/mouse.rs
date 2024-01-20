@@ -4,7 +4,8 @@ use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     input::InputServiceMessage,
     service::{
-        generate_tracking_number, register_public_service, SendServiceMessageDest, ServiceMessage,
+        generate_tracking_number, make_message, register_public_service, SendServiceMessageDest,
+        ServiceMessageDesc,
     },
     syscall::{get_pid, send_service_message, service_create},
 };
@@ -205,15 +206,16 @@ impl Mouse {
         };
 
         send_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: self.mouse_service,
                 sender_pid: self.current_pid,
                 tracking_number: generate_tracking_number(),
                 destination: SendServiceMessageDest::ToSubscribers,
-                message: InputServiceMessage::MouseEvent(packet),
             },
-            &mut self.send_buffer,
-        )
-        .unwrap()
+            &make_message(
+                &InputServiceMessage::MouseEvent(packet),
+                &mut self.send_buffer,
+            ),
+        );
     }
 }

@@ -8,7 +8,7 @@ extern crate userspace_slaballoc;
 
 use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
-    service::{get_public_service_id, ServiceMessage},
+    service::get_public_service_id,
     syscall::{exit, receive_service_message_blocking, service_subscribe, spawn_thread},
 };
 use spin::Mutex;
@@ -44,17 +44,14 @@ pub extern "C" fn main() {
 
     let c = controller.clone();
     spawn_thread(move || loop {
-        let mut buffer = Vec::new();
         loop {
-            let _: ServiceMessage<()> =
-                receive_service_message_blocking(mouse_event, &mut buffer).unwrap();
-            c.lock().mouse.check_interrupts()
+            receive_service_message_blocking(mouse_event);
+            c.lock().mouse.check_interrupts();
         }
     });
 
     loop {
-        let _: ServiceMessage<()> =
-            receive_service_message_blocking(kb_event, &mut buffer).unwrap();
+        receive_service_message_blocking(kb_event);
         controller.lock().keyboard.check_interrupts();
     }
 }

@@ -9,8 +9,8 @@ use kernel_userspace::{
     ids::ServiceID,
     net::{ArpResponse, IPAddr, Networking, NetworkingResp, NotSameSubnetError},
     service::{
-        generate_tracking_number, get_public_service_id, register_public_service,
-        SendServiceMessageDest, ServiceMessage, ServiceTrackingNumber,
+        generate_tracking_number, get_public_service_id, make_message, register_public_service,
+        SendServiceMessageDest, ServiceMessageDesc, ServiceTrackingNumber,
     },
     syscall::{
         receive_service_message_blocking, receive_service_message_blocking_tracking,
@@ -97,17 +97,19 @@ pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) -> Result<(), Not
 
     let mut buffer = Vec::new();
 
-    send_and_get_response_service_message::<_, kernel_userspace::net::PhysicalNetResp>(
-        &ServiceMessage {
+    send_and_get_response_service_message(
+        &ServiceMessageDesc {
             service_id: service,
             sender_pid: CPULocalStorageRW::get_current_pid(),
             tracking_number: generate_tracking_number(),
             destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-            message: kernel_userspace::net::PhysicalNet::SendPacket(buf),
         },
-        &mut buffer,
-    )
-    .unwrap();
+        &make_message(
+            &kernel_userspace::net::PhysicalNet::SendPacket(buf),
+            &mut buffer,
+        ),
+    );
+
     Ok(())
 }
 
@@ -124,17 +126,19 @@ pub fn userspace_networking_main() {
 
     let kernel_userspace::net::PhysicalNetResp::MacAddrResp(mac) =
         send_and_get_response_service_message(
-            &kernel_userspace::service::ServiceMessage {
+            &kernel_userspace::service::ServiceMessageDesc {
                 service_id: pcnet,
                 sender_pid: CPULocalStorageRW::get_current_pid(),
                 tracking_number: generate_tracking_number(),
                 destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-                message: kernel_userspace::net::PhysicalNet::MacAddrGet,
             },
-            &mut Vec::new(),
+            &make_message(
+                &kernel_userspace::net::PhysicalNet::MacAddrGet,
+                &mut Vec::new(),
+            ),
         )
+        .read(&mut buffer)
         .unwrap()
-        .message
     else {
         panic!()
     };
@@ -142,8 +146,8 @@ pub fn userspace_networking_main() {
     spawn_thread(move || monitor_packets(pcnet));
     loop {
         let mut buf = Vec::new();
-        let query = receive_service_message_blocking(sid, &mut buf).unwrap();
-        let resp = match query.message {
+        let query = receive_service_message_blocking(sid);
+        let resp = match query.read(&mut buf).unwrap() {
             Networking::ArpRequest(ip) => {
                 let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
 
@@ -157,26 +161,22 @@ pub fn userspace_networking_main() {
         };
 
         send_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: sid,
                 sender_pid: CPULocalStorageRW::get_current_pid(),
                 tracking_number: query.tracking_number,
                 destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-                message: resp,
             },
-            &mut buf,
-        )
-        .unwrap();
+            &make_message(&resp, &mut buf),
+        );
     }
 }
 
 pub fn monitor_packets(pcnet: ServiceID) {
     loop {
         let mut buf = Vec::new();
-        let message =
-            receive_service_message_blocking_tracking(pcnet, ServiceTrackingNumber(0), &mut buf)
-                .unwrap();
-        match message.message {
+        let message = receive_service_message_blocking_tracking(pcnet, ServiceTrackingNumber(0));
+        match message.read(&mut buf).unwrap() {
             kernel_userspace::net::PhysicalNetResp::ReceivedPacket(packet) => {
                 let header = unsafe { *(packet.as_ptr() as *const EthernetFrameHeader) };
                 let data = &packet[size_of::<EthernetFrameHeader>()..];

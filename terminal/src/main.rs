@@ -6,6 +6,7 @@ use kernel_userspace::{
     elf::spawn_elf_process,
     fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
     ids::ServiceID,
+    message::MessageHandle,
     service::get_public_service_id,
     syscall::{exit, receive_service_message_blocking, service_subscribe, sleep},
 };
@@ -57,10 +58,9 @@ impl Iterator for KBInputDecoder {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let msg =
-                receive_service_message_blocking(self.service, &mut self.receive_buffer).unwrap();
+            let msg = receive_service_message_blocking(self.service);
 
-            match msg.message {
+            match msg.read(&mut self.receive_buffer).unwrap() {
                 kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code) => {
                     match scan_code {
                         KeyboardEvent::Up(VirtualKeyCode::Modifier(key)) => match key {
@@ -283,6 +283,18 @@ pub extern "C" fn main() {
                 Ok(n) => sleep(n),
                 Err(e) => println!("sleep: {e:?}"),
             },
+            "test" => {
+                let test: [u8; 6] = [1, 2, 45, 29, 23, 45];
+
+                let handle = MessageHandle::create(&test);
+                let h2 = handle.clone();
+                drop(handle);
+
+                let res = h2.read_vec();
+                assert_eq!(test, *res);
+
+                println!("Passed test");
+            }
             _ => {
                 println!("{command}: command not found")
             }

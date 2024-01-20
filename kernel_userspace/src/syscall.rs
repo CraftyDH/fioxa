@@ -1,14 +1,12 @@
-use alloc::{
-    boxed::Box,
-    string::String,
-    vec::{self, Vec},
-};
+use core::mem::MaybeUninit;
+
+use alloc::{boxed::Box, string::String, vec};
 use conquer_once::spin::Lazy;
-use serde::{Deserialize, Serialize};
 
 use crate::{
     ids::{ProcessID, ServiceID, ThreadID},
-    service::{SendError, ServiceMessage, ServiceTrackingNumber},
+    message::MessageHandle,
+    service::{ServiceMessage, ServiceMessageDesc, ServiceMessageK, ServiceTrackingNumber},
 };
 
 pub const SYSCALL_NUMBER: usize = 0x80;
@@ -32,8 +30,7 @@ pub const SERVICE_CREATE: usize = 0;
 pub const SERVICE_SUBSCRIBE: usize = 1;
 pub const SERVICE_PUSH: usize = 2;
 pub const SERVICE_FETCH: usize = 3;
-pub const SERVICE_FETCH_WAIT: usize = 4;
-pub const SERVICE_GET: usize = 5;
+pub const SERVICE_WAIT: usize = 4;
 
 pub const READ_ARGS: usize = 8;
 
@@ -43,13 +40,15 @@ pub const MMAP_PAGE32: usize = 11;
 
 pub const INTERNAL_KERNEL_WAKER: usize = 12;
 
+pub const MESSAGE: usize = 13;
+
 // ! BEWARE, DO NOT USE THIS FROM THE KERNEL
 // As it is static is won't give the correct answer
 pub static CURRENT_PID: Lazy<ProcessID> = Lazy::new(get_pid);
 
 // TODO: Use fancier macros to dynamically build the argss
 #[macro_export]
-macro_rules! syscall {
+macro_rules! make_syscall {
     // No result
     ($syscall:expr) => {
         core::arch::asm!("int 0x80", in("rax") $syscall, options(nostack))
@@ -90,13 +89,13 @@ macro_rules! syscall {
 #[inline]
 pub fn echo(num: usize) -> usize {
     let result;
-    unsafe { syscall!(ECHO, num => result) }
+    unsafe { make_syscall!(ECHO, num => result) }
     result
 }
 
 #[inline]
 pub fn yield_now() {
-    unsafe { syscall!(YIELD_NOW) };
+    unsafe { make_syscall!(YIELD_NOW) };
 }
 
 pub fn spawn_process<F>(func: F, args: &[u8], kernel: bool) -> ProcessID
@@ -110,7 +109,7 @@ where
 
     let res: u64;
     unsafe {
-        syscall!(
+        make_syscall!(
             SPAWN_PROCESS,
             raw as usize,
             args.as_ptr() as usize,
@@ -129,194 +128,137 @@ where
     let boxed_func: Box<dyn FnOnce()> = Box::new(func);
     let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
     let res: u64;
-    unsafe { syscall!(SPAWN_THREAD, raw => res) }
+    unsafe { make_syscall!(SPAWN_THREAD, raw => res) }
     ThreadID(res)
 }
 
 #[inline]
 pub fn mmap_page(vmem: usize, length: usize) -> usize {
     let mem;
-    unsafe { syscall!(MMAP_PAGE, vmem, length => mem) };
+    unsafe { make_syscall!(MMAP_PAGE, vmem, length => mem) };
     mem
 }
 
 #[inline]
 pub fn mmap_page32() -> u32 {
     let res: u32;
-    unsafe { syscall!(MMAP_PAGE32 => res) };
+    unsafe { make_syscall!(MMAP_PAGE32 => res) };
     res
 }
 
 #[inline]
 pub fn unmmap_page(vmem: usize, mapping_length: usize) {
-    unsafe { syscall!(UNMMAP_PAGE, vmem, mapping_length) };
+    unsafe { make_syscall!(UNMMAP_PAGE, vmem, mapping_length) };
 }
 
-pub fn send_service_message<T: Serialize>(
-    msg: &ServiceMessage<T>,
-    buffer: &mut Vec<u8>,
-) -> Result<(), SendError> {
-    // Calulate how big to make the buffer
-    let size =
-        postcard::serialize_with_flavor(&msg, postcard::ser_flavors::Size::default()).unwrap();
-    unsafe {
-        buffer.reserve(size);
-        buffer.set_len(size);
-    }
+pub fn send_service_message(msg: &ServiceMessageDesc, descriptor: &MessageHandle) {
+    let msg = ServiceMessageK {
+        service_id: msg.service_id,
+        sender_pid: msg.sender_pid,
+        tracking_number: msg.tracking_number,
+        destination: msg.destination,
+        descriptor: descriptor.id(),
+    };
 
-    let data = postcard::to_slice(&msg, buffer).unwrap();
-
-    let error: usize;
-    unsafe { syscall!(SERVICE, SERVICE_PUSH, data.as_ptr() as usize, data.len() => error) };
-
-    SendError::try_decode(error)
+    unsafe { make_syscall!(SERVICE, SERVICE_PUSH, &msg) };
 }
 
-pub fn try_receive_service_message_tracking<'a, R: Deserialize<'a>>(
+pub fn try_receive_service_message_tracking(
     id: ServiceID,
     tracking_number: ServiceTrackingNumber,
-    buffer: &'a mut Vec<u8>,
-) -> Option<Result<ServiceMessage<R>, postcard::Error>>
+) -> Option<ServiceMessage>
 where
 {
-    let size = fetch_service_message(id, tracking_number)?;
-    buffer.reserve(size);
-    unsafe {
-        buffer.set_len(size);
-    }
-    Some(get_service_message(buffer))
+    fetch_service_message(id, tracking_number)
 }
 
-pub fn try_receive_service_message<'a, R>(
-    id: ServiceID,
-    buffer: &'a mut Vec<u8>,
-) -> Option<Result<ServiceMessage<R>, postcard::Error>>
-where
-    R: Deserialize<'a>,
-{
-    try_receive_service_message_tracking(id, ServiceTrackingNumber(u64::MAX), buffer)
+pub fn try_receive_service_message(id: ServiceID) -> Option<ServiceMessage> {
+    try_receive_service_message_tracking(id, ServiceTrackingNumber(u64::MAX))
 }
 
-pub fn receive_service_message_blocking_tracking<'a, R>(
+pub fn receive_service_message_blocking_tracking(
     id: ServiceID,
     tracking_number: ServiceTrackingNumber,
-    buffer: &'a mut Vec<u8>,
-) -> Result<ServiceMessage<R>, postcard::Error>
-where
-    R: Deserialize<'a>,
-{
-    let size = fetch_service_message_blocking(id, tracking_number);
-    buffer.reserve(size);
-    unsafe {
-        buffer.set_len(size);
-    }
-    get_service_message(buffer)
+) -> ServiceMessage {
+    fetch_service_message_blocking(id, tracking_number)
 }
 
-pub fn receive_service_message_blocking<'a, R: Deserialize<'a>>(
-    id: ServiceID,
-    buffer: &'a mut Vec<u8>,
-) -> Result<ServiceMessage<R>, postcard::Error> {
-    receive_service_message_blocking_tracking(id, ServiceTrackingNumber(u64::MAX), buffer)
+pub fn receive_service_message_blocking(id: ServiceID) -> ServiceMessage {
+    receive_service_message_blocking_tracking(id, ServiceTrackingNumber(u64::MAX))
 }
 
 pub fn fetch_service_message(
     id: ServiceID,
     tracking_number: ServiceTrackingNumber,
-) -> Option<usize> {
+) -> Option<ServiceMessage> {
     unsafe {
-        let length;
-
-        syscall!(
+        let res: usize;
+        let mut msg = MaybeUninit::uninit();
+        make_syscall!(
             SERVICE,
             SERVICE_FETCH,
+            msg.as_mut_ptr(),
             id.0 as usize,
             tracking_number.0 as usize
-            => length
+            => res
         );
 
-        if length == 0 {
+        if res == 0 {
             None
         } else {
-            Some(length)
+            Some(msg.assume_init())
         }
     }
+}
+
+pub fn service_wait(id: ServiceID) {
+    unsafe { make_syscall!(SERVICE, SERVICE_WAIT, id.0) }
 }
 
 pub fn fetch_service_message_blocking(
     id: ServiceID,
     tracking_number: ServiceTrackingNumber,
-) -> usize {
-    unsafe {
-        let length;
-        syscall!(
-            SERVICE,
-            SERVICE_FETCH_WAIT,
-            id.0 as usize,
-            tracking_number.0 as usize
-            => length
-        );
-
-        if length == 0 {
-            unreachable!("KERNEL DID BAD");
+) -> ServiceMessage {
+    loop {
+        if let Some(r) = fetch_service_message(id, tracking_number) {
+            return r;
         }
-        length
+        service_wait(id);
     }
 }
 
-pub fn get_service_message<'a, T>(buf: &'a mut [u8]) -> Result<ServiceMessage<T>, postcard::Error>
-where
-    T: Deserialize<'a>,
-{
-    unsafe {
-        let result: usize;
-        syscall!(SERVICE, SERVICE_GET, buf.as_mut_ptr() as usize, buf.len() => result);
-
-        if result != 0 {
-            panic!("Error getting message, ensure that fetch was called first & buffer was increased appropriately");
-        }
-
-        postcard::from_bytes(buf)
-    }
-}
-
-pub fn send_and_get_response_service_message<'a, T, R>(
-    msg: &ServiceMessage<T>,
-    buffer: &'a mut Vec<u8>,
-) -> Result<ServiceMessage<R>, SendError>
-where
-    T: Serialize,
-    R: Deserialize<'a>,
-{
+pub fn send_and_get_response_service_message(
+    msg: &ServiceMessageDesc,
+    descriptor: &MessageHandle,
+) -> ServiceMessage {
     let id = msg.service_id;
     let tracking = msg.tracking_number;
-    send_service_message(msg, buffer)?;
-    receive_service_message_blocking_tracking(id, tracking, buffer)
-        .map_err(|_| SendError::FailedToDecodeResponse)
+    send_service_message(msg, descriptor);
+    receive_service_message_blocking_tracking(id, tracking)
 }
 
 pub fn service_create() -> ServiceID {
     unsafe {
         let sid: usize;
-        syscall!(SERVICE, SERVICE_CREATE => sid);
+        make_syscall!(SERVICE, SERVICE_CREATE => sid);
         ServiceID(sid.try_into().unwrap())
     }
 }
 
 pub fn service_subscribe(id: ServiceID) {
     unsafe {
-        syscall!(SERVICE, SERVICE_SUBSCRIBE, id.0 as usize);
+        make_syscall!(SERVICE, SERVICE_SUBSCRIBE, id.0 as usize);
     }
 }
 
 pub fn read_args() -> String {
     unsafe {
         let size;
-        syscall!(READ_ARGS, 0 => size);
+        make_syscall!(READ_ARGS, 0 => size);
 
         let buf: vec::Vec<u8> = vec![0u8; size];
 
-        syscall!(READ_ARGS, buf.as_ptr() as usize);
+        make_syscall!(READ_ARGS, buf.as_ptr() as usize);
 
         String::from_utf8(buf).unwrap()
     }
@@ -325,11 +267,11 @@ pub fn read_args() -> String {
 pub fn read_args_raw() -> vec::Vec<u8> {
     unsafe {
         let size;
-        syscall!(READ_ARGS, 0 => size);
+        make_syscall!(READ_ARGS, 0 => size);
 
         let buf: vec::Vec<u8> = vec![0u8; size];
 
-        syscall!(READ_ARGS, buf.as_ptr() as usize);
+        make_syscall!(READ_ARGS, buf.as_ptr() as usize);
 
         buf
     }
@@ -337,7 +279,7 @@ pub fn read_args_raw() -> vec::Vec<u8> {
 
 pub fn exit() -> ! {
     unsafe {
-        syscall!(EXIT_THREAD);
+        make_syscall!(EXIT_THREAD);
 
         loop {
             core::arch::asm!("hlt")
@@ -346,19 +288,19 @@ pub fn exit() -> ! {
 }
 
 pub fn sleep(ms: u64) {
-    unsafe { syscall!(SLEEP, ms) }
+    unsafe { make_syscall!(SLEEP, ms) }
 }
 
 pub fn get_pid() -> ProcessID {
     unsafe {
         let pid: u64;
-        syscall!(GET_PID => pid);
+        make_syscall!(GET_PID => pid);
         ProcessID(pid)
     }
 }
 
 pub fn internal_kernel_waker_wait(id: usize) {
     unsafe {
-        syscall!(INTERNAL_KERNEL_WAKER, id);
+        make_syscall!(INTERNAL_KERNEL_WAKER, id);
     }
 }

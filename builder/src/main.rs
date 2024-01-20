@@ -89,7 +89,7 @@ fn qemu() -> Result<()> {
     ];
 
     if has_kvm() {
-        qemu_args.push("-enable-kvm".to_string());
+        // qemu_args.push("-enable-kvm".to_string());
     }
 
     let pure_path = Path::new(PURE_EFI_PATH);

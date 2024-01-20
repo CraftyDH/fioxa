@@ -1,10 +1,12 @@
 use core::sync::atomic::AtomicU8;
 
-use alloc::vec::Vec;
 use conquer_once::spin::Lazy;
 use kernel_userspace::{
     ids::{ProcessID, ServiceID},
-    service::{generate_tracking_number, SendServiceMessageDest, ServiceMessage},
+    message::MessageHandle,
+    service::{
+        generate_tracking_number, make_message_new, SendServiceMessageDest, ServiceMessageDesc,
+    },
     syscall::send_service_message,
 };
 use spin::Mutex;
@@ -186,32 +188,31 @@ pub static INTERRUPT_HANDLERS: Lazy<[ServiceID; 3]> = Lazy::new(|| {
 
 /// Returns true if there were any interrupt events dispatched
 pub fn check_interrupts() {
-    let mut send_buffer = Vec::new();
+    let message = make_message_new(&());
+
     atomic_waker_loop(&DISPATCH_WAKER, INTERNAL_KERNEL_WAKER_INTERRUPTS, || {
         let interrupts = INT_VEC.swap(0, core::sync::atomic::Ordering::Relaxed);
         let handlers = INTERRUPT_HANDLERS.as_ref();
         if interrupts & (1 << KB_INT) > 0 {
-            send_int_message(handlers[KB_INT as usize], &mut send_buffer);
+            send_int_message(handlers[KB_INT as usize], &message);
         }
         if interrupts & (1 << MOUSE_INT) > 0 {
-            send_int_message(handlers[MOUSE_INT as usize], &mut send_buffer);
+            send_int_message(handlers[MOUSE_INT as usize], &message);
         }
         if interrupts & (1 << PCI_INT) > 0 {
-            send_int_message(handlers[PCI_INT as usize], &mut send_buffer);
+            send_int_message(handlers[PCI_INT as usize], &message);
         }
     })
 }
 
-fn send_int_message(service: ServiceID, send_buffer: &mut Vec<u8>) {
+fn send_int_message(service: ServiceID, message: &MessageHandle) {
     send_service_message(
-        &ServiceMessage {
+        &ServiceMessageDesc {
             service_id: service,
             sender_pid: CPULocalStorageRW::get_current_pid(),
             tracking_number: generate_tracking_number(),
             destination: SendServiceMessageDest::ToSubscribers,
-            message: (),
         },
-        send_buffer,
-    )
-    .unwrap()
+        message,
+    );
 }

@@ -39,6 +39,7 @@ pub mod ioapic;
 pub mod lapic;
 pub mod locked_mutex;
 pub mod memory;
+pub mod message;
 pub mod net;
 pub mod paging;
 pub mod pci;

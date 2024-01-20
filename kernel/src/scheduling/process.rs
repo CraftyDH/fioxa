@@ -6,9 +6,11 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use hashbrown::HashMap;
 use kernel_userspace::{
     ids::{ProcessID, ServiceID, ThreadID},
-    service::ServiceTrackingNumber,
+    message::MessageId,
+    service::ServiceMessageDesc,
     syscall::exit,
 };
 use spin::{Lazy, Mutex};
@@ -23,6 +25,7 @@ use x86_64::{
 use crate::{
     assembly::registers::{Registers, SavedThreadState},
     gdt,
+    message::{KMessage, KMessageProcRefcount},
     paging::{
         offset_map::get_gop_range,
         page_allocator::Allocated32Page,
@@ -88,8 +91,14 @@ pub struct ProcessMemory {
 
 #[derive(Default)]
 pub struct ProcessMessages {
-    pub queue: VecDeque<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>,
-    pub waiters: BTreeMap<(ServiceID, ServiceTrackingNumber), Vec<ThreadID>>,
+    pub messages: HashMap<MessageId, KMessageProcRefcount>,
+    pub queue: HashMap<ServiceID, ServiceQueue>,
+}
+
+#[derive(Default)]
+pub struct ServiceQueue {
+    pub message_queue: VecDeque<Arc<(ServiceMessageDesc, Arc<KMessage>)>>,
+    pub wakers: Vec<Weak<Thread>>,
 }
 
 impl Process {
@@ -168,13 +177,10 @@ impl Process {
             this: this.clone(),
             process: self.this.upgrade().unwrap(),
             tid,
-            context: Mutex::new(ThreadContext::Scheduled(
-                SavedThreadState {
-                    register_state,
-                    interrupt_frame,
-                },
-                None,
-            )),
+            context: Mutex::new(ThreadContext::Scheduled(SavedThreadState {
+                register_state,
+                interrupt_frame,
+            })),
         });
 
         threads.threads.insert(tid, thread.clone());
@@ -211,8 +217,8 @@ impl Thread {
     pub fn internal_wake(&self) {
         let mut ctx = self.context.lock();
         match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
-            ThreadContext::Blocked(a, b) => {
-                *ctx = ThreadContext::Scheduled(a, b);
+            ThreadContext::Blocked(a) => {
+                *ctx = ThreadContext::Scheduled(a);
             }
             e => panic!("thread wasn't blocked it was {e:?}"),
         }
@@ -236,37 +242,36 @@ impl Drop for Thread {
 }
 
 // Used for storing current msg, so that the popdata can get the data
-pub type CurrentMessage = Option<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>;
+// pub type CurrentMessage = Option<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>;
 
 #[derive(Debug)]
 pub enum ThreadContext {
     Invalid,
     // The thread did something bad and got killed
     Killed,
-    Running(CurrentMessage),
-    Scheduled(SavedThreadState, CurrentMessage),
-    Blocked(SavedThreadState, CurrentMessage),
-    WaitingOn(SavedThreadState, ServiceID),
+    Running,
+    Scheduled(SavedThreadState),
+    Blocked(SavedThreadState),
 }
 
 impl ThreadContext {
     pub fn save(&mut self, stack_frame: &InterruptStackFrame, reg: &Registers) {
         match core::mem::replace(self, ThreadContext::Invalid) {
-            ThreadContext::Running(msg) => {
-                *self = ThreadContext::Scheduled(SavedThreadState::new(stack_frame, reg), msg)
+            ThreadContext::Running => {
+                *self = ThreadContext::Scheduled(SavedThreadState::new(stack_frame, reg))
             }
             e => panic!("thread was not running it was: {e:?}"),
         }
     }
     pub fn restore(&mut self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
         match core::mem::replace(self, ThreadContext::Invalid) {
-            ThreadContext::Scheduled(state, msg) => unsafe {
+            ThreadContext::Scheduled(state) => unsafe {
                 stack_frame
                     .as_mut()
                     .extract_inner()
                     .clone_from(&state.interrupt_frame);
                 reg.clone_from(&state.register_state);
-                *self = ThreadContext::Running(msg);
+                *self = ThreadContext::Running;
             },
             e => panic!("thread was not scheduled it was: {e:?}"),
         }

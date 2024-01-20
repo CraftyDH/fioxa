@@ -3,7 +3,9 @@
 
 use alloc::vec::Vec;
 use kernel_userspace::{
-    service::{generate_tracking_number, get_public_service_id, ServiceMessage},
+    service::{
+        generate_tracking_number, get_public_service_id, make_message_new, ServiceMessageDesc,
+    },
     syscall::{exit, send_service_message, CURRENT_PID},
 };
 
@@ -19,21 +21,18 @@ pub extern "C" fn main() {
     let mut buffer = Vec::new();
     let sid = get_public_service_id("ACCEPTER", &mut buffer).unwrap();
 
+    let msg = make_message_new(&());
+
     for i in 0.. {
         send_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: sid,
                 sender_pid: *CURRENT_PID,
                 tracking_number: generate_tracking_number(),
                 destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-                message: (),
             },
-            &mut buffer,
+            &msg,
         )
-        .unwrap();
-        // if i % 10000 == 0 {
-        //     println!("SENDER {i}")
-        // }
     }
 }
 

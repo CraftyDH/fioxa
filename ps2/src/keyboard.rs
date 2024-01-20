@@ -3,7 +3,8 @@ use kernel_userspace::{
     ids::{ProcessID, ServiceID},
     input::InputServiceMessage,
     service::{
-        generate_tracking_number, register_public_service, SendServiceMessageDest, ServiceMessage,
+        generate_tracking_number, make_message, register_public_service, SendServiceMessageDest,
+        ServiceMessageDesc,
     },
     syscall::{get_pid, send_service_message, service_create},
 };
@@ -83,16 +84,17 @@ impl Keyboard {
         let res = self.decoder.add_byte(scancode);
         if let Some(key) = res {
             send_service_message(
-                &ServiceMessage {
+                &ServiceMessageDesc {
                     service_id: self.keyboard_service,
                     sender_pid: self.current_pid,
                     tracking_number: generate_tracking_number(),
                     destination: SendServiceMessageDest::ToSubscribers,
-                    message: InputServiceMessage::KeyboardEvent(key),
                 },
-                &mut self.send_buffer,
-            )
-            .unwrap()
+                &make_message(
+                    &InputServiceMessage::KeyboardEvent(key),
+                    &mut self.send_buffer,
+                ),
+            );
         }
     }
 

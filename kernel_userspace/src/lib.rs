@@ -11,12 +11,16 @@ pub mod elf;
 pub mod fs;
 pub mod ids;
 pub mod input;
+pub mod message;
 pub mod net;
 pub mod pci;
 pub mod service;
 pub mod syscall;
 
-/// Calls f, backing off by 1ms doubling each fail attempt
+pub use num_derive;
+pub use num_traits;
+
+/// Calls f, backing off by 1ms adding 1ms each time maxing at 10ms
 pub fn backoff_sleep<R>(mut f: impl FnMut() -> Option<R>) -> R {
     let mut time = 1;
     loop {
@@ -24,6 +28,7 @@ pub fn backoff_sleep<R>(mut f: impl FnMut() -> Option<R>) -> R {
             return r;
         }
         sleep(time);
-        time *= 2;
+        // max at 10ms
+        time = 10.max(time + 1);
     }
 }

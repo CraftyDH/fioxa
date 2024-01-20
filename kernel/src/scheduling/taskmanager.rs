@@ -40,8 +40,8 @@ pub unsafe fn core_start_multitasking() -> ! {
     let state = {
         let task = CPULocalStorageRW::get_current_task();
         let mut ctx = task.context.lock();
-        match core::mem::replace(&mut *ctx, ThreadContext::Running(None)) {
-            ThreadContext::Scheduled(state, _) => state,
+        match core::mem::replace(&mut *ctx, ThreadContext::Running) {
+            ThreadContext::Scheduled(state) => state,
             e => panic!("thread was not scheduled it was: {e:?}"),
         }
     };
@@ -132,7 +132,7 @@ pub fn kill_bad_task() -> ! {
         }
 
         match core::mem::replace(&mut *thread.context.lock(), ThreadContext::Killed) {
-            ThreadContext::Running(_) => (),
+            ThreadContext::Running => (),
             e => panic!("thread was not running it was {e:?}"),
         };
 
@@ -153,8 +153,8 @@ pub fn kill_bad_task() -> ! {
 
         let state = {
             let mut ctx = thread.context.lock();
-            match core::mem::replace(&mut *ctx, ThreadContext::Running(None)) {
-                ThreadContext::Scheduled(state, _) => state,
+            match core::mem::replace(&mut *ctx, ThreadContext::Running) {
+                ThreadContext::Scheduled(state) => state,
                 e => panic!("thread was not scheduled it was: {e:?}"),
             }
         };

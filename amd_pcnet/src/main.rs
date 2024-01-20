@@ -21,7 +21,8 @@ use kernel_userspace::{
     net::{PhysicalNet, PhysicalNetResp},
     pci::PCIDevice,
     service::{
-        get_public_service_id, register_public_service, SendServiceMessageDest, ServiceMessage,
+        get_public_service_id, make_message, make_message_new, register_public_service,
+        SendServiceMessageDest, ServiceMessageDesc,
     },
     syscall::{
         exit, mmap_page32, read_args_raw, receive_service_message_blocking, send_service_message,
@@ -85,16 +86,16 @@ pub extern "C" fn main() {
         service_subscribe(pci_event);
 
         loop {
-            receive_service_message_blocking::<()>(pci_event, &mut buffer).unwrap();
+            receive_service_message_blocking(pci_event);
             pcnet2.lock().interrupt_handler()
         }
     });
 
     loop {
         let mut buffer = Vec::new();
-        let query = receive_service_message_blocking(*PCNET_SID, &mut buffer).unwrap();
+        let query = receive_service_message_blocking(*PCNET_SID);
 
-        let resp = match query.message {
+        let resp = match query.read(&mut buffer).unwrap() {
             PhysicalNet::MacAddrGet => PhysicalNetResp::MacAddrResp(pcnet.lock().read_mac_addr()),
             PhysicalNet::SendPacket(packet) => {
                 // Keep trying to send
@@ -106,16 +107,14 @@ pub extern "C" fn main() {
         };
 
         send_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: *PCNET_SID,
                 sender_pid: *CURRENT_PID,
                 tracking_number: query.tracking_number,
                 destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-                message: resp,
             },
-            &mut buffer,
-        )
-        .unwrap();
+            &make_message(&resp, &mut buffer),
+        );
     }
 }
 
@@ -404,17 +403,15 @@ impl PCNET<'_> {
                     let packet =
                         unsafe { slice::from_raw_parts(buffer_desc.address as *const u8, size) };
                     send_service_message(
-                        &ServiceMessage {
+                        &ServiceMessageDesc {
                             service_id: *PCNET_SID,
                             sender_pid: *CURRENT_PID,
                             tracking_number: kernel_userspace::service::ServiceTrackingNumber(0),
                             destination:
                                 kernel_userspace::service::SendServiceMessageDest::ToSubscribers,
-                            message: PhysicalNetResp::ReceivedPacket(packet),
                         },
-                        &mut Vec::new(),
-                    )
-                    .unwrap();
+                        &make_message_new(&PhysicalNetResp::ReceivedPacket(packet)),
+                    );
                 }
                 buffer_desc.flags = 0x80000000 | BUFFER_SIZE_MASK;
                 buffer_desc.flags_2 = 0;

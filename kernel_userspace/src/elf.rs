@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::{
     ids::{ProcessID, ServiceID},
-    service::{generate_tracking_number, SendServiceMessageDest, ServiceMessage},
+    service::{generate_tracking_number, make_message, SendServiceMessageDest, ServiceMessageDesc},
     syscall::{get_pid, send_and_get_response_service_message},
 };
 
@@ -93,15 +93,14 @@ pub fn spawn_elf_process<'a>(
     let pid = get_pid();
 
     send_and_get_response_service_message(
-        &ServiceMessage {
+        &ServiceMessageDesc {
             service_id,
             sender_pid: pid,
             tracking_number: generate_tracking_number(),
             destination: SendServiceMessageDest::ToProvider,
-            message: (elf, args, kernel),
         },
-        buffer,
+        &make_message(&(elf, args, kernel), buffer),
     )
+    .read(buffer)
     .unwrap()
-    .message
 }

@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ids::ServiceID,
-    service::{generate_tracking_number, ServiceMessage},
+    service::{generate_tracking_number, make_message_new, ServiceMessageDesc},
     syscall::{get_pid, send_and_get_response_service_message},
 };
 
@@ -35,18 +35,16 @@ impl PCIDevice {
 
     unsafe fn read_u32(&self, offset: u32) -> u32 {
         let PCIDevCmd::Data(data) = send_and_get_response_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: self.device_service,
                 sender_pid: get_pid(),
                 tracking_number: generate_tracking_number(),
                 destination: crate::service::SendServiceMessageDest::ToProvider,
-                message: PCIDevCmd::Read(offset),
             },
-            &mut Vec::new(),
+            &make_message_new(&PCIDevCmd::Read(offset)),
         )
-        .unwrap()
-        .message
-        else {
+        .read(&mut Vec::new())
+        .unwrap() else {
             todo!()
         };
 
@@ -69,18 +67,16 @@ impl PCIDevice {
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {
         let PCIDevCmd::Ack = send_and_get_response_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: self.device_service,
                 sender_pid: get_pid(),
                 tracking_number: generate_tracking_number(),
                 destination: crate::service::SendServiceMessageDest::ToProvider,
-                message: PCIDevCmd::Write(offset, data),
             },
-            &mut Vec::new(),
+            &make_message_new(&PCIDevCmd::Write(offset, data)),
         )
-        .unwrap()
-        .message
-        else {
+        .read(&mut Vec::new())
+        .unwrap() else {
             todo!()
         };
     }

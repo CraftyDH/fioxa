@@ -10,7 +10,7 @@ use kernel_userspace::{
         FSServiceError, FSServiceMessage, FSServiceMessageResp, StatResponse, StatResponseFile,
         StatResponseFolder,
     },
-    service::{register_public_service, SendServiceMessageDest, ServiceMessage},
+    service::{make_message, register_public_service, SendServiceMessageDest, ServiceMessageDesc},
     syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
 };
 use spin::Mutex;
@@ -212,26 +212,21 @@ pub fn file_handler() {
     let mut sec_buf = [0; 512];
 
     loop {
-        let query = receive_service_message_blocking(sid, &mut message_buffer).unwrap();
+        let query = receive_service_message_blocking(sid);
 
-        let resp = run_fs_query(
-            query.message,
-            &mut buffer,
-            &mut sec_buf,
-            &mut btree_child_buffer,
-        );
+        let msg = query.read::<FSServiceMessage>(&mut message_buffer).unwrap();
+
+        let resp = run_fs_query(msg, &mut buffer, &mut sec_buf, &mut btree_child_buffer);
 
         send_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: sid,
                 sender_pid: pid,
                 tracking_number: query.tracking_number,
                 destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-                message: resp,
             },
-            &mut message_buffer,
-        )
-        .unwrap();
+            &make_message(&resp, &mut message_buffer),
+        );
     }
 }
 

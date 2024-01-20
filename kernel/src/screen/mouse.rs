@@ -38,11 +38,8 @@ pub fn monitor_cursor_task() {
     let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
 
     loop {
-        let msg =
-            kernel_userspace::syscall::receive_service_message_blocking(mouse_id, &mut buffer)
-                .unwrap();
-
-        match msg.message {
+        let msg = kernel_userspace::syscall::receive_service_message_blocking(mouse_id);
+        match msg.read(&mut buffer).unwrap() {
             InputServiceMessage::MouseEvent(packet) => print_cursor(&mut mouse_pos, packet),
             _ => println!("Mouse got non mouse packet"),
         }

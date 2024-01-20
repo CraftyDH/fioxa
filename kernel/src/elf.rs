@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
     elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
     ids::ProcessID,
-    service::{register_public_service, SendServiceMessageDest, ServiceMessage},
+    service::{make_message, register_public_service, SendServiceMessageDest, ServiceMessageDesc},
     syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
 };
 use x86_64::{align_down, align_up, instructions::interrupts::without_interrupts};
@@ -125,25 +125,22 @@ pub fn elf_new_process_loader() {
     let mut message_buffer = Vec::new();
     let mut send_buffer = Vec::new();
     loop {
-        let query: ServiceMessage<(&[u8], &[u8], bool)> =
-            receive_service_message_blocking(sid, &mut message_buffer).unwrap();
+        let query = receive_service_message_blocking(sid);
 
-        let (elf, args, kernel) = query.message;
+        let (elf, args, kernel): (&[u8], &[u8], bool) = query.read(&mut message_buffer).unwrap();
 
         println!("LOADING...");
 
         let resp = load_elf(elf, args, kernel);
 
         send_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: sid,
                 sender_pid: pid,
                 tracking_number: query.tracking_number,
                 destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-                message: resp,
             },
-            &mut send_buffer,
-        )
-        .unwrap();
+            &make_message(&resp, &mut send_buffer),
+        );
     }
 }

@@ -4,8 +4,8 @@ use alloc::vec::Vec;
 use kernel_userspace::{
     ids::ServiceID,
     service::{
-        generate_tracking_number, get_public_service_id, SendServiceMessageDest, ServiceMessage,
-        Stdout,
+        generate_tracking_number, get_public_service_id, make_message, SendServiceMessageDest,
+        ServiceMessageDesc, Stdout,
     },
     syscall::{send_service_message, try_receive_service_message, yield_now, CURRENT_PID},
 };
@@ -29,7 +29,7 @@ impl Writer {
     // Poll writes results later so that we can send multiple packets and not require as many round trips to send
     pub fn poll_errors(&mut self) {
         loop {
-            while try_receive_service_message::<()>(*STDOUT, &mut self.message_buffer).is_some() {
+            while try_receive_service_message(*STDOUT).is_some() {
                 self.pending_response -= 1;
             }
 
@@ -44,32 +44,28 @@ impl Writer {
         self.poll_errors();
         self.pending_response += 1;
         send_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: *STDOUT,
                 sender_pid: *CURRENT_PID,
                 tracking_number: generate_tracking_number(),
                 destination: SendServiceMessageDest::ToProvider,
-                message: Stdout::Char(chr),
             },
-            &mut self.message_buffer,
-        )
-        .unwrap();
+            &make_message(&Stdout::Char(chr), &mut self.message_buffer),
+        );
     }
 
     pub fn write_string(&mut self, s: &str) {
         self.poll_errors();
         self.pending_response += 1;
         send_service_message(
-            &ServiceMessage {
+            &ServiceMessageDesc {
                 service_id: *STDOUT,
                 sender_pid: *CURRENT_PID,
                 tracking_number: generate_tracking_number(),
                 destination: SendServiceMessageDest::ToProvider,
-                message: Stdout::Str(s),
             },
-            &mut self.message_buffer,
-        )
-        .unwrap();
+            &make_message(&Stdout::Str(s), &mut self.message_buffer),
+        );
     }
 }
 

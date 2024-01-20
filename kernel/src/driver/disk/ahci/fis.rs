@@ -41,4 +41,5 @@ pub struct FisRegH2D {
     _rsv1: u32,
 }
 
+#[allow(unused)]
 pub struct ReceivedFis([u8; 256]);

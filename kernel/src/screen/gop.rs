@@ -4,8 +4,8 @@ use bootloader::gop::GopInfo;
 use conquer_once::spin::OnceCell;
 use core::fmt::Write;
 use kernel_userspace::service::{
-    generate_tracking_number, register_public_service, SendError, SendServiceMessageDest,
-    ServiceMessage, Stdout,
+    generate_tracking_number, make_message_new, register_public_service, SendServiceMessageDest,
+    ServiceMessageDesc, Stdout,
 };
 use kernel_userspace::syscall::{get_pid, send_service_message, service_create, spawn_thread};
 
@@ -276,11 +276,11 @@ pub fn monitor_stdout_task() {
     register_public_service("STDOUT", sid, &mut Vec::new());
 
     let mut buffer = Vec::new();
+    let resp = make_message_new(&());
     loop {
-        let msg =
-            kernel_userspace::syscall::receive_service_message_blocking(sid, &mut buffer).unwrap();
+        let msg = kernel_userspace::syscall::receive_service_message_blocking(sid);
 
-        match msg.message {
+        match msg.read(&mut buffer).unwrap() {
             Stdout::Str(str) => {
                 print!("{str}");
             }
@@ -289,19 +289,15 @@ pub fn monitor_stdout_task() {
             }
         }
 
-        match send_service_message(
-            &ServiceMessage {
+        send_service_message(
+            &ServiceMessageDesc {
                 service_id: sid,
                 sender_pid: pid,
                 tracking_number: generate_tracking_number(),
                 destination: SendServiceMessageDest::ToProcess(msg.sender_pid),
-                message: (),
             },
-            &mut buffer,
-        ) {
-            Ok(_) | Err(SendError::TargetNotExists) => (),
-            Err(e) => println!("gop send error: {e:?}"),
-        }
+            &resp,
+        );
     }
 }
 
