@@ -6,7 +6,7 @@ use alloc::{
 };
 
 use crossbeam_queue::ArrayQueue;
-use kernel_userspace::ids::ProcessID;
+use kernel_userspace::{ids::ProcessID, syscall::thread_bootstraper};
 use spin::{Lazy, Mutex};
 use x86_64::structures::idt::InterruptStackFrame;
 
@@ -204,7 +204,7 @@ pub fn spawn_process(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers
     let pid = process.pid;
 
     // TODO: Validate r8 is a valid entrypoint
-    let thread = process.new_thread(reg.r8);
+    let thread = process.new_thread(thread_bootstraper as *const u64, reg.r8);
     PROCESSES.lock().insert(process.pid, process);
     TASK_QUEUE.push(Arc::downgrade(&thread)).unwrap();
     // Return process id as successful result;
@@ -215,7 +215,7 @@ pub fn spawn_thread(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers)
     let thread = CPULocalStorageRW::get_current_task();
 
     // TODO: Validate r8 is a valid entrypoint
-    let thread = thread.process.new_thread(reg.r8);
+    let thread = thread.process.new_thread(reg.r8 as *const u64, reg.r9);
     TASK_QUEUE.push(Arc::downgrade(&thread)).unwrap();
     // Return task id as successful result;
     reg.rax = thread.tid.0 as usize;

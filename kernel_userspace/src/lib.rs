@@ -1,5 +1,7 @@
 #![no_std]
 #![feature(error_in_core)]
+#![feature(fn_traits)]
+#![feature(box_into_inner)]
 
 use syscall::sleep;
 

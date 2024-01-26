@@ -1,7 +1,6 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::{
-    boxed::Box,
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Weak},
     vec::Vec,
@@ -11,7 +10,6 @@ use kernel_userspace::{
     ids::{ProcessID, ServiceID, ThreadID},
     message::MessageId,
     service::ServiceMessageDesc,
-    syscall::exit,
 };
 use spin::{Lazy, Mutex};
 use x86_64::{
@@ -187,13 +185,13 @@ impl Process {
         thread
     }
 
-    pub fn new_thread(&self, entry_point: usize) -> Arc<Thread> {
+    pub fn new_thread(&self, entry_point: *const u64, arg: usize) -> Arc<Thread> {
         let register_state = Registers {
-            rdi: entry_point,
+            rdi: arg,
             ..Default::default()
         };
 
-        self.new_thread_direct(thread_bootstraper as *const u64, register_state)
+        self.new_thread_direct(entry_point, register_state)
     }
 }
 
@@ -276,15 +274,4 @@ impl ThreadContext {
             e => panic!("thread was not scheduled it was: {e:?}"),
         }
     }
-}
-
-extern "C" fn thread_bootstraper(main: usize) {
-    // Recreate the function box that was passed from the syscall
-    let func = unsafe { Box::from_raw(main as *mut Box<dyn FnOnce()>) };
-
-    // Call the function
-    func.call_once(());
-
-    // Function ended quit
-    exit()
 }

@@ -128,8 +128,21 @@ where
     let boxed_func: Box<dyn FnOnce()> = Box::new(func);
     let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
     let res: u64;
-    unsafe { make_syscall!(SPAWN_THREAD, raw => res) }
+    unsafe { make_syscall!(SPAWN_THREAD, thread_bootstraper, raw => res) }
     ThreadID(res)
+}
+
+/// Is used as a new threads entry point.
+pub unsafe extern "C" fn thread_bootstraper(main: usize) {
+    // Recreate the function box that was passed from the syscall
+    let func = unsafe { Box::from_raw(main as *mut Box<dyn FnOnce()>) };
+    // We can release the outer box
+    let func = Box::into_inner(func);
+    // Call the function
+    func.call_once(());
+
+    // Function ended quit
+    exit()
 }
 
 #[inline]
