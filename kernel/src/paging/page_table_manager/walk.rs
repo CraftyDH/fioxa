@@ -1,5 +1,3 @@
-use crate::paging::MemoryMappingFlags;
-
 use super::*;
 
 impl<S: PageSize> Mapper<S> for PageTable<'_, PageLvl4>
