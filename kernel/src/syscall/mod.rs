@@ -13,7 +13,7 @@ use kernel_userspace::{
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
-    assembly::registers::{Registers, SavedThreadState},
+    assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
     gdt::TASK_SWITCH_INDEX,
     interrupts,
@@ -22,12 +22,9 @@ use crate::{
         page_allocator::frame_alloc_exec, page_mapper::PageMapping, page_table_manager::Mapper,
         MemoryMappingFlags,
     },
-    scheduling::{
-        process::ThreadContext,
-        taskmanager::{self, kill_bad_task, load_new_task},
-    },
+    scheduling::taskmanager::{self, kill_bad_task, load_new_task},
     service::{self, service_wait},
-    time::{self, pit, SLEEP_TARGET, SLEPT_PROCCESSES},
+    time::{self, pit, SLEEP_TARGET, SLEPT_PROCESSES},
     wrap_function_registers,
 };
 
@@ -55,7 +52,7 @@ pub enum SyscallError {
     SendError(SendError),
 }
 
-extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
+unsafe extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
     // Run syscalls without interrupts
     // This means execution should not be interrupted
     use kernel_userspace::syscall::*;
@@ -110,10 +107,10 @@ fn echo_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     Ok(())
 }
 
-fn read_args_handler(regs: &mut Registers) -> Result<(), SyscallError> {
+unsafe fn read_args_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     let task = CPULocalStorageRW::get_current_task();
 
-    let proc = &task.process;
+    let proc = task.process();
 
     if regs.r8 == 0 {
         regs.rax = proc.args.len();
@@ -125,7 +122,7 @@ fn read_args_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     Ok(())
 }
 
-fn service_handler(
+unsafe fn service_handler(
     stack_frame: &mut InterruptStackFrame,
     regs: &mut Registers,
 ) -> Result<(), SyscallError> {
@@ -149,7 +146,7 @@ fn service_handler(
             let thread = CPULocalStorageRW::get_current_task();
 
             match service::try_find_message(
-                &thread,
+                thread.handle(),
                 ServiceID(regs.r10 as u64),
                 ServiceTrackingNumber(regs.r11 as u64),
             ) {
@@ -161,31 +158,17 @@ fn service_handler(
             }
         }
         syscall::SERVICE_WAIT => {
-            let thread = CPULocalStorageRW::get_current_task();
-
-            {
-                let mut ctx = thread.context.lock();
-
-                match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
-                    ThreadContext::Running => {
-                        *ctx = ThreadContext::Blocked(SavedThreadState::new(stack_frame, regs))
-                    }
-                    e => panic!("thread was not running it was: {e:?}"),
-                }
-            }
+            let mut thread = CPULocalStorageRW::take_current_task();
+            thread.save_state(stack_frame, regs);
 
             let res = service_wait(thread, ServiceID(regs.r9 as u64));
             // Set successfully
-            if res {
-                taskmanager::load_new_task(stack_frame, regs);
-            } else {
-                // Race condition, it was set so return
-                let thread = CPULocalStorageRW::get_current_task();
-                let mut ctx = thread.context.lock();
-                match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
-                    ThreadContext::Blocked(_) => *ctx = ThreadContext::Running,
-                    e => panic!("thread was not blocked it was: {e:?}"),
+            match res {
+                Some(t) => {
+                    // Race condition, it was set so return
+                    CPULocalStorageRW::set_current_task(t);
                 }
+                None => taskmanager::load_new_task(stack_frame, regs),
             }
         }
         _ => (),
@@ -193,12 +176,12 @@ fn service_handler(
     Ok(())
 }
 
-fn mmap_page_handler(regs: &mut Registers) -> Result<(), SyscallError> {
+unsafe fn mmap_page_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     check_mem_bounds(regs.r8)?;
 
     let task = CPULocalStorageRW::get_current_task();
 
-    let mut memory = task.process.memory.lock();
+    let mut memory = task.process().memory.lock();
 
     let lazy_page = PageMapping::new_lazy((regs.r9 + 0xFFF) & !0xFFF);
 
@@ -216,7 +199,7 @@ fn mmap_page_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     Ok(())
 }
 
-fn mmap_page32_handler(regs: &mut Registers) -> Result<(), SyscallError> {
+unsafe fn mmap_page32_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     let task = CPULocalStorageRW::get_current_task();
 
     let page =
@@ -224,7 +207,7 @@ fn mmap_page32_handler(regs: &mut Registers) -> Result<(), SyscallError> {
 
     regs.rax = page.get_address() as usize;
 
-    let mut memory = task.process.memory.lock();
+    let mut memory = task.process().memory.lock();
     unsafe {
         memory
             .page_mapper
@@ -237,12 +220,12 @@ fn mmap_page32_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     Ok(())
 }
 
-fn unmmap_page_handler(regs: &Registers) -> Result<(), SyscallError> {
+unsafe fn unmmap_page_handler(regs: &Registers) -> Result<(), SyscallError> {
     check_mem_bounds(regs.r8)?;
 
     let task = CPULocalStorageRW::get_current_task();
 
-    let mut memory = task.process.memory.lock();
+    let mut memory = task.process().memory.lock();
 
     unsafe {
         memory
@@ -255,29 +238,19 @@ fn unmmap_page_handler(regs: &Registers) -> Result<(), SyscallError> {
 pub const INTERNAL_KERNEL_WAKER_INTERRUPTS: usize = 0;
 pub const INTERNAL_KERNEL_WAKER_SLEEPD: usize = 1;
 
-fn internal_kernel_waker_handler(
+unsafe fn internal_kernel_waker_handler(
     stack_frame: &mut InterruptStackFrame,
     regs: &mut Registers,
 ) -> Result<(), SyscallError> {
-    let thread = CPULocalStorageRW::get_current_task();
+    let mut thread = CPULocalStorageRW::take_current_task();
+    thread.save_state(stack_frame, regs);
 
-    match thread.process.privilege {
+    match thread.process().privilege {
         crate::scheduling::process::ProcessPrivilige::KERNEL => (),
         crate::scheduling::process::ProcessPrivilige::USER => {
             return Err(SyscallError::KernelOnlySyscall);
         }
     };
-
-    {
-        let mut ctx = thread.context.lock();
-
-        match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
-            ThreadContext::Running => {
-                *ctx = ThreadContext::Blocked(SavedThreadState::new(stack_frame, regs))
-            }
-            e => panic!("thread was not running it was: {e:?}"),
-        }
-    }
 
     let res = match regs.r8 {
         INTERNAL_KERNEL_WAKER_INTERRUPTS => interrupts::DISPATCH_WAKER.set_waker(thread),
@@ -285,32 +258,25 @@ fn internal_kernel_waker_handler(
         _ => todo!(),
     };
     // Set successfully
-    if res {
-        taskmanager::load_new_task(stack_frame, regs);
-    } else {
-        // Race condition, it was set so return
-        let thread = CPULocalStorageRW::get_current_task();
-        let mut ctx = thread.context.lock();
-        match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
-            ThreadContext::Blocked(_) => *ctx = ThreadContext::Running,
-            e => panic!("thread was not blocked it was: {e:?}"),
+    match res {
+        Some(t) => {
+            // Race condition, it was set so return
+            CPULocalStorageRW::set_current_task(t);
         }
+        None => taskmanager::load_new_task(stack_frame, regs),
     }
+
     Ok(())
 }
 
-fn sleep_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
+unsafe fn sleep_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
     let time = pit::get_uptime() + regs.r8 as u64;
-    let thread = CPULocalStorageRW::get_current_task();
-    thread.context.lock().save(stack_frame, regs);
+    let mut thread = CPULocalStorageRW::take_current_task();
+    thread.save_state(stack_frame, regs);
 
     // println!("Sleep {} {}", thread.process.pid.0, thread.tid.0);
 
-    SLEPT_PROCCESSES
-        .lock()
-        .entry(time)
-        .or_default()
-        .push(Arc::downgrade(&thread));
+    SLEPT_PROCESSES.lock().entry(time).or_default().push(thread);
 
     // Ensure that the sleep waker is called if this was a shorter timeout
     let _ = SLEEP_TARGET.fetch_update(
@@ -322,7 +288,7 @@ fn sleep_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
     load_new_task(stack_frame, regs);
 }
 
-fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
+unsafe fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     let action: SyscallMessageAction =
         FromPrimitive::from_usize(regs.r8).ok_or(SyscallError::UnknownSubAction)?;
     let thread = CPULocalStorageRW::get_current_task();
@@ -335,7 +301,7 @@ fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
             let id = create_new_messageid();
             let msg = Arc::new(KMessage { id, data });
             assert!(thread
-                .process
+                .process()
                 .service_messages
                 .lock()
                 .messages
@@ -346,7 +312,7 @@ fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
         SyscallMessageAction::GetSize => unsafe {
             let msg_size = &mut *(regs.r9 as *mut MessageGetSize);
             msg_size.after = thread
-                .process
+                .process()
                 .service_messages
                 .lock()
                 .messages
@@ -361,7 +327,7 @@ fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
 
             let loc = core::slice::from_raw_parts_mut(msg_read.ptr.0, msg_read.ptr.1);
 
-            let messages = thread.process.service_messages.lock();
+            let messages = thread.process().service_messages.lock();
             let msg = messages
                 .messages
                 .get(&msg_read.id)
@@ -378,7 +344,7 @@ fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
             let msg_clone = &mut *(regs.r9 as *mut MessageClone);
 
             thread
-                .process
+                .process()
                 .service_messages
                 .lock()
                 .messages
@@ -389,7 +355,7 @@ fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
         SyscallMessageAction::Drop => unsafe {
             let msg_drop = &mut *(regs.r9 as *mut MessageDrop);
 
-            let mut messages = thread.process.service_messages.lock();
+            let mut messages = thread.process().service_messages.lock();
 
             let cnt = {
                 let msg = messages

@@ -1,9 +1,9 @@
 use core::sync::atomic::AtomicUsize;
 
-use alloc::sync::Arc;
+use alloc::boxed::Box;
 use kernel_userspace::syscall::internal_kernel_waker_wait;
 
-use crate::scheduling::process::Thread;
+use crate::scheduling::{process::Thread, taskmanager::push_task_queue};
 
 pub struct AtomicThreadWaker {
     state: AtomicUsize,
@@ -31,8 +31,8 @@ impl AtomicThreadWaker {
         match old {
             WAKER_RESTING | WAKER_CHECK => (),
             arc => {
-                let thread = unsafe { Arc::from_raw(arc as *const Thread) };
-                thread.internal_wake();
+                let thread = unsafe { Box::from_raw(arc as *mut Thread) };
+                push_task_queue(thread).unwrap();
             }
         }
     }
@@ -48,8 +48,8 @@ impl AtomicThreadWaker {
         }
     }
 
-    pub fn set_waker(&self, waker: Arc<Thread>) -> bool {
-        let w = Arc::into_raw(waker);
+    pub fn set_waker(&self, waker: Box<Thread>) -> Option<Box<Thread>> {
+        let w = Box::into_raw(waker);
         let old = self.state.compare_exchange(
             WAKER_CHECK,
             w as usize,
@@ -57,13 +57,10 @@ impl AtomicThreadWaker {
             core::sync::atomic::Ordering::Acquire,
         );
         match old {
-            Ok(_) => true,
+            Ok(_) => None,
             Err(WAKER_RESTING) => {
-                // We failed to set, so drop the arc
-                unsafe {
-                    Arc::decrement_strong_count(w);
-                }
-                false
+                // We failed to set, so return the thread
+                unsafe { Some(Box::from_raw(w)) }
             }
             _ => panic!("Waker in bad state"),
         }

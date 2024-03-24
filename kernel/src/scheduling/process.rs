@@ -1,6 +1,10 @@
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::{
+    fmt::Debug,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use alloc::{
+    boxed::Box,
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Weak},
     vec::Vec,
@@ -32,8 +36,6 @@ use crate::{
     },
     BOOT_INFO,
 };
-
-use super::taskmanager::push_task_queue;
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 
@@ -79,7 +81,7 @@ pub struct Process {
 #[derive(Default)]
 pub struct ProcessThreads {
     thread_next_id: u64,
-    pub threads: BTreeMap<ThreadID, Arc<Thread>>,
+    pub threads: BTreeMap<ThreadID, Arc<ThreadHandle>>,
 }
 
 pub struct ProcessMemory {
@@ -96,7 +98,7 @@ pub struct ProcessMessages {
 #[derive(Default)]
 pub struct ServiceQueue {
     pub message_queue: VecDeque<Arc<(ServiceMessageDesc, Arc<KMessage>)>>,
-    pub wakers: Vec<Weak<Thread>>,
+    pub wakers: Vec<Box<Thread>>,
 }
 
 impl Process {
@@ -145,7 +147,7 @@ impl Process {
         &self,
         entry_point: *const u64,
         register_state: Registers,
-    ) -> Arc<Thread> {
+    ) -> Box<Thread> {
         let mut threads = self.threads.lock();
         let tid = threads.get_next_id();
 
@@ -171,21 +173,22 @@ impl Process {
             stack_segment: self.privilege.get_data_segment().0 as u64,
         };
 
-        let thread = Arc::new_cyclic(|this| Thread {
-            this: this.clone(),
+        let handle = Arc::new(ThreadHandle {
             process: self.this.upgrade().unwrap(),
             tid,
-            context: Mutex::new(ThreadContext::Scheduled(SavedThreadState {
-                register_state,
-                interrupt_frame,
-            })),
         });
 
-        threads.threads.insert(tid, thread.clone());
-        thread
+        threads.threads.insert(tid, handle.clone());
+        Box::new(Thread {
+            handle,
+            state: SavedThreadState {
+                register_state,
+                interrupt_frame,
+            },
+        })
     }
 
-    pub fn new_thread(&self, entry_point: *const u64, arg: usize) -> Arc<Thread> {
+    pub fn new_thread(&self, entry_point: *const u64, arg: usize) -> Box<Thread> {
         let register_state = Registers {
             rdi: arg,
             ..Default::default()
@@ -203,75 +206,73 @@ impl ProcessThreads {
     }
 }
 
+pub struct ThreadHandle {
+    process: Arc<Process>,
+    tid: ThreadID,
+}
+
+impl ThreadHandle {
+    pub fn tid(&self) -> ThreadID {
+        self.tid
+    }
+
+    pub fn process(&self) -> &Arc<Process> {
+        &self.process
+    }
+}
+
 pub struct Thread {
-    this: Weak<Thread>,
-    pub process: Arc<Process>,
-    pub tid: ThreadID,
-    pub context: Mutex<ThreadContext>,
+    handle: Arc<ThreadHandle>,
+    state: SavedThreadState,
 }
 
 impl Thread {
-    /// Called from the wake up handler
-    pub fn internal_wake(&self) {
-        let mut ctx = self.context.lock();
-        match core::mem::replace(&mut *ctx, ThreadContext::Invalid) {
-            ThreadContext::Blocked(a) => {
-                *ctx = ThreadContext::Scheduled(a);
-            }
-            e => panic!("thread wasn't blocked it was {e:?}"),
-        }
-        push_task_queue(self.this.clone()).unwrap()
+    pub fn handle(&self) -> &Arc<ThreadHandle> {
+        &self.handle
+    }
+
+    pub fn process(&self) -> &Arc<Process> {
+        &self.handle.process
+    }
+
+    pub fn state(&self) -> &SavedThreadState {
+        &self.state
+    }
+
+    pub unsafe fn save_state(&mut self, stack_frame: &InterruptStackFrame, reg: &Registers) {
+        self.state = SavedThreadState::new(stack_frame, reg)
+    }
+
+    pub unsafe fn restore_state(&self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
+        stack_frame
+            .as_mut()
+            .extract_inner()
+            .clone_from(&self.state.interrupt_frame);
+        reg.clone_from(&self.state.register_state);
+    }
+}
+
+impl Debug for Thread {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Thread")
+            .field("tid", &self.handle.tid)
+            .field("state", &self.state)
+            .finish()
     }
 }
 
 impl Drop for Thread {
     fn drop(&mut self) {
-        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.tid.0;
+        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.handle.tid.0;
 
         unsafe {
-            self.process
+            self.handle
+                .process
                 .memory
                 .lock()
                 .page_mapper
                 .free_mapping(stack_base as usize..(stack_base + STACK_SIZE) as usize)
                 .unwrap();
-        }
-    }
-}
-
-// Used for storing current msg, so that the popdata can get the data
-// pub type CurrentMessage = Option<Arc<(ServiceID, ServiceTrackingNumber, Box<[u8]>)>>;
-
-#[derive(Debug)]
-pub enum ThreadContext {
-    Invalid,
-    // The thread did something bad and got killed
-    Killed,
-    Running,
-    Scheduled(SavedThreadState),
-    Blocked(SavedThreadState),
-}
-
-impl ThreadContext {
-    pub fn save(&mut self, stack_frame: &InterruptStackFrame, reg: &Registers) {
-        match core::mem::replace(self, ThreadContext::Invalid) {
-            ThreadContext::Running => {
-                *self = ThreadContext::Scheduled(SavedThreadState::new(stack_frame, reg))
-            }
-            e => panic!("thread was not running it was: {e:?}"),
-        }
-    }
-    pub fn restore(&mut self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-        match core::mem::replace(self, ThreadContext::Invalid) {
-            ThreadContext::Scheduled(state) => unsafe {
-                stack_frame
-                    .as_mut()
-                    .extract_inner()
-                    .clone_from(&state.interrupt_frame);
-                reg.clone_from(&state.register_state);
-                *self = ThreadContext::Running;
-            },
-            e => panic!("thread was not scheduled it was: {e:?}"),
         }
     }
 }

@@ -1,6 +1,7 @@
 use core::sync::atomic::AtomicU64;
 
 use alloc::{
+    boxed::Box,
     collections::{BTreeMap, BTreeSet},
     string::{String, ToString},
     sync::Arc,
@@ -19,7 +20,10 @@ use spin::Mutex;
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     message::{KMessage, KMessageProcRefcount},
-    scheduling::{process::Thread, taskmanager::PROCESSES},
+    scheduling::{
+        process::{Thread, ThreadHandle},
+        taskmanager::{push_task_queue, PROCESSES},
+    },
 };
 
 pub static SERVICES: Mutex<BTreeMap<ServiceID, ServiceInfo>> = Mutex::new(BTreeMap::new());
@@ -61,12 +65,12 @@ pub fn push(current_pid: ProcessID, msg: &ServiceMessageK) -> Result<(), SendErr
         return Err(SendError::NotYourPID);
     }
 
-    let thread = CPULocalStorageRW::get_current_task();
+    let thread = unsafe { CPULocalStorageRW::get_current_task() };
 
     let dest = msg.destination;
 
     let data = thread
-        .process
+        .process()
         .service_messages
         .lock()
         .messages
@@ -119,18 +123,16 @@ fn send_message(pid: ProcessID, message: Arc<(ServiceMessageDesc, Arc<KMessage>)
     queue.message_queue.push_back(message);
 
     while let Some(thread) = queue.wakers.pop() {
-        if let Some(t) = thread.upgrade() {
-            t.internal_wake();
-        }
+        push_task_queue(thread).unwrap();
     }
 }
 
 pub fn try_find_message(
-    thread: &Thread,
+    thread: &ThreadHandle,
     sid: ServiceID,
     narrow_by_tracking: ServiceTrackingNumber,
 ) -> Option<ServiceMessageK> {
-    let mut messages = thread.process.service_messages.lock();
+    let mut messages = thread.process().service_messages.lock();
 
     let queue = messages.queue.entry(sid).or_default();
 
@@ -161,15 +163,16 @@ pub fn try_find_message(
     })
 }
 
-pub fn service_wait(thread: Arc<Thread>, sid: ServiceID) -> bool {
-    let mut messages = thread.process.service_messages.lock();
+pub fn service_wait(thread: Box<Thread>, sid: ServiceID) -> Option<Box<Thread>> {
+    let process = thread.process().clone();
+    let mut messages = process.service_messages.lock();
     let queue = messages.queue.entry(sid).or_default();
 
     if queue.message_queue.is_empty() {
-        queue.wakers.push(Arc::downgrade(&thread));
-        true
+        queue.wakers.push(thread);
+        None
     } else {
-        false
+        Some(thread)
     }
 }
 

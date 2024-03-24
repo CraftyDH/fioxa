@@ -35,7 +35,7 @@ impl AcpiHandler for FioxaAcpiHandler {
         let mapped_size = end - base;
 
         without_interrupts(|| {
-            let mut mem = thread.process.memory.lock();
+            let mut mem = thread.process().memory.lock();
 
             let vaddr_base = mem.page_mapper.insert_mapping(
                 PageMapping::new_mmap(base, mapped_size),
@@ -53,17 +53,17 @@ impl AcpiHandler for FioxaAcpiHandler {
     }
 
     fn unmap_physical_region<T>(region: &acpi::PhysicalMapping<Self, T>) {
-        let thread = CPULocalStorageRW::get_current_task();
+        unsafe {
+            let thread = CPULocalStorageRW::get_current_task();
 
-        let base = (region.virtual_start().as_ptr() as usize) & !0xFFF;
-        without_context_switch(|| {
-            let mut mem = thread.process.memory.lock();
+            let base = (region.virtual_start().as_ptr() as usize) & !0xFFF;
+            without_context_switch(|| {
+                let mut mem = thread.process().memory.lock();
 
-            unsafe {
                 mem.page_mapper
                     .free_mapping(base..base + region.mapped_length())
                     .unwrap()
-            }
-        })
+            })
+        }
     }
 }

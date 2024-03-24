@@ -41,7 +41,7 @@ pub unsafe fn boot_aps(madt: &Madt) {
         bspdone = (end) as *mut u32;
         aprunning = &mut *((end + 4) as *mut AtomicU32);
         *((end + 8) as *mut u32) = task
-            .process
+            .process()
             .memory
             .lock()
             .page_mapper

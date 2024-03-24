@@ -103,7 +103,7 @@ pub fn is_switching_tasks() -> bool {
 
 wrap_function_registers!(tick => tick_handler);
 
-extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
+unsafe extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
     if CPULocalStorageRW::get_core_id() == 0 {
         // Get the amount of milliseconds per interrupt
         let freq = 1000 / get_frequency();

@@ -379,7 +379,7 @@ where
     for<'a> PageTable<'a, PageLvl4>: Mapper<S>,
 {
     without_interrupts(|| {
-        let proc = &CPULocalStorageRW::get_current_task().process;
+        let proc = CPULocalStorageRW::get_current_task().process();
         let mut mem = proc.memory.lock();
         let mapper = mem.page_mapper.get_mapper_mut();
         match mapper.identity_map_memory(page, flags) {

@@ -107,7 +107,7 @@ extern "x86-interrupt" fn invalid_tss(stack_frame: InterruptStackFrame, _error_c
 
 // wrap_function_registers!(page_fault_handlers => page_fault_handler);
 
-extern "x86-interrupt" fn page_fault_handler(
+unsafe extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
@@ -132,7 +132,7 @@ extern "x86-interrupt" fn page_fault_handler(
             addr, stack_frame.instruction_pointer
         );
     } else {
-        let process = &CPULocalStorageRW::get_current_task().process;
+        let process = CPULocalStorageRW::get_current_task().process();
         let mut mem = process.memory.lock();
         if mem
             .page_mapper

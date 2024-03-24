@@ -1,6 +1,6 @@
-use core::mem::{size_of, ManuallyDrop};
+use core::mem::size_of;
 
-use alloc::sync::Arc;
+use alloc::boxed::Box;
 use kernel_userspace::ids::{ProcessID, ThreadID};
 
 use crate::{
@@ -122,44 +122,53 @@ impl CPULocalStorageRW {
         unsafe { localstorage_write!(val => stay_scheduled: bool) }
     }
 
-    pub fn get_core_mgmt_task() -> Arc<Thread> {
+    pub fn take_coremgmt_task() -> Box<Thread> {
         unsafe {
             let ptr = localstorage_read_imm!(core_mgmt_task_ptr: u64);
-            let arc = Arc::from_raw(ptr as *const Thread);
+            localstorage_write!(0 => core_mgmt_task_ptr: u64);
+            assert_ne!(ptr, 0);
 
-            // get a new arc and don't drop our reference
-            let result = arc.clone();
-            let _ = ManuallyDrop::new(arc);
-
-            result
+            Box::from_raw(ptr as *mut _)
         }
     }
 
-    pub fn get_current_task() -> Arc<Thread> {
+    pub fn set_coremgmt_task(task: Box<Thread>) {
         unsafe {
-            let ptr = localstorage_read_imm!(current_task_ptr: u64);
-            let arc = Arc::from_raw(ptr as *const Thread);
+            let old_ptr = localstorage_read_imm!(core_mgmt_task_ptr: u64);
+            assert_eq!(old_ptr, 0);
 
-            // get a new arc and don't drop our reference
-            let result = arc.clone();
-            let _ = ManuallyDrop::new(arc);
-
-            result
+            let ptr = Box::into_raw(task);
+            localstorage_write!(ptr => core_mgmt_task_ptr: u64);
         }
     }
 
-    pub fn set_current_task(task: Arc<Thread>) {
+    /// SAFTEY: The pointer must be dropped before the next take_current_task call, and there cannot be multiple pointers at once
+    pub unsafe fn get_current_task<'l>() -> &'l mut Thread {
         unsafe {
             let ptr = localstorage_read_imm!(current_task_ptr: u64);
-            if ptr != 0 {
-                // drop the old ptr
-                let _ = Arc::from_raw(ptr as *const Thread);
-            }
-            let ptr = Arc::into_raw(task);
 
-            localstorage_write!(ptr as u64 => current_task_ptr: u64);
+            assert_ne!(ptr, 0);
+            &mut *(ptr as *mut Thread)
+        }
+    }
 
-            let _ = task;
+    pub fn take_current_task() -> Box<Thread> {
+        unsafe {
+            let ptr = localstorage_read_imm!(current_task_ptr: u64);
+            localstorage_write!(0 => current_task_ptr: u64);
+
+            assert_ne!(ptr, 0);
+            Box::from_raw(ptr as *mut _)
+        }
+    }
+
+    pub fn set_current_task(task: Box<Thread>) {
+        unsafe {
+            let old_ptr = localstorage_read_imm!(current_task_ptr: u64);
+            assert_eq!(old_ptr, 0);
+
+            let ptr = Box::into_raw(task);
+            localstorage_write!(ptr => current_task_ptr: u64);
         }
     }
 }
@@ -195,8 +204,8 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
         .unwrap()
         .new_thread_direct(nop_task as *const u64, Registers::default());
 
-    ls.core_mgmt_task_ptr = Arc::into_raw(task.clone()) as u64;
-    ls.current_task_ptr = Arc::into_raw(task) as u64;
+    ls.core_mgmt_task_ptr = 0;
+    ls.current_task_ptr = Box::into_raw(task) as u64;
 
     crate::gdt::create_gdt_for_core(unsafe { &mut *((vaddr_base + 0x1000) as *mut CPULocalGDT) });
 

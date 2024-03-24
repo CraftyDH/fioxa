@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 use kernel_userspace::{
     elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
     ids::ProcessID,
@@ -62,7 +62,7 @@ pub fn load_elf<'a>(
 
     let mut memory = process.memory.lock();
 
-    let this_mem = &CPULocalStorageRW::get_current_task().process.memory;
+    let this_mem = unsafe { &CPULocalStorageRW::get_current_task().process().memory };
 
     println!("COPYING MEM...");
     // Iterate over each header
@@ -107,8 +107,7 @@ pub fn load_elf<'a>(
     }
     drop(memory);
     println!("STARTING PROC...");
-    let tid = process.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
-    let thread = Arc::downgrade(&tid);
+    let thread = process.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
     let pid = process.pid;
     without_context_switch(|| {
         PROCESSES.lock().insert(pid, process);

@@ -1,7 +1,7 @@
 use core::sync::atomic::AtomicU64;
 
 use acpi::AcpiTables;
-use alloc::{collections::BTreeMap, sync::Weak, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
 use conquer_once::spin::Lazy;
 use spin::Mutex;
 
@@ -47,17 +47,17 @@ pub fn uptime() -> u64 {
 
 pub static SLEEP_WAKER: AtomicThreadWaker = AtomicThreadWaker::new();
 pub static SLEEP_TARGET: AtomicU64 = AtomicU64::new(u64::MAX);
-pub static SLEPT_PROCCESSES: Lazy<Mutex<BTreeMap<u64, Vec<Weak<Thread>>>>> =
+pub static SLEPT_PROCESSES: Lazy<Mutex<BTreeMap<u64, Vec<Box<Thread>>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
 
 pub fn sleepd() {
     atomic_waker_loop(&SLEEP_WAKER, INTERNAL_KERNEL_WAKER_SLEEPD, || {
         let time = pit::get_uptime();
-        let mut procs = SLEPT_PROCCESSES.lock();
+        let mut procs = SLEPT_PROCESSES.lock();
         procs.retain(|&req_time, el| {
             if req_time <= time {
-                for i in el {
-                    push_task_queue(i.clone()).unwrap();
+                while let Some(t) = el.pop() {
+                    push_task_queue(t).unwrap();
                 }
                 false
             } else {
