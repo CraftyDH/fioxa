@@ -21,8 +21,9 @@ thiserror = { version = "1.0", package = "thiserror-core", default-features = fa
 volatile = "0.3"
 serde = { version = "1.0.*", default-features = false, features = ["derive"] }
 bitflags = { version = "2.4.1", default-features = false }
-hashbrown = { version = "0.11.2", default-features = false, features = ["ahash"] }
+hashbrown = { version = "0.14.3", default-features = false, features = ["ahash"] }
 
 [profile.dev]
 # Increase speed by 1000% since there are lots of hot loops / "zero cost" abstrations that need optimising
 opt-level = 1
+force-frame-pointers = "yes"

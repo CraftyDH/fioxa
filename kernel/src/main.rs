@@ -52,9 +52,9 @@ use kernel_userspace::syscall::{
 };
 
 // #[no_mangle]
-entry_point!(main);
+entry_point!(main_entry);
 
-pub fn main(info: *const BootInfo) -> ! {
+pub fn main_entry(info: *const BootInfo) -> ! {
     let mmap = unsafe {
         x86_64::instructions::interrupts::disable();
 
@@ -89,16 +89,17 @@ pub fn main(info: *const BootInfo) -> ! {
 
     log!("Welcome to Fioxa...");
 
-    let init_process = Process::new(kernel::scheduling::process::ProcessPrivilige::KERNEL, &[]);
-    assert!(init_process.pid == ProcessID(0));
-
-    PROCESSES
-        .lock()
-        .insert(init_process.pid, init_process.clone());
-
     // remap and jump kernel to correct location
     unsafe {
         let map_addr = {
+            let init_process =
+                Process::new(kernel::scheduling::process::ProcessPrivilige::KERNEL, &[]);
+            assert!(init_process.pid == ProcessID(0));
+
+            PROCESSES
+                .lock()
+                .insert(init_process.pid, init_process.clone());
+
             let mut mem = init_process.memory.lock();
 
             // we need to set 0x8000 for the trampoline
@@ -129,19 +130,27 @@ pub fn main(info: *const BootInfo) -> ! {
         };
         // load and jump stack
         core::arch::asm!(
+            "mov rbp, 0",
             "add rsp, {}",
             "mov cr3, {}",
+            "jmp {}",
             in(reg) MemoryLoc::PhysMapOffset as u64,
             in(reg) map_addr,
+            in(reg) main,
+            in("rdi") virt_addr_offset(info),
+            options(noreturn)
         );
     }
+}
 
-    let info = virt_addr_offset(info);
+fn main(info: *const BootInfo) {
     // set global boot info
     unsafe { BOOT_INFO = info };
 
     // read boot_info
     let boot_info = unsafe { core::ptr::read(info) };
+
+    let init_process = PROCESSES.lock().get(&ProcessID(0)).unwrap().clone();
 
     log!("Initializing BSP for multicore...");
     unsafe { init_bsp_task() };

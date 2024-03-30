@@ -16,7 +16,9 @@
 
 use bootloader::BootInfo;
 
-use crate::scheduling::without_context_switch;
+use crate::{
+    cpu_localstorage::CPULocalStorageRW, paging::MemoryLoc, scheduling::without_context_switch,
+};
 
 #[macro_use]
 extern crate alloc;
@@ -70,7 +72,13 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // unsafe { WRITER.force_unlock() };
     // unsafe { core::arch::asm!("cli") }
     without_context_switch(|| {
-        log!("Panic: {}", info);
+        log!("KERNEL PANIC: {}", info);
+        log!(
+            "  Caused by {:?}, {:?}",
+            CPULocalStorageRW::get_current_pid(),
+            CPULocalStorageRW::get_current_tid()
+        );
+        crate::stack_trace();
         loop {
             unsafe { core::arch::asm!("hlt") }
         }
@@ -92,4 +100,28 @@ macro_rules! log {
         // s_print!("{}\n", format_args!($($arg)*));
         print!("{}\n", format_args!($($arg)*));
     });
+}
+
+/// Walks rbp to find all call frames, additionally prints out the return address of each frame
+/// TODO: find the associated function from the ip
+pub fn stack_trace() {
+    unsafe {
+        let mut rbp: usize;
+        println!("Performing stack trace...");
+        core::arch::asm!("mov {}, rbp", lateout(reg) rbp);
+        for depth in 0.. {
+            let caller = *((rbp + 8) as *const usize);
+            println!("Frame {depth}: base pointer: {rbp:#x}, return address: {caller:#x}");
+
+            rbp = *(rbp as *const usize);
+            // at rbp 0 we have walked to the end
+            if rbp == 0 {
+                println!("Stack trace finished.");
+                return;
+            } else if rbp <= MemoryLoc::EndUserMem as usize {
+                println!("Stopping at user mode, base pointer: {rbp:#x}");
+                return;
+            }
+        }
+    }
 }
