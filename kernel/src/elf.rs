@@ -112,7 +112,7 @@ pub fn load_elf<'a>(
     without_context_switch(|| {
         PROCESSES.lock().insert(pid, process);
     });
-    push_task_queue(thread).expect("thread should be able enter the queue");
+    push_task_queue(thread);
     Ok(pid)
 }
 

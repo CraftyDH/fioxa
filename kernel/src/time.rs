@@ -1,13 +1,15 @@
 use core::sync::atomic::AtomicU64;
 
 use acpi::AcpiTables;
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::collections::BTreeMap;
 use conquer_once::spin::Lazy;
 use spin::Mutex;
 
 use crate::{
     acpi::FioxaAcpiHandler,
-    scheduling::{process::Thread, taskmanager::push_task_queue},
+    scheduling::{
+        process::LinkedThreadList, taskmanager::append_task_queue, without_context_switch,
+    },
     syscall::INTERNAL_KERNEL_WAKER_SLEEPD,
     thread_waker::{atomic_waker_loop, AtomicThreadWaker},
 };
@@ -47,26 +49,26 @@ pub fn uptime() -> u64 {
 
 pub static SLEEP_WAKER: AtomicThreadWaker = AtomicThreadWaker::new();
 pub static SLEEP_TARGET: AtomicU64 = AtomicU64::new(u64::MAX);
-pub static SLEPT_PROCESSES: Lazy<Mutex<BTreeMap<u64, Vec<Box<Thread>>>>> =
+pub static SLEPT_PROCESSES: Lazy<Mutex<BTreeMap<u64, LinkedThreadList>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));
 
 pub fn sleepd() {
     atomic_waker_loop(&SLEEP_WAKER, INTERNAL_KERNEL_WAKER_SLEEPD, || {
-        let time = pit::get_uptime();
-        let mut procs = SLEPT_PROCESSES.lock();
-        procs.retain(|&req_time, el| {
-            if req_time <= time {
-                while let Some(t) = el.pop() {
-                    push_task_queue(t).unwrap();
+        without_context_switch(|| {
+            let time = pit::get_uptime();
+            let mut procs = SLEPT_PROCESSES.lock();
+            procs.retain(|&req_time, el| {
+                if req_time <= time {
+                    append_task_queue(el);
+                    false
+                } else {
+                    true
                 }
-                false
-            } else {
-                true
-            }
+            });
+            SLEEP_TARGET.store(
+                procs.first_key_value().map(|(&k, _)| k).unwrap_or(u64::MAX),
+                core::sync::atomic::Ordering::Relaxed,
+            )
         });
-        SLEEP_TARGET.store(
-            procs.first_key_value().map(|(&k, _)| k).unwrap_or(u64::MAX),
-            core::sync::atomic::Ordering::Relaxed,
-        )
     });
 }

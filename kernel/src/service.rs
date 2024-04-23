@@ -103,7 +103,6 @@ pub fn push(current_pid: ProcessID, msg: &ServiceMessageK) -> Result<(), SendErr
 
 fn send_message(pid: ProcessID, message: Arc<(ServiceMessageDesc, Arc<KMessage>)>) {
     let Some(proc) = PROCESSES.lock().get(&pid).cloned() else {
-        println!("WARNING: subscribed process died.");
         return;
     };
 
@@ -123,7 +122,7 @@ fn send_message(pid: ProcessID, message: Arc<(ServiceMessageDesc, Arc<KMessage>)
     queue.message_queue.push_back(message);
 
     while let Some(thread) = queue.wakers.pop() {
-        push_task_queue(thread).unwrap();
+        push_task_queue(thread);
     }
 }
 

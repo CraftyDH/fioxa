@@ -14,7 +14,6 @@ x86_64 = "0.14"
 spin = "0.9"
 bit_field = "0.10"
 conquer-once = {version = "0.4", default-features = false}
-crossbeam-queue = {version = "0.3", default-features = false, features = ["alloc"]}
 acpi = "4.1"
 modular-bitfield = { version = "0.11", default-features = false}
 thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
@@ -26,4 +25,3 @@ hashbrown = { version = "0.14.3", default-features = false, features = ["ahash"]
 [profile.dev]
 # Increase speed by 1000% since there are lots of hot loops / "zero cost" abstrations that need optimising
 opt-level = 1
-force-frame-pointers = "yes"

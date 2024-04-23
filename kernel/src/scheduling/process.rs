@@ -185,6 +185,7 @@ impl Process {
                 register_state,
                 interrupt_frame,
             },
+            linked_next: None,
         })
     }
 
@@ -221,9 +222,81 @@ impl ThreadHandle {
     }
 }
 
+pub struct LinkedThreadList {
+    head: Option<Box<Thread>>,
+    tail: Option<*mut Thread>,
+}
+
+unsafe impl Send for LinkedThreadList {}
+
+impl LinkedThreadList {
+    pub const fn new() -> Self {
+        Self {
+            head: None,
+            tail: None,
+        }
+    }
+
+    pub fn push(&mut self, mut thread: Box<Thread>) {
+        let next_addr = Some(thread.as_mut() as *mut Thread);
+        let next_tail = Some(thread);
+        match self.tail {
+            Some(addr) => unsafe {
+                let tail = &mut *addr;
+                assert!(
+                    tail.linked_next.is_none(),
+                    "the tail shouldn't have any linked elements"
+                );
+                tail.linked_next = next_tail;
+            },
+            None => {
+                assert!(self.head.is_none(), "if tail is none, head should be none");
+                self.head = next_tail;
+            }
+        }
+        self.tail = next_addr;
+    }
+
+    pub fn pop(&mut self) -> Option<Box<Thread>> {
+        let mut el = self.head.take()?;
+        match el.linked_next.take() {
+            Some(nxt) => self.head = Some(nxt),
+            None => self.tail = None,
+        }
+        Some(el)
+    }
+
+    /// Takes all threads from other and places them in here.
+    pub fn append(&mut self, other: &mut LinkedThreadList) {
+        let Some(nxt) = other.head.take() else { return };
+        match self.tail {
+            Some(addr) => unsafe {
+                let tail = &mut *addr;
+                assert!(
+                    tail.linked_next.is_none(),
+                    "the tail shouldn't have any linked elements"
+                );
+                tail.linked_next = Some(nxt);
+            },
+            None => {
+                assert!(self.head.is_none(), "if tail is none, head should be none");
+                self.head = Some(nxt)
+            }
+        }
+        self.tail = other.tail.take();
+    }
+}
+
+impl Default for LinkedThreadList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Thread {
     handle: Arc<ThreadHandle>,
     state: SavedThreadState,
+    linked_next: Option<Box<Thread>>,
 }
 
 impl Thread {

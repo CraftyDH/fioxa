@@ -32,7 +32,7 @@ impl AtomicThreadWaker {
             WAKER_RESTING | WAKER_CHECK => (),
             arc => {
                 let thread = unsafe { Box::from_raw(arc as *mut Thread) };
-                push_task_queue(thread).unwrap();
+                push_task_queue(thread);
             }
         }
     }

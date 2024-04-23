@@ -2,7 +2,6 @@ use core::ptr::slice_from_raw_parts;
 
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 
-use crossbeam_queue::ArrayQueue;
 use kernel_userspace::{ids::ProcessID, syscall::thread_bootstraper};
 use spin::{Lazy, Mutex};
 use x86_64::structures::idt::InterruptStackFrame;
@@ -14,16 +13,20 @@ use crate::{
 };
 
 use super::{
-    process::{Process, Thread},
+    process::{LinkedThreadList, Process, Thread},
     without_context_switch,
 };
 
 pub type ProcessesListType = BTreeMap<ProcessID, Arc<Process>>;
 pub static PROCESSES: Lazy<Mutex<ProcessesListType>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
-static TASK_QUEUE: Lazy<ArrayQueue<Box<Thread>>> = Lazy::new(|| ArrayQueue::new(1000));
+static TASK_QUEUE: Mutex<LinkedThreadList> = Mutex::new(LinkedThreadList::new());
 
-pub fn push_task_queue(val: Box<Thread>) -> Result<(), Box<Thread>> {
-    without_context_switch(|| TASK_QUEUE.push(val))
+pub fn push_task_queue(val: Box<Thread>) {
+    without_context_switch(|| TASK_QUEUE.lock().push(val))
+}
+
+pub fn append_task_queue(list: &mut LinkedThreadList) {
+    without_context_switch(|| TASK_QUEUE.lock().append(list))
 }
 
 pub unsafe fn core_start_multitasking() -> ! {
@@ -56,15 +59,10 @@ pub unsafe extern "C" fn nop_task() -> ! {
 
 fn get_next_task() -> Box<Thread> {
     // get the next available task or run core mgmt
-    loop {
-        if let Some(task) = TASK_QUEUE.pop() {
-            return task;
-            // if the task died, try and find a new task
-        } else {
-            // If no tasks send into core mgmt
-            return CPULocalStorageRW::take_coremgmt_task();
-        }
-    }
+    TASK_QUEUE
+        .lock()
+        .pop()
+        .unwrap_or_else(|| CPULocalStorageRW::take_coremgmt_task())
 }
 
 unsafe fn save_current_task(stack_frame: &InterruptStackFrame, reg: &Registers) {
@@ -74,7 +72,7 @@ unsafe fn save_current_task(stack_frame: &InterruptStackFrame, reg: &Registers) 
     if CPULocalStorageRW::get_current_pid() == ProcessID(0) {
         CPULocalStorageRW::set_coremgmt_task(thread);
     } else {
-        TASK_QUEUE.push(thread).unwrap();
+        TASK_QUEUE.lock().push(thread);
     }
 }
 
@@ -180,7 +178,7 @@ pub fn spawn_process(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers
     // TODO: Validate r8 is a valid entrypoint
     let thread = process.new_thread(thread_bootstraper as *const u64, reg.r8);
     PROCESSES.lock().insert(process.pid, process);
-    push_task_queue(thread).unwrap();
+    push_task_queue(thread);
     // Return process id as successful result;
     reg.rax = pid.0 as usize;
 }
@@ -192,7 +190,7 @@ pub unsafe fn spawn_thread(_stack_frame: &mut InterruptStackFrame, reg: &mut Reg
     let thread = thread.process().new_thread(reg.r8 as *const u64, reg.r9);
     // Return task id as successful result;
     reg.rax = thread.handle().tid().0 as usize;
-    push_task_queue(thread).unwrap();
+    push_task_queue(thread);
 }
 
 pub unsafe fn yield_now(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
