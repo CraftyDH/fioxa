@@ -1,19 +1,21 @@
 use core::{
     fmt::Debug,
+    num::NonZeroUsize,
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use alloc::{
     boxed::Box,
-    collections::{BTreeMap, VecDeque},
+    collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
 use hashbrown::HashMap;
 use kernel_userspace::{
-    ids::{ProcessID, ServiceID, ThreadID},
-    message::MessageId,
-    service::ServiceMessageDesc,
+    event::EventCallback,
+    ids::{ProcessID, ThreadID},
+    object::{KernelObjectType, KernelReferenceID},
+    process::ProcessExit,
 };
 use spin::{Lazy, Mutex};
 use x86_64::{
@@ -26,26 +28,33 @@ use x86_64::{
 
 use crate::{
     assembly::registers::{Registers, SavedThreadState},
+    event::{EdgeListener, EdgeTrigger, KEvent, KEventListener, KEventQueue},
     gdt,
-    message::{KMessage, KMessageProcRefcount},
+    message::KMessage,
     paging::{
         offset_map::get_gop_range,
         page_allocator::Allocated32Page,
         page_mapper::{PageMapperManager, PageMapping},
         MemoryLoc, MemoryMappingFlags, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
+    socket::{KSocketHandle, KSocketListener},
     BOOT_INFO,
 };
+
+use super::taskmanager::{push_task_queue, PROCESSES};
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 
 pub const STACK_SIZE: u64 = 0x10000;
+
+pub const THREAD_TEMP_COUNT: usize = 8;
 
 fn generate_next_process_id() -> ProcessID {
     static PID: AtomicU64 = AtomicU64::new(0);
     ProcessID(PID.fetch_add(1, Ordering::Relaxed))
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum ProcessPrivilige {
     KERNEL,
     USER,
@@ -75,7 +84,9 @@ pub struct Process {
     pub privilege: ProcessPrivilige,
     pub args: Vec<u8>,
     pub memory: Mutex<ProcessMemory>,
-    pub service_messages: Mutex<ProcessMessages>,
+    pub references: Mutex<ProcessReferences>,
+    pub exit_status: Mutex<ProcessExit>,
+    pub exit_signal: Arc<Mutex<KEvent>>,
 }
 
 #[derive(Default)]
@@ -89,16 +100,22 @@ pub struct ProcessMemory {
     pub owned32_pages: Vec<Allocated32Page>,
 }
 
-#[derive(Default)]
-pub struct ProcessMessages {
-    pub messages: HashMap<MessageId, KMessageProcRefcount>,
-    pub queue: HashMap<ServiceID, ServiceQueue>,
+pub struct ProcessReferences {
+    references: HashMap<KernelReferenceID, KernelValue>,
+    next_id: usize,
 }
 
-#[derive(Default)]
-pub struct ServiceQueue {
-    pub message_queue: VecDeque<Arc<(ServiceMessageDesc, Arc<KMessage>)>>,
-    pub wakers: Vec<Box<Thread>>,
+impl ProcessReferences {
+    pub fn references(&mut self) -> &mut HashMap<KernelReferenceID, KernelValue> {
+        &mut self.references
+    }
+
+    pub fn add_value(&mut self, value: KernelValue) -> KernelReferenceID {
+        let id = KernelReferenceID(NonZeroUsize::new(self.next_id).unwrap());
+        self.next_id += 1;
+        assert!(self.references.insert(id, value).is_none());
+        id
+    }
 }
 
 impl Process {
@@ -139,7 +156,12 @@ impl Process {
                 owned32_pages: Default::default(),
             }),
             threads: Default::default(),
-            service_messages: Default::default(),
+            references: Mutex::new(ProcessReferences {
+                references: Default::default(),
+                next_id: 1,
+            }),
+            exit_status: Mutex::new(ProcessExit::NotExitedYet),
+            exit_signal: KEvent::new(),
         })
     }
 
@@ -186,6 +208,7 @@ impl Process {
                 interrupt_frame,
             },
             linked_next: None,
+            cached_event_listener: Default::default(),
         })
     }
 
@@ -197,6 +220,19 @@ impl Process {
 
         self.new_thread_direct(entry_point, register_state)
     }
+
+    pub fn add_value(&self, value: KernelValue) -> KernelReferenceID {
+        self.references.lock().add_value(value)
+    }
+
+    pub fn get_value(&self, id: KernelReferenceID) -> Option<KernelValue> {
+        self.references.lock().references.get(&id).cloned()
+    }
+}
+
+// Returns null if unknown process
+pub fn share_kernel_value(value: KernelValue, proc: ProcessID) -> Option<KernelReferenceID> {
+    PROCESSES.lock().get(&proc).map(|p| p.add_value(value))
 }
 
 impl ProcessThreads {
@@ -297,6 +333,113 @@ pub struct Thread {
     handle: Arc<ThreadHandle>,
     state: SavedThreadState,
     linked_next: Option<Box<Thread>>,
+    cached_event_listener: Arc<ThreadEventListener>,
+}
+
+#[derive(Clone)]
+pub enum KernelValue {
+    Event(Arc<Mutex<KEvent>>),
+    EventQueue(Arc<KEventQueue>),
+    Socket(Arc<KSocketHandle>),
+    SocketListener(Arc<KSocketListener>),
+    Message(Arc<KMessage>),
+    Process(Arc<Process>),
+}
+
+impl Debug for KernelValue {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Event(_) => f.debug_tuple("KernelValue::Event").finish(),
+            Self::EventQueue(_) => f.debug_tuple("KernelValue::EventQueue").finish(),
+            Self::Socket(_) => f.debug_tuple("KernelValue::Socket").finish(),
+            Self::SocketListener(_) => f.debug_tuple("KernelValue::SocketListener").finish(),
+            Self::Message(_) => f.debug_tuple("KernelValue::Message").finish(),
+            Self::Process(_) => f.debug_tuple("KernelValue::Process").finish(),
+        }
+    }
+}
+
+impl KernelValue {
+    pub const fn object_type(&self) -> KernelObjectType {
+        match self {
+            KernelValue::Event(_) => KernelObjectType::Event,
+            KernelValue::EventQueue(_) => KernelObjectType::EventQueue,
+            KernelValue::Socket(_) => KernelObjectType::Socket,
+            KernelValue::SocketListener(_) => KernelObjectType::SocketListener,
+            KernelValue::Message(_) => KernelObjectType::Message,
+            KernelValue::Process(_) => KernelObjectType::Process,
+        }
+    }
+}
+
+impl Into<KernelValue> for Arc<Mutex<KEvent>> {
+    fn into(self) -> KernelValue {
+        KernelValue::Event(self)
+    }
+}
+
+impl Into<KernelValue> for Arc<KEventQueue> {
+    fn into(self) -> KernelValue {
+        KernelValue::EventQueue(self)
+    }
+}
+
+impl Into<KernelValue> for Arc<KSocketHandle> {
+    fn into(self) -> KernelValue {
+        KernelValue::Socket(self)
+    }
+}
+
+impl Into<KernelValue> for Arc<KSocketListener> {
+    fn into(self) -> KernelValue {
+        KernelValue::SocketListener(self)
+    }
+}
+
+impl Into<KernelValue> for Arc<KMessage> {
+    fn into(self) -> KernelValue {
+        KernelValue::Message(self)
+    }
+}
+
+impl Into<KernelValue> for Arc<Process> {
+    fn into(self) -> KernelValue {
+        KernelValue::Process(self)
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ThreadEventListener {
+    waiting: Mutex<Option<Box<Thread>>>,
+}
+
+impl Thread {
+    pub fn wait_on(self: Box<Self>, ev: &mut KEvent, direction: EdgeTrigger) {
+        let cached = self.cached_event_listener.clone();
+        let mut listener = cached.waiting.lock();
+        *listener = Some(self);
+        drop(listener);
+        ev.listeners().push(EdgeListener::new(
+            cached,
+            EventCallback(NonZeroUsize::new(1).unwrap()),
+            direction,
+            true,
+        ));
+    }
+}
+impl KEventListener for ThreadEventListener {
+    fn trigger_edge(&self, _: EventCallback, direction: bool) {
+        let mut this = self
+            .waiting
+            .lock()
+            .take()
+            .expect("thread should've been waiting, or bad notification");
+        this.state.register_state.rax = match direction {
+            true => 1,
+            false => 0,
+        };
+        push_task_queue(this);
+    }
 }
 
 impl Thread {

@@ -7,13 +7,7 @@ use thiserror::Error;
 pub enum PhysicalNet<'a> {
     MacAddrGet,
     SendPacket(&'a [u8]),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PhysicalNetResp<'a> {
-    Ack,
-    MacAddrResp(u64),
-    ReceivedPacket(&'a [u8]),
+    ListenToPackets,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

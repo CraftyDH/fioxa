@@ -4,11 +4,16 @@
 use kernel_userspace::{
     backoff_sleep,
     elf::spawn_elf_process,
+    event::receive_event,
     fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
-    ids::ServiceID,
     message::MessageHandle,
-    service::get_public_service_id,
-    syscall::{exit, receive_service_message_blocking, service_subscribe, sleep},
+    object::{
+        delete_reference, KernelObjectType, KernelReference, KernelReferenceID, REFERENCE_STDOUT,
+    },
+    process::ProcessExit,
+    service::deserialize,
+    socket::{socket_connect, socket_handle_get_event, socket_recv, SocketRecieveResult},
+    syscall::{exit, sleep},
 };
 
 extern crate alloc;
@@ -32,7 +37,8 @@ use input::keyboard::{
 };
 
 pub struct KBInputDecoder {
-    service: ServiceID,
+    socket: KernelReferenceID,
+    socket_recv_ev: KernelReferenceID,
     lshift: bool,
     rshift: bool,
     caps_lock: bool,
@@ -41,9 +47,13 @@ pub struct KBInputDecoder {
 }
 
 impl KBInputDecoder {
-    pub fn new(service: ServiceID) -> Self {
+    pub fn new(socket: KernelReferenceID) -> Self {
         Self {
-            service,
+            socket,
+            socket_recv_ev: socket_handle_get_event(
+                socket,
+                kernel_userspace::socket::SocketEvents::RecvBufferEmpty,
+            ),
             lshift: false,
             rshift: false,
             caps_lock: false,
@@ -58,9 +68,24 @@ impl Iterator for KBInputDecoder {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let msg = receive_service_message_blocking(self.service);
+            receive_event(
+                self.socket_recv_ev,
+                kernel_userspace::event::ReceiveMode::LevelLow,
+            );
 
-            match msg.read(&mut self.receive_buffer).unwrap() {
+            let (msg, ty) = match socket_recv(self.socket) {
+                Ok(ok) => ok,
+                Err(SocketRecieveResult::None) => continue,
+                Err(SocketRecieveResult::EOF) => panic!("kb input channel eof"),
+            };
+
+            assert_eq!(ty, KernelObjectType::Message);
+
+            let msg = MessageHandle::from_kref(KernelReference::from_id(msg));
+            let size = msg.get_size();
+            self.receive_buffer.resize(size, 0);
+            msg.read(&mut self.receive_buffer);
+            match deserialize(&self.receive_buffer).unwrap() {
                 kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code) => {
                     match scan_code {
                         KeyboardEvent::Up(VirtualKeyCode::Modifier(key)) => match key {
@@ -101,11 +126,9 @@ pub extern "C" fn main() {
     let mut buffer = Vec::new();
     let mut file_buffer = Vec::new();
 
-    let fs_sid = backoff_sleep(|| get_public_service_id("FS", &mut buffer));
-    let keyboard_sid = backoff_sleep(|| get_public_service_id("INPUT:KB", &mut buffer));
-    let elf_loader_sid = backoff_sleep(|| get_public_service_id("ELF_LOADER", &mut buffer));
-
-    service_subscribe(keyboard_sid);
+    let keyboard_sid = backoff_sleep(|| socket_connect("INPUT:KB"));
+    delete_reference(keyboard_sid);
+    let keyboard_sid = backoff_sleep(|| socket_connect("INPUT:KB"));
 
     let mut input: KBInputDecoder = KBInputDecoder::new(keyboard_sid);
 
@@ -144,7 +167,7 @@ pub extern "C" fn main() {
                 let c = c.chars().next();
                 if let Some(chr) = c {
                     if let Some(n) = chr.to_digit(10) {
-                        match fs::stat(fs_sid, n as usize, "/", &mut buffer) {
+                        match fs::stat(n as usize, "/", &mut buffer) {
                             Ok(StatResponse::File(_)) => println!("cd: cannot cd into a file"),
                             Ok(StatResponse::Folder(_)) => {
                                 partiton_id = n.into();
@@ -157,14 +180,14 @@ pub extern "C" fn main() {
                 }
 
                 println!("Drives:");
-                for part in get_disks(fs_sid, &mut buffer).unwrap().iter() {
+                for part in get_disks(&mut buffer).unwrap().iter() {
                     println!("{}:", part)
                 }
             }
             "ls" => {
                 let path = add_path(&cwd, rest);
 
-                match fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer) {
+                match fs::stat(partiton_id as usize, path.as_str(), &mut buffer) {
                     Ok(StatResponse::File(_)) => println!("This is a file"),
                     Ok(StatResponse::Folder(c)) => {
                         for child in c.children {
@@ -179,22 +202,20 @@ pub extern "C" fn main() {
                 for file in rest.split_ascii_whitespace() {
                     let path = add_path(&cwd, file);
 
-                    let file =
-                        match fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer) {
-                            Ok(StatResponse::File(f)) => f,
-                            Ok(StatResponse::Folder(_)) => {
-                                println!("Not a file");
-                                continue;
-                            }
-                            Err(e) => {
-                                println!("Error: {e:?}");
-                                break;
-                            }
-                        };
+                    let file = match fs::stat(partiton_id as usize, path.as_str(), &mut buffer) {
+                        Ok(StatResponse::File(f)) => f,
+                        Ok(StatResponse::Folder(_)) => {
+                            println!("Not a file");
+                            continue;
+                        }
+                        Err(e) => {
+                            println!("Error: {e:?}");
+                            break;
+                        }
+                    };
 
                     for i in 0..file.file_size / 512 {
                         let sect = match read_file_sector(
-                            fs_sid,
                             partiton_id as usize,
                             file.node_id,
                             i as u32,
@@ -207,7 +228,8 @@ pub extern "C" fn main() {
                             }
                         };
                         if let Some(data) = sect {
-                            print!("{}", String::from_utf8_lossy(data))
+                            data.read_into_vec(&mut file_buffer);
+                            print!("{}", String::from_utf8_lossy(&file_buffer))
                         } else {
                             print!("Error reading");
                             break;
@@ -220,7 +242,7 @@ pub extern "C" fn main() {
 
                 let path = add_path(&cwd, prog);
 
-                let stat = fs::stat(fs_sid, partiton_id as usize, path.as_str(), &mut buffer);
+                let stat = fs::stat(partiton_id as usize, path.as_str(), &mut buffer);
 
                 let file = match stat {
                     Ok(StatResponse::File(f)) => f,
@@ -234,42 +256,37 @@ pub extern "C" fn main() {
                     }
                 };
                 println!("READING...");
-                let contents = match read_full_file(
-                    fs_sid,
-                    partiton_id as usize,
-                    file.node_id,
-                    &mut file_buffer,
-                ) {
-                    Ok(Some(c)) => c,
-                    Ok(None) => {
-                        println!("Failed to read file");
-                        continue;
-                    }
-                    Err(e) => {
-                        println!("Error: {e:?}");
+                let contents =
+                    match read_full_file(partiton_id as usize, file.node_id, &mut file_buffer) {
+                        Ok(Some(c)) => c,
+                        Ok(None) => {
+                            println!("Failed to read file");
+                            continue;
+                        }
+                        Err(e) => {
+                            println!("Error: {e:?}");
+                            continue;
+                        }
+                    };
+
+                println!("SPAWNING...");
+
+                // Clone stdout for now
+                let proc =
+                    spawn_elf_process(contents, args.as_bytes(), &[REFERENCE_STDOUT], &mut buffer);
+
+                let mut proc = match proc {
+                    Ok(p) => p,
+                    Err(err) => {
+                        println!("Error spawning: `{err}`");
                         continue;
                     }
                 };
 
-                println!("SPAWNING...");
-
-                let pid = spawn_elf_process(
-                    elf_loader_sid,
-                    contents,
-                    args.as_bytes(),
-                    false,
-                    &mut buffer,
-                );
-
-                match pid {
-                    Ok(_) => (),
-                    Err(err) => println!("Error spawning: `{err}`"),
+                match proc.blocking_exit_code() {
+                    ProcessExit::Exited => (),
+                    err => println!("Exited with error {err:?}"),
                 }
-
-                // let pid = load_elf(&contents_buffer.data, args.as_bytes());
-                // while TASKMANAGER.lock().processes.contains_key(&pid) {
-                //     yield_now();
-                // }
             }
             // "uptime" => {
             //     let mut uptime = time::uptime() / 1000;

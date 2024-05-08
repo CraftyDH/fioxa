@@ -1,13 +1,5 @@
-use alloc::{boxed::Box, vec::Vec};
-use kernel_userspace::{
-    ids::{ProcessID, ServiceID},
-    input::InputServiceMessage,
-    service::{
-        generate_tracking_number, make_message, register_public_service, SendServiceMessageDest,
-        ServiceMessageDesc,
-    },
-    syscall::{get_pid, send_service_message, service_create},
-};
+use alloc::boxed::Box;
+use input::keyboard::KeyboardEvent;
 
 use super::{
     scancode::{set2::ScancodeSet2, Scancode},
@@ -16,23 +8,14 @@ use super::{
 
 pub struct Keyboard {
     command: PS2Command,
-    keyboard_service: ServiceID,
     decoder: Box<dyn Scancode>,
-    current_pid: ProcessID,
-    send_buffer: Vec<u8>,
 }
 
 impl Keyboard {
     pub fn new(command: PS2Command) -> Self {
-        let keyboard_service = service_create();
-        register_public_service("INPUT:KB", keyboard_service, &mut Vec::new());
-
         Self {
             command,
-            keyboard_service,
             decoder: Box::new(ScancodeSet2::new()),
-            current_pid: get_pid(),
-            send_buffer: Default::default(),
         }
     }
 
@@ -78,24 +61,11 @@ impl Keyboard {
         Ok(())
     }
 
-    pub fn check_interrupts(&mut self) {
+    pub fn check_interrupts(&mut self) -> Option<KeyboardEvent> {
         let scancode: u8 = unsafe { self.command.data_port.read() };
 
         let res = self.decoder.add_byte(scancode);
-        if let Some(key) = res {
-            send_service_message(
-                &ServiceMessageDesc {
-                    service_id: self.keyboard_service,
-                    sender_pid: self.current_pid,
-                    tracking_number: generate_tracking_number(),
-                    destination: SendServiceMessageDest::ToSubscribers,
-                },
-                &make_message(
-                    &InputServiceMessage::KeyboardEvent(key),
-                    &mut self.send_buffer,
-                ),
-            );
-        }
+        res
     }
 
     // fn update_leds(&mut self) {

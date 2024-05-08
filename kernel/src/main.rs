@@ -12,7 +12,6 @@ use core::ffi::c_void;
 
 use ::acpi::{AcpiError, RsdpError};
 use acpi::sdt::Signature;
-use alloc::vec::Vec;
 use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
 use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER, TERMINAL_ELF};
@@ -36,20 +35,18 @@ use kernel::scheduling::process::Process;
 use kernel::scheduling::taskmanager::{core_start_multitasking, PROCESSES};
 use kernel::screen::gop::{self, Writer};
 use kernel::screen::psf1;
-use kernel::service::{ServiceInfo, SERVICES};
+use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
-use kernel::time::{init_time, sleepd};
 use kernel::uefi::get_config_table;
-use kernel::{elf, gdt, paging, service, BOOT_INFO};
+use kernel::{elf, gdt, paging, BOOT_INFO};
 
 use bootloader::uefi::table::cfg::ACPI2_GUID;
 use bootloader::uefi::table::{Runtime, SystemTable};
 
-use kernel_userspace::ids::{ProcessID, ServiceID};
-use kernel_userspace::service::register_public_service;
-use kernel_userspace::syscall::{
-    exit, receive_service_message_blocking, service_create, spawn_process, spawn_thread,
-};
+use kernel_userspace::ids::ProcessID;
+use kernel_userspace::object::KernelReference;
+use kernel_userspace::socket::{socket_connect, SocketListenHandle, SocketRecieveResult};
+use kernel_userspace::syscall::{exit, spawn_process, spawn_thread};
 
 // #[no_mangle]
 entry_point!(main_entry);
@@ -202,7 +199,6 @@ fn main(info: *const BootInfo) {
     unsafe { boot_aps(&madt) };
     spawn_process(after_boot, &[], true);
     spawn_process(check_interrupts, &[], true);
-    spawn_process(sleepd, &[], true);
 
     // Disable interrupts so when we enable switching this core can finish init.
     unsafe { core::arch::asm!("cli") };
@@ -243,17 +239,6 @@ fn after_boot() {
 
     let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
 
-    let mgmt_pid = spawn_process(service::start_mgmt, &[], true);
-
-    // Insert mgmt service to prevent race condition of process spawn
-    SERVICES.lock().insert(
-        ServiceID(1),
-        ServiceInfo {
-            owner: mgmt_pid,
-            subscribers: Default::default(),
-        },
-    );
-
     spawn_process(elf::elf_new_process_loader, &[], true);
 
     spawn_process(gop::gop_entry, &[], true);
@@ -268,20 +253,43 @@ fn after_boot() {
     spawn_thread(|| FSDRIVES.lock().identify());
 
     // TODO: Use IO permissions instead of kernel
-    load_elf(PS2_DRIVER, &[], true).unwrap();
-    load_elf(TERMINAL_ELF, &[], false).unwrap();
+    load_elf(
+        PS2_DRIVER,
+        &[],
+        &[KernelReference::from_id(socket_connect("STDOUT").unwrap())],
+        true,
+    )
+    .unwrap();
+    load_elf(
+        TERMINAL_ELF,
+        &[],
+        &[KernelReference::from_id(socket_connect("STDOUT").unwrap())],
+        false,
+    )
+    .unwrap();
 
     // For testing, accepts all inputs
     spawn_process(
         || {
-            let sid = service_create();
-            register_public_service("ACCEPTER", sid, &mut Vec::new());
+            let sid = SocketListenHandle::listen("ACCEPTER").unwrap();
 
-            for i in 0.. {
-                receive_service_message_blocking(sid);
-                if i % 10000 == 0 {
-                    println!("ACCEPTER: {i}")
-                }
+            loop {
+                let handle = sid.blocking_accept();
+                spawn_thread(move || {
+                    for i in 0usize.. {
+                        match handle.blocking_recv() {
+                            Ok(_) => (),
+                            Err(SocketRecieveResult::EOF) => {
+                                println!("ACCEPTED {i}");
+                                return;
+                            }
+                            Err(e) => panic!("{e:?}"),
+                        };
+                        if i % 10000 == 0 {
+                            println!("ACCEPTER: {i}")
+                        }
+                    }
+                });
             }
         },
         &[],

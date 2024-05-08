@@ -10,13 +10,17 @@ extern crate alloc;
 
 pub mod disk;
 pub mod elf;
+pub mod event;
 pub mod fs;
 pub mod ids;
 pub mod input;
 pub mod message;
 pub mod net;
+pub mod object;
 pub mod pci;
+pub mod process;
 pub mod service;
+pub mod socket;
 pub mod syscall;
 
 pub use num_derive;
@@ -34,3 +38,7 @@ pub fn backoff_sleep<R>(mut f: impl FnMut() -> Option<R>) -> R {
         time = 10.max(time + 1);
     }
 }
+
+pub const INT_KB: usize = 0;
+pub const INT_MOUSE: usize = 1;
+pub const INT_PCI: usize = 2;

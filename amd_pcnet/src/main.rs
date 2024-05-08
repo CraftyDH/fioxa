@@ -8,26 +8,25 @@ extern crate userspace_slaballoc;
 
 pub mod bitfields;
 
-use core::{iter::Cycle, mem::size_of, ops::Range, slice};
+use core::{iter::Cycle, mem::size_of, num::NonZeroUsize, ops::Range, slice};
 
 use alloc::{sync::Arc, vec::Vec};
-use conquer_once::spin::Lazy;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 use kernel_userspace::{
-    backoff_sleep,
-    ids::ServiceID,
-    net::{PhysicalNet, PhysicalNetResp},
+    event::{
+        event_queue_create, event_queue_get_event, event_queue_listen, event_queue_pop,
+        receive_event, EventCallback,
+    },
+    message::MessageHandle,
+    net::PhysicalNet,
+    object::{get_type, KernelObjectType, KernelReference, KernelReferenceID},
     pci::PCIDevice,
-    service::{
-        get_public_service_id, make_message, make_message_new, register_public_service,
-        SendServiceMessageDest, ServiceMessageDesc,
-    },
-    syscall::{
-        exit, mmap_page32, read_args_raw, receive_service_message_blocking, send_service_message,
-        service_create, service_subscribe, spawn_thread, yield_now, CURRENT_PID,
-    },
+    service::{deserialize, make_message_new},
+    socket::{socket_create, socket_send, SocketHandle, SocketListenHandle},
+    syscall::{exit, mmap_page32, spawn_thread, yield_now},
+    INT_PCI,
 };
 
 use self::bitfields::InitBlock;
@@ -54,21 +53,11 @@ struct BufferDescriptor {
     avail: u32,
 }
 
-static PCNET_SID: Lazy<ServiceID> = Lazy::new(|| {
-    let sid = service_create();
-    register_public_service("PCNET", sid, &mut Vec::new());
-    sid
-});
-
 #[export_name = "_start"]
 pub extern "C" fn main() {
-    let args = read_args_raw();
-    let pci_device = u64::from_ne_bytes(
-        args[0..8]
-            .try_into()
-            .expect("first 8 bytes of args should be service id of the PCNET PCI handle"),
-    );
-    let pci_device = ServiceID(pci_device);
+    let pci_ref = KernelReferenceID::from_usize(2).unwrap();
+    assert_eq!(get_type(pci_ref), KernelObjectType::Socket);
+    let pci_device = SocketHandle::from_raw_socket(KernelReference::from_id(pci_ref));
 
     let pcnet = Arc::new(Mutex::new(
         PCNET::new(PCIDevice {
@@ -77,44 +66,87 @@ pub extern "C" fn main() {
         .unwrap(),
     ));
 
-    let pcnet2 = pcnet.clone();
+    let service = SocketListenHandle::listen("PCNET").unwrap();
+    let (pci_event, ty) = {
+        let interrupts = SocketHandle::connect("INTERRUPTS").unwrap();
 
-    spawn_thread(move || {
-        let mut buffer = Vec::new();
+        let msg = make_message_new(&INT_PCI);
+        interrupts.blocking_send(msg.kref()).unwrap();
+        interrupts.blocking_recv().unwrap()
+    };
+    assert_eq!(ty, KernelObjectType::Event);
 
-        let pci_event = backoff_sleep(|| get_public_service_id("INTERRUPTS:PCI", &mut buffer));
-        service_subscribe(pci_event);
+    let pci_cbk = EventCallback(NonZeroUsize::new(1).unwrap());
+    let accept_cbk = EventCallback(NonZeroUsize::new(2).unwrap());
 
-        loop {
-            receive_service_message_blocking(pci_event);
-            pcnet2.lock().interrupt_handler()
-        }
-    });
+    let event_queue = event_queue_create();
+    let event_queue_event = event_queue_get_event(event_queue);
+
+    event_queue_listen(
+        event_queue,
+        pci_event.id(),
+        pci_cbk,
+        kernel_userspace::event::KernelEventQueueListenMode::OnEdgeHigh,
+    );
+
+    event_queue_listen(
+        event_queue,
+        service.wait_event().id(),
+        accept_cbk,
+        kernel_userspace::event::KernelEventQueueListenMode::OnLevelHigh,
+    );
 
     loop {
-        let mut buffer = Vec::new();
-        let query = receive_service_message_blocking(*PCNET_SID);
+        receive_event(
+            event_queue_event,
+            kernel_userspace::event::ReceiveMode::LevelHigh,
+        );
+        while let Some(cbk) = event_queue_pop(event_queue) {
+            if cbk == pci_cbk {
+                pcnet.lock().interrupt_handler()
+            } else if cbk == accept_cbk {
+                if let Some(job) = service.try_accept() {
+                    let pcnet = pcnet.clone();
+                    spawn_thread(move || {
+                        handle_connection(job, pcnet);
+                    });
+                }
+            } else {
+                panic!()
+            }
+        }
+    }
+}
 
-        let resp = match query.read(&mut buffer).unwrap() {
-            PhysicalNet::MacAddrGet => PhysicalNetResp::MacAddrResp(pcnet.lock().read_mac_addr()),
+fn handle_connection(handle: SocketHandle, pcnet: Arc<Mutex<PCNET>>) -> Option<()> {
+    let ack = MessageHandle::create(&[]);
+    loop {
+        let query = handle.blocking_recv().ok()?;
+        if query.1 != KernelObjectType::Message {
+            return None;
+        }
+        let query = MessageHandle::from_kref(query.0);
+        let vec = query.read_vec();
+        match deserialize(&vec).unwrap() {
+            PhysicalNet::MacAddrGet => {
+                let resp = pcnet.lock().read_mac_addr();
+                let resp = make_message_new(&resp);
+                handle.blocking_send(resp.kref()).ok()?;
+            }
             PhysicalNet::SendPacket(packet) => {
                 // Keep trying to send
                 while pcnet.lock().send_packet(packet).is_err() {
                     yield_now()
                 }
-                PhysicalNetResp::Ack
+                handle.blocking_send(ack.kref()).ok()?
+            }
+            PhysicalNet::ListenToPackets => {
+                let (left, right) = socket_create(100, 0);
+                pcnet.lock().listeners.push(KernelReference::from_id(left));
+                let right = KernelReference::from_id(right);
+                handle.blocking_send(&right).ok()?;
             }
         };
-
-        send_service_message(
-            &ServiceMessageDesc {
-                service_id: *PCNET_SID,
-                sender_pid: *CURRENT_PID,
-                tracking_number: query.tracking_number,
-                destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-            },
-            &make_message(&resp, &mut buffer),
-        );
     }
 }
 
@@ -197,11 +229,14 @@ pub struct PCNET<'b> {
     recv_buffer_desc: &'b mut [BufferDescriptor],
     revc_buffer_pos: Cycle<Range<usize>>,
     owned_pages: Vec<u32>,
+    listeners: Vec<KernelReference>,
 }
 
 impl PCNET<'_> {
     fn new(pci_device: kernel_userspace::pci::PCIDevice) -> Option<Self> {
-        let common_header = kernel_userspace::pci::PCIHeaderCommon { device: pci_device };
+        let common_header = kernel_userspace::pci::PCIHeaderCommon {
+            device: Arc::new(Mutex::new(pci_device)),
+        };
         // Ensure device is actually supported
         if !(common_header.get_vendor_id() == 0x1022 && common_header.get_device_id() == 0x2000) {
             return None;
@@ -293,6 +328,7 @@ impl PCNET<'_> {
             revc_buffer_pos: (0..recv_buffer_desc.len()).cycle(),
             recv_buffer_desc,
             owned_pages,
+            listeners: Vec::new(),
         };
 
         // Write regs
@@ -402,16 +438,12 @@ impl PCNET<'_> {
                     let size: usize = buffer_desc.flags_2 as usize & 0xFFFF;
                     let packet =
                         unsafe { slice::from_raw_parts(buffer_desc.address as *const u8, size) };
-                    send_service_message(
-                        &ServiceMessageDesc {
-                            service_id: *PCNET_SID,
-                            sender_pid: *CURRENT_PID,
-                            tracking_number: kernel_userspace::service::ServiceTrackingNumber(0),
-                            destination:
-                                kernel_userspace::service::SendServiceMessageDest::ToSubscribers,
-                        },
-                        &make_message_new(&PhysicalNetResp::ReceivedPacket(packet)),
-                    );
+                    let msg = MessageHandle::create(packet);
+                    self.listeners
+                        .retain(|l| match socket_send(l.id(), msg.kref().id()) {
+                            Err(kernel_userspace::socket::SocketSendResult::Closed) => false,
+                            _ => true,
+                        });
                 }
                 buffer_desc.flags = 0x80000000 | BUFFER_SIZE_MASK;
                 buffer_desc.flags_2 = 0;

@@ -9,10 +9,7 @@ use bit_field::BitField;
 use conquer_once::noblock::OnceCell;
 
 use crate::{
-    interrupts::{
-        keyboard_int_handler, mouse_int_handler, pci_int_handler, set_irq_handler,
-        INTERRUPT_HANDLERS,
-    },
+    interrupts::{keyboard_int_handler, mouse_int_handler, pci_int_handler, set_irq_handler},
     paging::{
         get_uefi_active_mapper,
         page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
@@ -43,9 +40,6 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
     for i in apic_ints {
         println!("Int override: {:?}", i);
     }
-
-    // Init handlers
-    core::hint::black_box(*INTERRUPT_HANDLERS);
 
     // Timer is usually overridden to irq 2
     // TODO: Parse overides and use those

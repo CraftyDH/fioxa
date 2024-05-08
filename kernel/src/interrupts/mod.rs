@@ -1,13 +1,12 @@
-use core::sync::atomic::AtomicU8;
-
-use conquer_once::spin::Lazy;
+use alloc::sync::Arc;
+use conquer_once::spin::{Lazy, OnceCell};
 use kernel_userspace::{
-    ids::{ProcessID, ServiceID},
     message::MessageHandle,
-    service::{
-        generate_tracking_number, make_message_new, SendServiceMessageDest, ServiceMessageDesc,
-    },
-    syscall::send_service_message,
+    object::{KernelObjectType, KernelReference},
+    service::deserialize,
+    socket::{SocketListenHandle, SocketRecieveResult},
+    syscall::spawn_thread,
+    INT_KB, INT_MOUSE, INT_PCI,
 };
 use spin::Mutex;
 use x86_64::{
@@ -20,11 +19,7 @@ pub mod exceptions;
 pub mod pic;
 
 use crate::{
-    cpu_localstorage::CPULocalStorageRW,
-    gdt::TASK_SWITCH_INDEX,
-    service::{self, PUBLIC_SERVICES},
-    syscall::{self, INTERNAL_KERNEL_WAKER_INTERRUPTS},
-    thread_waker::{atomic_waker_loop, AtomicThreadWaker},
+    cpu_localstorage::CPULocalStorageRW, event::KEvent, gdt::TASK_SWITCH_INDEX, syscall,
     time::pit::tick_handler,
 };
 
@@ -142,77 +137,82 @@ pub fn spurious(s: InterruptStackFrame) {
 //     })
 // }
 
-/// We pack the interrupts into an atomic because that reduces atomic contention in the highly polled check_interrupts.
-static INT_VEC: AtomicU8 = AtomicU8::new(0);
-
-pub static DISPATCH_WAKER: AtomicThreadWaker = AtomicThreadWaker::new();
-
-const KB_INT: u8 = 0;
-const MOUSE_INT: u8 = 1;
-const PCI_INT: u8 = 2;
-
 #[inline(always)]
-fn int_interrupt_handler(vector: u8) {
-    INT_VEC.fetch_or(1 << vector, core::sync::atomic::Ordering::Relaxed);
-    DISPATCH_WAKER.wake();
+fn int_interrupt_handler(vector: usize) {
+    INTERRUPT_SOURCES
+        .get()
+        .map(|e| e[vector].lock().trigger_edge(true));
 }
 
 interrupt_handler!(kb_interrupt_handler => keyboard_int_handler);
 fn kb_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(KB_INT)
+    int_interrupt_handler(INT_KB)
 }
 
 interrupt_handler!(mouse_interrupt_handler => mouse_int_handler);
 fn mouse_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(MOUSE_INT)
+    int_interrupt_handler(INT_MOUSE)
 }
 
 interrupt_handler!(pci_interrupt_handler => pci_int_handler);
 fn pci_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(PCI_INT)
+    int_interrupt_handler(INT_PCI)
 }
 
-pub static INTERRUPT_HANDLERS: Lazy<[ServiceID; 3]> = Lazy::new(|| {
-    let kb = service::new(ProcessID(0));
-    let mouse = service::new(ProcessID(0));
-    let pci = service::new(ProcessID(0));
-
-    PUBLIC_SERVICES.lock().insert("INTERRUPTS:KB".into(), kb);
-    PUBLIC_SERVICES
-        .lock()
-        .insert("INTERRUPTS:MOUSE".into(), mouse);
-    PUBLIC_SERVICES.lock().insert("INTERRUPTS:PCI".into(), pci);
-
-    [kb, mouse, pci]
-});
+static INTERRUPT_SOURCES: OnceCell<[Arc<Mutex<KEvent>>; 3]> = OnceCell::uninit();
 
 /// Returns true if there were any interrupt events dispatched
 pub fn check_interrupts() {
-    let message = make_message_new(&());
+    let kb = KEvent::new();
+    let mouse = KEvent::new();
+    let pci = KEvent::new();
+    INTERRUPT_SOURCES
+        .try_init_once(|| [kb.clone(), mouse.clone(), pci.clone()])
+        .unwrap();
 
-    atomic_waker_loop(&DISPATCH_WAKER, INTERNAL_KERNEL_WAKER_INTERRUPTS, || {
-        let interrupts = INT_VEC.swap(0, core::sync::atomic::Ordering::Relaxed);
-        let handlers = INTERRUPT_HANDLERS.as_ref();
-        if interrupts & (1 << KB_INT) > 0 {
-            send_int_message(handlers[KB_INT as usize], &message);
-        }
-        if interrupts & (1 << MOUSE_INT) > 0 {
-            send_int_message(handlers[MOUSE_INT as usize], &message);
-        }
-        if interrupts & (1 << PCI_INT) > 0 {
-            send_int_message(handlers[PCI_INT as usize], &message);
-        }
-    })
-}
+    let ids = Arc::new(without_interrupts(|| unsafe {
+        let thread = CPULocalStorageRW::get_current_task();
+        [
+            KernelReference::from_id(thread.process().add_value(kb.into())),
+            KernelReference::from_id(thread.process().add_value(mouse.into())),
+            KernelReference::from_id(thread.process().add_value(pci.into())),
+        ]
+    }));
 
-fn send_int_message(service: ServiceID, message: &MessageHandle) {
-    send_service_message(
-        &ServiceMessageDesc {
-            service_id: service,
-            sender_pid: CPULocalStorageRW::get_current_pid(),
-            tracking_number: generate_tracking_number(),
-            destination: SendServiceMessageDest::ToSubscribers,
-        },
-        message,
-    );
+    let service = SocketListenHandle::listen("INTERRUPTS").expect("we should be able to listen");
+
+    loop {
+        let conn = service.blocking_accept();
+        spawn_thread({
+            let ids = ids.clone();
+            move || loop {
+                match conn.blocking_recv() {
+                    Ok((msg, ty)) => {
+                        if ty != KernelObjectType::Message {
+                            println!("INTERRUPTS service got invalid message");
+                            return;
+                        }
+                        let msg = MessageHandle::from_kref(msg).read_vec();
+
+                        let Ok(req) = deserialize::<usize>(&msg) else {
+                            println!("INTERRUPTS service got invalid message desc");
+                            return;
+                        };
+
+                        let Some(id) = ids.get(req) else {
+                            println!("INTERRUPTS service got invalid id");
+                            return;
+                        };
+
+                        let Ok(()) = conn.blocking_send(id) else {
+                            println!("INTERRUPT service got eof");
+                            return;
+                        };
+                    }
+                    Err(SocketRecieveResult::EOF) => return,
+                    Err(SocketRecieveResult::None) => break,
+                }
+            }
+        });
+    }
 }

@@ -3,9 +3,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    ids::{ProcessID, ServiceID},
-    service::{generate_tracking_number, make_message, SendServiceMessageDest, ServiceMessageDesc},
-    syscall::{get_pid, send_and_get_response_service_message},
+    message::MessageHandle,
+    object::{KernelObjectType, KernelReferenceID},
+    process::ProcessHandle,
+    service::{deserialize, make_message},
+    socket::SocketHandle,
 };
 
 #[repr(C, packed)]
@@ -83,24 +85,41 @@ pub enum LoadElfError<'a> {
     InternalError,
 }
 
-pub fn spawn_elf_process<'a>(
-    service_id: ServiceID,
-    elf: &[u8],
-    args: &[u8],
-    kernel: bool,
-    buffer: &'a mut Vec<u8>,
-) -> Result<ProcessID, LoadElfError<'a>> {
-    let pid = get_pid();
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpawnElfProcess<'a> {
+    pub args: &'a [u8],
+    pub init_references_count: usize,
+}
 
-    send_and_get_response_service_message(
-        &ServiceMessageDesc {
-            service_id,
-            sender_pid: pid,
-            tracking_number: generate_tracking_number(),
-            destination: SendServiceMessageDest::ToProvider,
+pub fn spawn_elf_process<'a>(
+    elf: MessageHandle,
+    args: &[u8],
+    initial_refs: &[KernelReferenceID],
+    buffer: &'a mut Vec<u8>,
+) -> Result<ProcessHandle, LoadElfError<'a>> {
+    let msg = make_message(
+        &SpawnElfProcess {
+            args,
+            init_references_count: initial_refs.len(),
         },
-        &make_message(&(elf, args, kernel), buffer),
-    )
-    .read(buffer)
-    .unwrap()
+        buffer,
+    );
+
+    let socket = SocketHandle::connect("ELF_LOADER").unwrap();
+    socket.blocking_send(msg.kref()).unwrap();
+    socket.blocking_send(elf.kref()).unwrap();
+    for r in initial_refs {
+        socket.blocking_send_raw(*r).unwrap();
+    }
+    let (resp, resp_ty) = socket.blocking_recv().unwrap();
+
+    match resp_ty {
+        KernelObjectType::Process => Ok(ProcessHandle::from_kref(resp)),
+        KernelObjectType::Message => {
+            let resp = MessageHandle::from_kref(resp);
+            resp.read_into_vec(buffer);
+            Err(deserialize(buffer).unwrap())
+        }
+        _ => panic!("bad response"),
+    }
 }

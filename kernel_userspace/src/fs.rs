@@ -7,9 +7,10 @@ use alloc::{
 };
 
 use crate::{
-    ids::ServiceID,
-    service::{generate_tracking_number, make_message, ServiceMessageDesc},
-    syscall::{send_and_get_response_service_message, CURRENT_PID},
+    message::MessageHandle,
+    object::KernelObjectType,
+    service::{deserialize, make_message},
+    socket::SocketHandle,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,16 +28,17 @@ pub enum FSServiceError {
     NoSuchPartition(u64),
     CouldNotFollowPath,
     FileNotFound,
+    InvalidRequestForFileType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FSServiceMessageResp<'a> {
     ExpectedQuestion,
 
+    #[serde(borrow)]
     StatResponse(StatResponse<'a>),
 
-    #[serde(borrow)]
-    ReadResponse(Option<&'a [u8]>),
+    ReadResponse(Option<usize>),
 
     GetDisksResponse(Box<[u64]>),
 }
@@ -96,107 +98,94 @@ pub fn add_path(folder: &str, file: &str) -> String {
 }
 
 pub fn stat<'a>(
-    fs_sid: ServiceID,
     disk: usize,
     file: &str,
     buffer: &'a mut Vec<u8>,
 ) -> Result<StatResponse<'a>, FSServiceError> {
-    let resp = send_and_get_response_service_message(
-        &ServiceMessageDesc {
-            service_id: fs_sid,
-            sender_pid: *CURRENT_PID,
-            tracking_number: generate_tracking_number(),
-            destination: crate::service::SendServiceMessageDest::ToProvider,
-        },
-        &make_message(&FSServiceMessage::RunStat(disk, file), buffer),
-    );
+    let fs = SocketHandle::connect("FS").unwrap();
+    let msg = make_message(&FSServiceMessage::RunStat(disk, file), buffer);
+    fs.blocking_send(msg.kref()).unwrap();
 
-    match resp
-        .read::<Result<FSServiceMessageResp, FSServiceError>>(buffer)
-        .unwrap()?
-    {
+    let (msg, ty) = fs.blocking_recv().unwrap();
+    assert_eq!(ty, KernelObjectType::Message);
+    MessageHandle::from_kref(msg).read_into_vec(buffer);
+
+    match deserialize::<Result<FSServiceMessageResp, FSServiceError>>(buffer).unwrap()? {
         FSServiceMessageResp::StatResponse(resp) => Ok(resp),
         _ => todo!(),
     }
 }
 
 pub fn read_file_sector(
-    fs_sid: ServiceID,
     disk: usize,
     node: usize,
     sector: u32,
     buffer: &mut Vec<u8>,
-) -> Result<Option<&[u8]>, FSServiceError> {
-    let resp = send_and_get_response_service_message(
-        &ServiceMessageDesc {
-            service_id: fs_sid,
-            sender_pid: *CURRENT_PID,
-            tracking_number: generate_tracking_number(),
-            destination: crate::service::SendServiceMessageDest::ToProvider,
-        },
-        &make_message(
-            &FSServiceMessage::ReadRequest(ReadRequest {
-                disk_id: disk,
-                node_id: node,
-                sector,
-            }),
-            buffer,
-        ),
+) -> Result<Option<MessageHandle>, FSServiceError> {
+    let fs = SocketHandle::connect("FS").unwrap();
+    let msg = make_message(
+        &FSServiceMessage::ReadRequest(ReadRequest {
+            disk_id: disk,
+            node_id: node,
+            sector,
+        }),
+        buffer,
     );
-    match resp
-        .read::<Result<FSServiceMessageResp, FSServiceError>>(buffer)
-        .unwrap()?
-    {
-        FSServiceMessageResp::ReadResponse(data) => Ok(data),
+    fs.blocking_send(msg.kref()).unwrap();
+    let (msg, ty) = fs.blocking_recv().unwrap();
+    assert_eq!(ty, KernelObjectType::Message);
+    let msg = MessageHandle::from_kref(msg).read_vec();
+
+    match deserialize::<Result<FSServiceMessageResp, FSServiceError>>(&msg).unwrap()? {
+        FSServiceMessageResp::ReadResponse(None) => Ok(None),
+        FSServiceMessageResp::ReadResponse(Some(_)) => {
+            let (res, ty) = fs.blocking_recv().unwrap();
+            assert_eq!(ty, KernelObjectType::Message);
+            Ok(Some(MessageHandle::from_kref(res)))
+        }
         _ => todo!(),
     }
 }
 
 pub fn read_full_file(
-    fs_sid: ServiceID,
     disk: usize,
     node: usize,
     buffer: &mut Vec<u8>,
-) -> Result<Option<&[u8]>, FSServiceError> {
-    let resp = send_and_get_response_service_message(
-        &ServiceMessageDesc {
-            service_id: fs_sid,
-            sender_pid: *CURRENT_PID,
-            tracking_number: generate_tracking_number(),
-            destination: crate::service::SendServiceMessageDest::ToProvider,
-        },
-        &make_message(
-            &FSServiceMessage::ReadFullFileRequest(ReadFullFileRequest {
-                disk_id: disk,
-                node_id: node,
-            }),
-            buffer,
-        ),
+) -> Result<Option<MessageHandle>, FSServiceError> {
+    let fs = SocketHandle::connect("FS").unwrap();
+    let msg = make_message(
+        &FSServiceMessage::ReadFullFileRequest(ReadFullFileRequest {
+            disk_id: disk,
+            node_id: node,
+        }),
+        buffer,
     );
-    match resp
-        .read::<Result<FSServiceMessageResp, FSServiceError>>(buffer)
-        .unwrap()?
-    {
-        FSServiceMessageResp::ReadResponse(data) => Ok(data),
+    fs.blocking_send(msg.kref()).unwrap();
+    let (msg, ty) = fs.blocking_recv().unwrap();
+    assert_eq!(ty, KernelObjectType::Message);
+    let msg = MessageHandle::from_kref(msg).read_vec();
+
+    match deserialize::<Result<FSServiceMessageResp, FSServiceError>>(&msg).unwrap()? {
+        FSServiceMessageResp::ReadResponse(None) => Ok(None),
+        FSServiceMessageResp::ReadResponse(Some(_)) => {
+            let (res, ty) = fs.blocking_recv().unwrap();
+            assert_eq!(ty, KernelObjectType::Message);
+            Ok(Some(MessageHandle::from_kref(res)))
+        }
         _ => todo!(),
     }
 }
 
-pub fn get_disks(fs_sid: ServiceID, buffer: &mut Vec<u8>) -> Result<Box<[u64]>, FSServiceError> {
-    let resp = send_and_get_response_service_message(
-        &ServiceMessageDesc {
-            service_id: fs_sid,
-            sender_pid: *CURRENT_PID,
-            tracking_number: generate_tracking_number(),
-            destination: crate::service::SendServiceMessageDest::ToProvider,
-        },
-        &make_message(&FSServiceMessage::GetDisksRequest, buffer),
-    );
+pub fn get_disks(buffer: &mut Vec<u8>) -> Result<Box<[u64]>, FSServiceError> {
+    let fs = SocketHandle::connect("FS").unwrap();
+    let msg = make_message(&FSServiceMessage::GetDisksRequest, buffer);
+    fs.blocking_send(msg.kref()).unwrap();
 
-    match resp
-        .read::<Result<FSServiceMessageResp, FSServiceError>>(buffer)
-        .unwrap()?
-    {
+    let (msg, ty) = fs.blocking_recv().unwrap();
+    assert_eq!(ty, KernelObjectType::Message);
+    MessageHandle::from_kref(msg).read_into_vec(buffer);
+
+    match deserialize::<Result<FSServiceMessageResp, FSServiceError>>(buffer).unwrap()? {
         FSServiceMessageResp::GetDisksResponse(d) => Ok(d),
         _ => todo!(),
     }

@@ -1,30 +1,40 @@
-use core::ptr::slice_from_raw_parts_mut;
+use core::{fmt::Debug, num::NonZeroUsize, ptr::slice_from_raw_parts_mut, slice};
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    sync::Arc,
+};
 use kernel_userspace::{
-    ids::ServiceID,
-    message::{
-        MessageClone, MessageCreate, MessageDrop, MessageGetSize, MessageRead, SyscallMessageAction,
+    event::{
+        EventCallback, EventQueueListenId, KernelEventQueueListenMode, KernelEventQueueOperation,
+        ReceiveMode,
     },
+    message::{MessageCreate, MessageGetSize, MessageRead, SyscallMessageAction},
     num_traits::FromPrimitive,
-    service::{SendError, ServiceMessageK, ServiceTrackingNumber},
-    syscall::{self, SYSCALL_NUMBER},
+    object::{KernelReferenceID, ReferenceOperation},
+    process::KernelProcessOperation,
+    socket::{MakeSocket, SocketEvents, SocketOperation, SocketRecv},
+    syscall::SYSCALL_NUMBER,
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
     assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
+    event::{EdgeTrigger, KEventQueue},
     gdt::TASK_SWITCH_INDEX,
-    interrupts,
-    message::{create_new_messageid, KMessage, KMessageProcRefcount},
+    message::KMessage,
     paging::{
         page_allocator::frame_alloc_exec, page_mapper::PageMapping, page_table_manager::Mapper,
         MemoryMappingFlags,
     },
-    scheduling::taskmanager::{self, kill_bad_task, load_new_task},
-    service::{self, service_wait},
-    time::{self, pit, SLEEP_TARGET, SLEPT_PROCESSES},
+    scheduling::{
+        process::KernelValue,
+        taskmanager::{self, kill_bad_task, load_new_task},
+    },
+    socket::{create_sockets, KSocketListener, PUBLIC_SOCKETS},
+    time::{pit, SLEEP_TARGET, SLEPT_PROCESSES},
     wrap_function_registers,
 };
 
@@ -41,15 +51,91 @@ wrap_function_registers!(syscall_handler => wrapped_syscall_handler);
 
 #[derive(Debug)]
 pub enum SyscallError {
-    OutofBoundsMem,
-    MappingExists,
-    OutOfMemory,
-    UnMapError,
-    KernelOnlySyscall,
-    UnknownSubAction,
-    MessageIdUnknown,
-    MessageReadWrongSize,
-    SendError(SendError),
+    Info(&'static str),
+    Error,
+}
+
+trait Unwraper<T> {
+    type Result;
+    fn unwrap(self) -> Self::Result;
+}
+
+impl<T> Unwraper<T> for Option<T> {
+    type Result = Result<T, Option<()>>;
+
+    fn unwrap(self) -> Self::Result {
+        self.ok_or(None)
+    }
+}
+
+impl<T, U> Unwraper<T> for Result<T, U> {
+    type Result = Result<T, U>;
+
+    fn unwrap(self) -> Self::Result {
+        self
+    }
+}
+
+#[macro_export]
+macro_rules! kpanic {
+    ($($arg:tt)*) => {
+        println!("Panicked in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
+        return Err(SyscallError::Error);
+    };
+}
+
+#[macro_export]
+macro_rules! kassert {
+    ($x: expr) => {
+        if !$x {
+            println!("KAssert failed in {}:{}:{}.", file!(), line!(), column!());
+            return Err(SyscallError::Error);
+        }
+    };
+    ($x: expr, $($arg:tt)+) => {
+        if !$x {
+            println!("KAssert failed in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
+            return Err(SyscallError::Error);
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! kunwrap {
+    ($x: expr) => {
+        match Unwraper::unwrap($x) {
+            Ok(r) => r,
+            Err(e) => {
+                println!(
+                    "KUnwrap failed in {}:{}:{} on {e:?}",
+                    file!(),
+                    line!(),
+                    column!()
+                );
+                return Err(SyscallError::Error);
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! kenum_cast {
+    ($x: expr, $t: path) => {
+        match $x {
+            $t(v) => v,
+            _ => {
+                println!(
+                    "KEnum cast failed in {}:{}:{}, expected {} got {:?}.",
+                    file!(),
+                    line!(),
+                    column!(),
+                    stringify!($t),
+                    $x
+                );
+                return Err(SyscallError::Error);
+            }
+        }
+    };
 }
 
 unsafe extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
@@ -59,7 +145,7 @@ unsafe extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs
     let res = match regs.rax {
         ECHO => echo_handler(regs),
         YIELD_NOW => Ok(taskmanager::yield_now(stack_frame, regs)),
-        SPAWN_PROCESS => Ok(taskmanager::spawn_process(stack_frame, regs)),
+        SPAWN_PROCESS => taskmanager::spawn_process(stack_frame, regs),
         SPAWN_THREAD => Ok(taskmanager::spawn_thread(stack_frame, regs)),
         SLEEP => Ok(sleep_handler(stack_frame, regs)),
         EXIT_THREAD => Ok(taskmanager::exit_thread(stack_frame, regs)),
@@ -70,14 +156,17 @@ unsafe extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs
             // Another thread can still write to the memory
             unmmap_page_handler(regs)
         }
-        SERVICE => service_handler(stack_frame, regs),
         READ_ARGS => read_args_handler(regs),
         GET_PID => {
             regs.rax = CPULocalStorageRW::get_current_pid().0 as usize;
             Ok(())
         }
-        INTERNAL_KERNEL_WAKER => internal_kernel_waker_handler(stack_frame, regs),
         MESSAGE => message_handler(regs),
+        EVENT => sys_receive_event(stack_frame, regs),
+        EVENT_QUEUE => sys_event_queue(regs),
+        SOCKET => sys_socket_handler(regs),
+        OBJECT => sys_reference_handler(regs),
+        PROCESS => sys_process_handler(regs),
         _ => {
             println!("Unknown syscall class: {}", regs.rax);
             Ok(())
@@ -85,24 +174,16 @@ unsafe extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs
     };
     match res {
         Ok(()) => (),
-        Err(e) => {
-            println!("Error occored during syscall {e:?}");
+        Err(SyscallError::Error) => kill_bad_task(),
+        Err(SyscallError::Info(e)) => {
+            println!("Error occured during syscall {e:?}");
             kill_bad_task()
         }
     }
 }
 
-pub fn check_mem_bounds(mem: usize) -> Result<usize, SyscallError> {
-    if mem <= crate::paging::MemoryLoc::EndUserMem as usize {
-        Ok(mem)
-    } else {
-        Err(SyscallError::OutofBoundsMem)
-    }
-}
-
 fn echo_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     println!("Echoing: {}", regs.r8);
-    unsafe { core::arch::asm!("cli") }
     regs.rax = regs.r8;
     Ok(())
 }
@@ -122,62 +203,8 @@ unsafe fn read_args_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     Ok(())
 }
 
-unsafe fn service_handler(
-    stack_frame: &mut InterruptStackFrame,
-    regs: &mut Registers,
-) -> Result<(), SyscallError> {
-    match regs.r8 {
-        syscall::SERVICE_CREATE => {
-            let pid = CPULocalStorageRW::get_current_pid();
-            regs.rax = service::new(pid).0 as usize;
-        }
-        syscall::SERVICE_SUBSCRIBE => {
-            let pid = CPULocalStorageRW::get_current_pid();
-            service::subscribe(pid, ServiceID(regs.r9 as u64));
-        }
-        syscall::SERVICE_PUSH => {
-            let pid = CPULocalStorageRW::get_current_pid();
-
-            let msg = unsafe { &*(regs.r9 as *const ServiceMessageK) };
-
-            service::push(pid, msg).map_err(|e| SyscallError::SendError(e))?;
-        }
-        syscall::SERVICE_FETCH => {
-            let thread = CPULocalStorageRW::get_current_task();
-
-            match service::try_find_message(
-                thread.handle(),
-                ServiceID(regs.r10 as u64),
-                ServiceTrackingNumber(regs.r11 as u64),
-            ) {
-                Some(len) => unsafe {
-                    *(regs.r9 as *mut ServiceMessageK) = len;
-                    regs.rax = 1
-                },
-                None => regs.rax = 0,
-            }
-        }
-        syscall::SERVICE_WAIT => {
-            let mut thread = CPULocalStorageRW::take_current_task();
-            thread.save_state(stack_frame, regs);
-
-            let res = service_wait(thread, ServiceID(regs.r9 as u64));
-            // Set successfully
-            match res {
-                Some(t) => {
-                    // Race condition, it was set so return
-                    CPULocalStorageRW::set_current_task(t);
-                }
-                None => taskmanager::load_new_task(stack_frame, regs),
-            }
-        }
-        _ => (),
-    }
-    Ok(())
-}
-
 unsafe fn mmap_page_handler(regs: &mut Registers) -> Result<(), SyscallError> {
-    check_mem_bounds(regs.r8)?;
+    kassert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
 
     let task = CPULocalStorageRW::get_current_task();
 
@@ -190,10 +217,11 @@ unsafe fn mmap_page_handler(regs: &mut Registers) -> Result<(), SyscallError> {
             .page_mapper
             .insert_mapping(lazy_page, MemoryMappingFlags::all());
     } else {
-        memory
-            .page_mapper
-            .insert_mapping_at(regs.r8, lazy_page, MemoryMappingFlags::all())
-            .ok_or(SyscallError::MappingExists)?;
+        kunwrap!(memory.page_mapper.insert_mapping_at(
+            regs.r8,
+            lazy_page,
+            MemoryMappingFlags::all()
+        ));
         regs.rax = regs.r8;
     }
     Ok(())
@@ -202,70 +230,315 @@ unsafe fn mmap_page_handler(regs: &mut Registers) -> Result<(), SyscallError> {
 unsafe fn mmap_page32_handler(regs: &mut Registers) -> Result<(), SyscallError> {
     let task = CPULocalStorageRW::get_current_task();
 
-    let page =
-        frame_alloc_exec(|m| m.request_32bit_reserved_page()).ok_or(SyscallError::OutOfMemory)?;
+    let page = kunwrap!(frame_alloc_exec(|m| m.request_32bit_reserved_page()));
 
     regs.rax = page.get_address() as usize;
 
     let mut memory = task.process().memory.lock();
     unsafe {
-        memory
+        let map = kunwrap!(memory
             .page_mapper
             .get_mapper_mut()
-            .identity_map_memory(*page, MemoryMappingFlags::all())
-            .map_err(|_| SyscallError::MappingExists)?
-            .flush();
+            .identity_map_memory(*page, MemoryMappingFlags::all()));
+        map.flush();
     }
     memory.owned32_pages.push(page);
     Ok(())
 }
 
 unsafe fn unmmap_page_handler(regs: &Registers) -> Result<(), SyscallError> {
-    check_mem_bounds(regs.r8)?;
+    kassert!(regs.r8 <= crate::paging::MemoryLoc::EndUserMem as usize);
 
     let task = CPULocalStorageRW::get_current_task();
 
     let mut memory = task.process().memory.lock();
 
     unsafe {
-        memory
+        kunwrap!(memory
             .page_mapper
-            .free_mapping(regs.r8..(regs.r8 + regs.r9 + 0xFFF) & !0xFFF)
-            .map_err(|_| SyscallError::UnMapError)
+            .free_mapping(regs.r8..(regs.r8 + regs.r9 + 0xFFF) & !0xFFF));
+        Ok(())
     }
 }
 
-pub const INTERNAL_KERNEL_WAKER_INTERRUPTS: usize = 0;
-pub const INTERNAL_KERNEL_WAKER_SLEEPD: usize = 1;
-
-unsafe fn internal_kernel_waker_handler(
+unsafe fn sys_receive_event(
     stack_frame: &mut InterruptStackFrame,
     regs: &mut Registers,
 ) -> Result<(), SyscallError> {
-    let mut thread = CPULocalStorageRW::take_current_task();
-    thread.save_state(stack_frame, regs);
+    let event = kunwrap!(KernelReferenceID::from_usize(regs.r8));
+    let thread = CPULocalStorageRW::get_current_task();
 
-    match thread.process().privilege {
-        crate::scheduling::process::ProcessPrivilige::KERNEL => (),
-        crate::scheduling::process::ProcessPrivilige::USER => {
-            return Err(SyscallError::KernelOnlySyscall);
+    let mode: ReceiveMode = kunwrap!(FromPrimitive::from_usize(regs.r9));
+
+    let event = kunwrap!(thread.process().references.lock().references().get(&event)).clone();
+    let event = kenum_cast!(event, KernelValue::Event);
+
+    let mut ev = event.lock();
+
+    match mode {
+        ReceiveMode::GetLevel => regs.rax = ev.level() as usize,
+        ReceiveMode::LevelHigh => {
+            if ev.level() {
+                regs.rax = 1;
+            } else {
+                // we cannot have two pointers to thread
+                let _ = thread;
+                let mut thread = CPULocalStorageRW::take_current_task();
+                thread.save_state(stack_frame, regs);
+                thread.wait_on(&mut ev, EdgeTrigger::RISING_EDGE);
+                taskmanager::load_new_task(stack_frame, regs)
+            }
         }
+        ReceiveMode::LevelLow => {
+            if !ev.level() {
+                regs.rax = 0;
+            } else {
+                // we cannot have two pointers to thread
+                let _ = thread;
+                let mut thread = CPULocalStorageRW::take_current_task();
+                thread.save_state(stack_frame, regs);
+                thread.wait_on(&mut ev, EdgeTrigger::FALLING_EDGE);
+                taskmanager::load_new_task(stack_frame, regs)
+            }
+        }
+        ReceiveMode::Edge => {
+            // we cannot have two pointers to thread
+            let _ = thread;
+            let mut thread = CPULocalStorageRW::take_current_task();
+            thread.save_state(stack_frame, regs);
+            thread.wait_on(
+                &mut ev,
+                EdgeTrigger::RISING_EDGE | EdgeTrigger::FALLING_EDGE,
+            );
+            taskmanager::load_new_task(stack_frame, regs)
+        }
+        ReceiveMode::EdgeHigh => {
+            // we cannot have two pointers to thread
+            let _ = thread;
+            let mut thread = CPULocalStorageRW::take_current_task();
+            thread.save_state(stack_frame, regs);
+            thread.wait_on(&mut ev, EdgeTrigger::RISING_EDGE);
+            taskmanager::load_new_task(stack_frame, regs)
+        }
+        ReceiveMode::EdgeLow => {
+            // we cannot have two pointers to thread
+            let _ = thread;
+            let mut thread = CPULocalStorageRW::take_current_task();
+            thread.save_state(stack_frame, regs);
+            thread.save_state(stack_frame, regs);
+            thread.wait_on(&mut ev, EdgeTrigger::FALLING_EDGE);
+            taskmanager::load_new_task(stack_frame, regs)
+        }
+    }
+    Ok(())
+}
+
+unsafe fn sys_event_queue(regs: &mut Registers) -> Result<(), SyscallError> {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let operation: KernelEventQueueOperation = kunwrap!(FromPrimitive::from_usize(regs.r8));
+
+    let get_event = || {
+        let id = kunwrap!(KernelReferenceID::from_usize(regs.r9));
+        let event = kunwrap!(thread.process().get_value(id));
+        let event = kenum_cast!(event, KernelValue::EventQueue);
+        Ok(event)
     };
 
-    let res = match regs.r8 {
-        INTERNAL_KERNEL_WAKER_INTERRUPTS => interrupts::DISPATCH_WAKER.set_waker(thread),
-        INTERNAL_KERNEL_WAKER_SLEEPD => time::SLEEP_WAKER.set_waker(thread),
-        _ => todo!(),
-    };
-    // Set successfully
-    match res {
-        Some(t) => {
-            // Race condition, it was set so return
-            CPULocalStorageRW::set_current_task(t);
+    match operation {
+        KernelEventQueueOperation::Create => {
+            let new = KEventQueue::new();
+            let id = thread.process().add_value(new.into());
+            regs.rax = id.0.get();
         }
-        None => taskmanager::load_new_task(stack_frame, regs),
+        KernelEventQueueOperation::GetEvent => {
+            let ev = get_event()?;
+            let event = ev.event();
+            let id = thread.process().add_value(event.into());
+            regs.rax = id.0.get();
+        }
+        KernelEventQueueOperation::PopQueue => {
+            let ev = get_event()?;
+            match ev.try_pop_event() {
+                Some(e) => regs.rax = e.0.get(),
+                None => regs.rax = 0,
+            }
+        }
+        KernelEventQueueOperation::Listen => {
+            let ev = get_event()?;
+
+            let listen_id = kunwrap!(KernelReferenceID::from_usize(regs.r10));
+            let callback = kunwrap!(NonZeroUsize::new(regs.r11).map(EventCallback));
+
+            let listen_event = kunwrap!(thread.process().get_value(listen_id));
+            let listen_event = kenum_cast!(listen_event, KernelValue::Event);
+            let mode: KernelEventQueueListenMode = kunwrap!(FromPrimitive::from_usize(regs.r12));
+
+            regs.rax = ev.listen(listen_event, callback, mode)?.0.get();
+        }
+        KernelEventQueueOperation::Unlisten => {
+            let ev = get_event()?;
+            let listen_id = EventQueueListenId(kunwrap!(NonZeroUsize::new(regs.r10)));
+            kunwrap!(ev.unlisten(listen_id));
+        }
     }
 
+    Ok(())
+}
+
+unsafe fn sys_socket_handler(regs: &mut Registers) -> Result<(), SyscallError> {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let operation: SocketOperation = kunwrap!(FromPrimitive::from_usize(regs.r8));
+
+    match operation {
+        SocketOperation::Listen => {
+            let name = slice::from_raw_parts(regs.r9 as *const u8, regs.r10);
+            let name = String::from_utf8_lossy(name).to_string();
+            match PUBLIC_SOCKETS.lock().entry(name) {
+                hashbrown::hash_map::Entry::Occupied(_) => regs.rax = 0,
+                hashbrown::hash_map::Entry::Vacant(place) => {
+                    let handle = KSocketListener::new();
+                    place.insert(handle.clone());
+                    regs.rax = thread.process().add_value(handle.into()).0.get();
+                }
+            }
+        }
+        SocketOperation::Connect => {
+            let name = slice::from_raw_parts(regs.r9 as *const u8, regs.r10);
+            let name = kunwrap!(core::str::from_utf8(name));
+            match PUBLIC_SOCKETS.lock().get(name) {
+                Some(listener) => {
+                    regs.rax = thread
+                        .process()
+                        .add_value(listener.connect().into())
+                        .0
+                        .get();
+                }
+                None => regs.rax = 0,
+            }
+        }
+        SocketOperation::Accept => {
+            let id = kunwrap!(KernelReferenceID::from_usize(regs.r9));
+
+            let sock = kunwrap!(thread.process().get_value(id));
+            let sock = kenum_cast!(sock, KernelValue::SocketListener);
+
+            match sock.pop() {
+                Some(val) => {
+                    regs.rax = thread.process().add_value(val.into()).0.get();
+                }
+                None => regs.rax = 0,
+            }
+        }
+        SocketOperation::GetSocketListenEvent => {
+            let id = kunwrap!(KernelReferenceID::from_usize(regs.r9));
+
+            let sock = kunwrap!(thread.process().get_value(id));
+            let sock = kenum_cast!(sock, KernelValue::SocketListener);
+
+            regs.rax = thread.process().add_value(sock.event().into()).0.get();
+        }
+        SocketOperation::Create => {
+            let info = &mut *(regs.r9 as *mut MakeSocket);
+            let sockets = create_sockets(info.ltr_capacity, info.rtl_capacity);
+            let refs = &mut thread.process().references.lock();
+            info.left.write(refs.add_value(sockets.0.into()));
+            info.right.write(refs.add_value(sockets.1.into()));
+            regs.rax = 0;
+        }
+        SocketOperation::GetSocketEvent => {
+            let id = kunwrap!(KernelReferenceID::from_usize(regs.r9));
+            let ev: SocketEvents = kunwrap!(FromPrimitive::from_usize(regs.r10));
+
+            let sock = kunwrap!(thread.process().get_value(id));
+            let sock = kenum_cast!(sock, KernelValue::Socket);
+
+            let event = sock.get_event(ev);
+
+            let id = thread.process().add_value(event.into());
+            regs.rax = id.0.get();
+        }
+        SocketOperation::Send => {
+            let id = kunwrap!(KernelReferenceID::from_usize(regs.r9));
+            let msgid = kunwrap!(KernelReferenceID::from_usize(regs.r10));
+
+            let sock = kunwrap!(thread.process().get_value(id));
+            let message = kunwrap!(thread.process().get_value(msgid));
+
+            let sock = kenum_cast!(sock, KernelValue::Socket);
+            regs.rax = match sock.send_message(message) {
+                Some(()) => 0,
+                None if sock.is_eof() => 2,
+                None => 1,
+            }
+        }
+        SocketOperation::Recv => unsafe {
+            let recv = &mut *(regs.r9 as *mut SocketRecv);
+
+            let sock = kunwrap!(thread.process().get_value(recv.socket));
+
+            let sock = kenum_cast!(sock, KernelValue::Socket);
+
+            match sock.recv_message() {
+                Some(message) => {
+                    recv.result_type.write(message.object_type());
+                    recv.result = Some(thread.process().add_value(message));
+                }
+                None => recv.eof = sock.is_eof(),
+            }
+        },
+    }
+
+    Ok(())
+}
+
+unsafe fn sys_reference_handler(regs: &mut Registers) -> Result<(), SyscallError> {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let operation: ReferenceOperation = kunwrap!(FromPrimitive::from_usize(regs.r8));
+    let id = kunwrap!(KernelReferenceID::from_usize(regs.r9));
+
+    let mut refs = thread.process().references.lock();
+    match operation {
+        ReferenceOperation::Clone => {
+            let clonable = kunwrap!(refs.references().get(&id)).clone();
+            regs.rax = refs.add_value(clonable).0.get();
+        }
+        ReferenceOperation::Delete => {
+            kunwrap!(refs.references().remove(&id));
+        }
+        ReferenceOperation::GetType => {
+            regs.rax = match refs.references().get(&id) {
+                Some(r) => r.object_type(),
+                None => kernel_userspace::object::KernelObjectType::None,
+            } as usize;
+        }
+    }
+    Ok(())
+}
+
+unsafe fn sys_process_handler(regs: &mut Registers) -> Result<(), SyscallError> {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let operation: KernelProcessOperation = kunwrap!(FromPrimitive::from_usize(regs.r8));
+    let id = kunwrap!(KernelReferenceID::from_usize(regs.r9));
+    let proc = kunwrap!(thread.process().get_value(id));
+
+    let proc = kenum_cast!(proc, KernelValue::Process);
+
+    match operation {
+        KernelProcessOperation::GetExitCode => {
+            regs.rax = *proc.exit_status.lock() as usize;
+        }
+        KernelProcessOperation::GetExitEvent => {
+            regs.rax = thread
+                .process()
+                .add_value(proc.exit_signal.clone().into())
+                .0
+                .get();
+        }
+    }
     Ok(())
 }
 
@@ -289,8 +562,7 @@ unsafe fn sleep_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Regist
 }
 
 unsafe fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
-    let action: SyscallMessageAction =
-        FromPrimitive::from_usize(regs.r8).ok_or(SyscallError::UnknownSubAction)?;
+    let action: SyscallMessageAction = kunwrap!(FromPrimitive::from_usize(regs.r8));
     let thread = CPULocalStorageRW::get_current_task();
 
     match action {
@@ -298,80 +570,36 @@ unsafe fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
             let msg_create = &mut *(regs.r9 as *mut MessageCreate);
             let req = &msg_create.before;
             let data: Box<[u8]> = core::slice::from_raw_parts(req.0, req.1).into();
-            let id = create_new_messageid();
-            let msg = Arc::new(KMessage { id, data });
-            assert!(thread
-                .process()
-                .service_messages
-                .lock()
-                .messages
-                .insert(id, KMessageProcRefcount { msg, ref_count: 1 })
-                .is_none());
-            msg_create.after = id;
+            let msg = Arc::new(KMessage { data });
+
+            msg_create.after = thread.process().add_value(msg.into());
         },
         SyscallMessageAction::GetSize => unsafe {
             let msg_size = &mut *(regs.r9 as *mut MessageGetSize);
-            msg_size.after = thread
-                .process()
-                .service_messages
-                .lock()
-                .messages
-                .get(&msg_size.before)
-                .ok_or(SyscallError::MessageIdUnknown)?
-                .msg
-                .data
-                .len();
+
+            let msg = kunwrap!(thread.process().get_value(msg_size.before));
+            let msg = kenum_cast!(msg, KernelValue::Message);
+
+            msg_size.after = msg.data.len();
         },
         SyscallMessageAction::Read => unsafe {
             let msg_read = &mut *(regs.r9 as *mut MessageRead);
 
             let loc = core::slice::from_raw_parts_mut(msg_read.ptr.0, msg_read.ptr.1);
 
-            let messages = thread.process().service_messages.lock();
-            let msg = messages
-                .messages
-                .get(&msg_read.id)
-                .ok_or(SyscallError::MessageIdUnknown)?;
+            let msg = kunwrap!(thread.process().get_value(msg_read.id));
+            let msg = kenum_cast!(msg, KernelValue::Message);
 
-            let data = &msg.msg.data;
-            if data.len() != loc.len() {
-                return Err(SyscallError::MessageReadWrongSize);
-            }
+            let data = &msg.data;
+
+            kassert!(
+                data.len() == loc.len(),
+                "Data and loc len should be same instead was: {} {}",
+                data.len(),
+                loc.len()
+            );
 
             loc.copy_from_slice(&data);
-        },
-        SyscallMessageAction::Clone => unsafe {
-            let msg_clone = &mut *(regs.r9 as *mut MessageClone);
-
-            thread
-                .process()
-                .service_messages
-                .lock()
-                .messages
-                .get_mut(&msg_clone.0)
-                .ok_or(SyscallError::MessageIdUnknown)?
-                .ref_count += 1;
-        },
-        SyscallMessageAction::Drop => unsafe {
-            let msg_drop = &mut *(regs.r9 as *mut MessageDrop);
-
-            let mut messages = thread.process().service_messages.lock();
-
-            let cnt = {
-                let msg = messages
-                    .messages
-                    .get_mut(&msg_drop.0)
-                    .ok_or(SyscallError::MessageIdUnknown)?;
-                let cnt = msg.ref_count.saturating_sub(1);
-                msg.ref_count = cnt;
-                cnt
-            };
-            if cnt == 0 {
-                messages
-                    .messages
-                    .remove(&msg_drop.0)
-                    .expect("the entry should be in the map");
-            }
         },
     }
 

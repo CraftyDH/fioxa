@@ -1,14 +1,6 @@
 use alloc::vec::Vec;
 use input::mouse::MousePacket;
-use kernel_userspace::{
-    ids::{ProcessID, ServiceID},
-    input::InputServiceMessage,
-    service::{
-        generate_tracking_number, make_message, register_public_service, SendServiceMessageDest,
-        ServiceMessageDesc,
-    },
-    syscall::{get_pid, send_service_message, service_create},
-};
+use kernel_userspace::{input::InputServiceMessage, message::MessageHandle, service::make_message};
 
 use super::PS2Command;
 
@@ -33,22 +25,15 @@ pub struct Mouse {
     command: PS2Command,
     mouse_type: MouseTypeId,
     packet_state: PS2MousePackets,
-    mouse_service: ServiceID,
-    current_pid: ProcessID,
     send_buffer: Vec<u8>,
 }
 
 impl Mouse {
     pub fn new(command: PS2Command) -> Self {
-        let mouse_service = service_create();
-        register_public_service("INPUT:MOUSE", mouse_service, &mut Vec::new());
-
         Self {
             command,
             mouse_type: MouseTypeId::Standard,
             packet_state: PS2MousePackets::None,
-            mouse_service,
-            current_pid: get_pid(),
             send_buffer: Default::default(),
         }
     }
@@ -155,9 +140,9 @@ impl Mouse {
         Ok(())
     }
 
-    pub fn check_interrupts(&mut self) {
+    pub fn check_interrupts(&mut self) -> Option<MessageHandle> {
         let data: u8 = unsafe { self.command.data_port.read() };
-
+        let mut res = None;
         self.packet_state = match (&self.packet_state, &self.mouse_type) {
             (PS2MousePackets::None, _) => PS2MousePackets::One(data),
             (PS2MousePackets::One(a), _) => PS2MousePackets::Two(*a, data),
@@ -172,13 +157,14 @@ impl Mouse {
                 MouseTypeId::WithExtraButtons | MouseTypeId::WithScrollWheel,
             ) => {
                 // Discard scroll wheel for now
-                self.send_packet(*a, *b, *c);
+                res = Some(self.send_packet(*a, *b, *c));
                 PS2MousePackets::None
             }
         };
+        res
     }
 
-    pub fn send_packet(&mut self, p1: u8, p2: u8, p3: u8) {
+    pub fn send_packet(&mut self, p1: u8, p2: u8, p3: u8) -> MessageHandle {
         let left = p1 & 0b0000_0001 > 0;
         let right = p1 & 0b0000_0010 > 0;
         let middle = p1 & 0b0000_0100 > 0;
@@ -205,17 +191,11 @@ impl Mouse {
             y_mov: y as i8,
         };
 
-        send_service_message(
-            &ServiceMessageDesc {
-                service_id: self.mouse_service,
-                sender_pid: self.current_pid,
-                tracking_number: generate_tracking_number(),
-                destination: SendServiceMessageDest::ToSubscribers,
-            },
-            &make_message(
-                &InputServiceMessage::MouseEvent(packet),
-                &mut self.send_buffer,
-            ),
+        let msg = make_message(
+            &InputServiceMessage::MouseEvent(packet),
+            &mut self.send_buffer,
         );
+
+        msg
     }
 }

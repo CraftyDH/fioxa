@@ -12,11 +12,13 @@ use x86_64::{
 };
 
 use crate::{
-    assembly::registers::Registers, cpu_localstorage::CPULocalStorageRW, scheduling::taskmanager,
+    assembly::registers::Registers,
+    cpu_localstorage::CPULocalStorageRW,
+    scheduling::taskmanager::{self, append_task_queue},
     wrap_function_registers,
 };
 
-use super::{SLEEP_TARGET, SLEEP_WAKER};
+use super::{SLEEP_TARGET, SLEPT_PROCESSES};
 
 const PIT_BASE_FREQUENCY: u64 = 1193182;
 
@@ -111,7 +113,21 @@ unsafe extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Regi
         let uptime = TIME_SINCE_BOOT.fetch_add(freq, Ordering::Relaxed) + freq;
         // If we have a sleep target, wake up the job
         if uptime >= SLEEP_TARGET.load(Ordering::Relaxed) {
-            SLEEP_WAKER.wake()
+            // if over the target, try waking up processes
+            SLEPT_PROCESSES.try_lock().map(|mut procs| {
+                procs.retain(|&req_time, el| {
+                    if req_time <= uptime {
+                        append_task_queue(el);
+                        false
+                    } else {
+                        true
+                    }
+                });
+                SLEEP_TARGET.store(
+                    procs.first_key_value().map(|(&k, _)| k).unwrap_or(u64::MAX),
+                    core::sync::atomic::Ordering::Relaxed,
+                )
+            });
         }
     }
 

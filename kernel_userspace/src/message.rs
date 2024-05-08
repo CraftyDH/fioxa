@@ -1,58 +1,49 @@
-use core::num::NonZeroUsize;
-
 use alloc::vec::Vec;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::ToPrimitive;
 
-use crate::{make_syscall, syscall::MESSAGE};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MessageId(pub NonZeroUsize);
+use crate::{
+    make_syscall,
+    object::{KernelReference, KernelReferenceID},
+    syscall::MESSAGE,
+};
 
 /// This is a kernel ref counted immutable object
-#[derive(Debug, PartialEq, Eq)]
-pub struct MessageHandle(MessageId);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageHandle(KernelReference);
 
 #[derive(FromPrimitive, ToPrimitive)]
 pub enum SyscallMessageAction {
     Create = 0,
     GetSize,
     Read,
-    Clone,
-    Drop,
 }
 
 #[repr(C)]
 pub union MessageCreate {
     pub before: (*const u8, usize),
-    pub after: MessageId,
+    pub after: KernelReferenceID,
 }
 
 #[repr(C)]
 pub union MessageGetSize {
-    pub before: MessageId,
+    pub before: KernelReferenceID,
     pub after: usize,
 }
 
 #[repr(C)]
 pub struct MessageRead {
-    pub id: MessageId,
+    pub id: KernelReferenceID,
     pub ptr: (*mut u8, usize),
 }
 
-#[repr(C)]
-pub struct MessageClone(pub MessageId);
-
-#[repr(C)]
-pub struct MessageDrop(pub MessageId);
-
 impl MessageHandle {
-    pub const unsafe fn new_unchecked(id: MessageId) -> Self {
+    pub const fn from_kref(id: KernelReference) -> Self {
         Self(id)
     }
 
-    pub const fn id(&self) -> MessageId {
-        self.0
+    pub const fn kref(&self) -> &KernelReference {
+        &self.0
     }
 
     unsafe fn make_syscall<T>(action: SyscallMessageAction, arg: &mut T) {
@@ -67,13 +58,15 @@ impl MessageHandle {
             };
 
             Self::make_syscall(SyscallMessageAction::Create, &mut msg);
-            Self(msg.after)
+            Self(KernelReference::from_id(msg.after))
         }
     }
 
     pub fn get_size(&self) -> usize {
         unsafe {
-            let mut msg = MessageGetSize { before: self.0 };
+            let mut msg = MessageGetSize {
+                before: self.0.id(),
+            };
 
             Self::make_syscall(SyscallMessageAction::GetSize, &mut msg);
             msg.after
@@ -83,7 +76,7 @@ impl MessageHandle {
     pub fn read(&self, buffer: &mut [u8]) {
         unsafe {
             let mut msg = MessageRead {
-                id: self.0,
+                id: self.0.id(),
                 ptr: (buffer.as_mut_ptr(), buffer.len()),
             };
 
@@ -97,14 +90,10 @@ impl MessageHandle {
         self.read(&mut vec);
         vec
     }
-}
 
-impl Clone for MessageHandle {
-    fn clone(&self) -> Self {
-        unsafe {
-            let mut msg = MessageClone(self.0);
-            Self::make_syscall(SyscallMessageAction::Clone, &mut msg);
-            Self(self.0)
-        }
+    pub fn read_into_vec(&self, vec: &mut Vec<u8>) {
+        let size = self.get_size();
+        vec.resize(size, 0);
+        self.read(vec);
     }
 }

@@ -6,12 +6,20 @@ extern crate alloc;
 extern crate userspace;
 extern crate userspace_slaballoc;
 
-use alloc::{sync::Arc, vec::Vec};
+use core::num::NonZeroUsize;
+
+use alloc::vec::Vec;
 use kernel_userspace::{
-    service::get_public_service_id,
-    syscall::{exit, receive_service_message_blocking, service_subscribe, spawn_thread},
+    event::{
+        event_queue_create, event_queue_get_event, event_queue_listen, event_queue_pop,
+        receive_event, EventCallback, KernelEventQueueListenMode, ReceiveMode,
+    },
+    object::{KernelObjectType, KernelReference},
+    service::{make_message, make_message_new},
+    socket::{socket_accept, socket_listen, socket_listen_get_event, socket_send, SocketHandle},
+    syscall::exit,
+    INT_KB, INT_MOUSE,
 };
-use spin::Mutex;
 use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
 
 use self::{keyboard::Keyboard, mouse::Mouse};
@@ -32,27 +40,102 @@ pub extern "C" fn main() {
 
     let mut buffer = Vec::new();
 
-    let kb_event = get_public_service_id("INTERRUPTS:KB", &mut buffer).unwrap();
-    let mouse_event = get_public_service_id("INTERRUPTS:MOUSE", &mut buffer).unwrap();
+    let interrupts = SocketHandle::connect("INTERRUPTS").unwrap();
 
-    service_subscribe(kb_event);
-    service_subscribe(mouse_event);
+    let kb_msg = make_message(&INT_KB, &mut buffer);
+    let mouse_msg = make_message(&INT_MOUSE, &mut buffer);
 
-    // TODO: Once some form of multi wait is implemented use 1 thread.
+    interrupts.blocking_send(kb_msg.kref()).unwrap();
+    interrupts.blocking_send(mouse_msg.kref()).unwrap();
 
-    let controller = Arc::new(Mutex::new(ps2_controller));
+    let (kb_event, kb_ty) = interrupts.blocking_recv().unwrap();
+    let (mouse_event, m_ty) = interrupts.blocking_recv().unwrap();
 
-    let c = controller.clone();
-    spawn_thread(move || loop {
-        loop {
-            receive_service_message_blocking(mouse_event);
-            c.lock().mouse.check_interrupts();
-        }
-    });
+    assert_eq!(kb_ty, KernelObjectType::Event);
+    assert_eq!(m_ty, KernelObjectType::Event);
+
+    let event_queue = event_queue_create();
+    let event_queue_event = event_queue_get_event(event_queue);
+
+    let kb_cbk = EventCallback(NonZeroUsize::new(1).unwrap());
+    let ms_cbk = EventCallback(NonZeroUsize::new(2).unwrap());
+    let kb_srv_cbk = EventCallback(NonZeroUsize::new(3).unwrap());
+    let ms_srv_cbk = EventCallback(NonZeroUsize::new(4).unwrap());
+
+    let kb_service = socket_listen("INPUT:KB").unwrap();
+    let kb_service_ev = socket_listen_get_event(kb_service);
+    let ms_service = socket_listen("INPUT:MOUSE").unwrap();
+    let ms_service_ev = socket_listen_get_event(ms_service);
+
+    event_queue_listen(
+        event_queue,
+        kb_event.id(),
+        kb_cbk,
+        KernelEventQueueListenMode::OnEdgeHigh,
+    );
+
+    event_queue_listen(
+        event_queue,
+        mouse_event.id(),
+        ms_cbk,
+        KernelEventQueueListenMode::OnEdgeHigh,
+    );
+
+    event_queue_listen(
+        event_queue,
+        kb_service_ev,
+        kb_srv_cbk,
+        KernelEventQueueListenMode::OnLevelHigh,
+    );
+
+    event_queue_listen(
+        event_queue,
+        ms_service_ev,
+        ms_srv_cbk,
+        KernelEventQueueListenMode::OnLevelHigh,
+    );
+
+    let mut kb_listeners: Vec<KernelReference> = Vec::new();
+    let mut ms_listeners: Vec<KernelReference> = Vec::new();
 
     loop {
-        receive_service_message_blocking(kb_event);
-        controller.lock().keyboard.check_interrupts();
+        receive_event(event_queue_event, ReceiveMode::LevelHigh);
+        while let Some(event) = event_queue_pop(event_queue) {
+            if event == kb_cbk {
+                match ps2_controller.keyboard.check_interrupts() {
+                    Some(ev) => {
+                        let message = make_message_new(
+                            &kernel_userspace::input::InputServiceMessage::KeyboardEvent(ev),
+                        );
+                        // ignore if pipe is full, just drop
+                        kb_listeners.retain(|l| match socket_send(l.id(), message.kref().id()) {
+                            Err(kernel_userspace::socket::SocketSendResult::Closed) => false,
+                            _ => true,
+                        });
+                    }
+                    None => (),
+                }
+            } else if event == ms_cbk {
+                match ps2_controller.mouse.check_interrupts() {
+                    Some(message) => {
+                        // ignore if pipe is full, just drop
+                        ms_listeners.retain(|l| match socket_send(l.id(), message.kref().id()) {
+                            Err(kernel_userspace::socket::SocketSendResult::Closed) => false,
+                            _ => true,
+                        });
+                    }
+                    None => (),
+                }
+            } else if event == kb_srv_cbk {
+                if let Some(sock) = socket_accept(kb_service) {
+                    kb_listeners.push(KernelReference::from_id(sock))
+                }
+            } else if event == ms_srv_cbk {
+                if let Some(sock) = socket_accept(ms_service) {
+                    ms_listeners.push(KernelReference::from_id(sock))
+                }
+            }
+        }
     }
 }
 pub struct PS2Command {

@@ -10,8 +10,11 @@ use kernel_userspace::{
         FSServiceError, FSServiceMessage, FSServiceMessageResp, StatResponse, StatResponseFile,
         StatResponseFolder,
     },
-    service::{make_message, register_public_service, SendServiceMessageDest, ServiceMessageDesc},
-    syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
+    message::MessageHandle,
+    object::KernelObjectType,
+    service::{deserialize, make_message_new},
+    socket::{SocketHandle, SocketListenHandle},
+    syscall::spawn_thread,
 };
 use spin::Mutex;
 
@@ -199,34 +202,46 @@ pub fn get_file_from_path(partition_id: PartitionId, path: &str) -> Result<VFile
 //     }
 // }
 
-pub fn file_handler() {
-    let sid = service_create();
-    let pid = get_pid();
-    register_public_service("FS", sid, &mut Vec::new());
-
-    let mut message_buffer = Vec::new();
-
+fn file_job_runner(conn: SocketHandle) -> Option<()> {
     // A bit of a hack to extend the lifetime
     let mut buffer = Vec::new();
     let mut btree_child_buffer = BTreeMap::new();
     let mut sec_buf = [0; 512];
 
     loop {
-        let query = receive_service_message_blocking(sid);
+        let (msg, ty) = conn.blocking_recv().ok()?;
+        if ty != KernelObjectType::Message {
+            println!("bad message type");
+            return None;
+        }
+        let msg = MessageHandle::from_kref(msg);
+        let msg = msg.read_vec();
+        let msg = deserialize(&msg).ok()?;
+        let res = run_fs_query(msg, &mut buffer, &mut sec_buf, &mut btree_child_buffer);
+        match res {
+            Ok((a, b)) => {
+                let m = make_message_new(&Ok::<_, FSServiceError>(a));
+                conn.blocking_send(m.kref()).ok()?;
+                if let Some(b) = b {
+                    conn.blocking_send(b.kref()).ok()?;
+                }
+            }
+            Err(e) => {
+                let m = make_message_new(&Err::<FSServiceMessageResp, _>(e));
+                conn.blocking_send(m.kref()).ok()?;
+            }
+        }
+    }
+}
 
-        let msg = query.read::<FSServiceMessage>(&mut message_buffer).unwrap();
+pub fn file_handler() {
+    let service = SocketListenHandle::listen("FS").unwrap();
 
-        let resp = run_fs_query(msg, &mut buffer, &mut sec_buf, &mut btree_child_buffer);
-
-        send_service_message(
-            &ServiceMessageDesc {
-                service_id: sid,
-                sender_pid: pid,
-                tracking_number: query.tracking_number,
-                destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-            },
-            &make_message(&resp, &mut message_buffer),
-        );
+    loop {
+        let conn = service.blocking_accept();
+        spawn_thread(move || {
+            file_job_runner(conn);
+        });
     }
 }
 
@@ -235,7 +250,7 @@ fn run_fs_query<'a>(
     buffer: &'a mut Vec<u8>,
     sec_buffer: &'a mut [u8; 512],
     btree_child_buf: &'a mut BTreeMap<String, VFileID>,
-) -> Result<FSServiceMessageResp<'a>, FSServiceError> {
+) -> Result<(FSServiceMessageResp<'a>, Option<MessageHandle>), FSServiceError> {
     match query {
         FSServiceMessage::RunStat(disk, path) => {
             let file = get_file_from_path(PartitionId(disk as u64), path)?;
@@ -254,7 +269,7 @@ fn run_fs_query<'a>(
                 }),
             };
 
-            Ok(FSServiceMessageResp::StatResponse(stat))
+            Ok((FSServiceMessageResp::StatResponse(stat), None))
         }
         FSServiceMessage::ReadRequest(req) => {
             if let Some(len) = read_file_sector(
@@ -262,20 +277,24 @@ fn run_fs_query<'a>(
                 req.sector as usize,
                 sec_buffer,
             )? {
-                Ok(FSServiceMessageResp::ReadResponse(Some(
-                    &sec_buffer[0..len],
-                )))
+                Ok((
+                    FSServiceMessageResp::ReadResponse(Some(len)),
+                    Some(MessageHandle::create(&sec_buffer[0..len])),
+                ))
             } else {
-                Ok(FSServiceMessageResp::ReadResponse(None))
+                Ok((FSServiceMessageResp::ReadResponse(None), None))
             }
         }
         FSServiceMessage::ReadFullFileRequest(req) => {
             let file_vec = read_file((PartitionId(req.disk_id as u64), req.node_id), buffer)?;
-            Ok(FSServiceMessageResp::ReadResponse(Some(file_vec)))
+            Ok((
+                FSServiceMessageResp::ReadResponse(Some(file_vec.len())),
+                Some(MessageHandle::create(file_vec)),
+            ))
         }
         FSServiceMessage::GetDisksRequest => {
             let disks = PARTITION.lock().keys().map(|p| p.0).collect();
-            Ok(FSServiceMessageResp::GetDisksResponse(disks))
+            Ok((FSServiceMessageResp::GetDisksResponse(disks), None))
         }
     }
 }

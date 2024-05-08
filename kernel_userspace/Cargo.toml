@@ -13,3 +13,4 @@ conquer-once = {version = "0.4", default-features = false}
 thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
 num-derive = { version = "0.4.2" }
 num-traits = { version = "0.2.18", default-features = false }
+spin = "0.9"

@@ -3,28 +3,20 @@ use core::{
     mem::{size_of, transmute},
 };
 
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
     backoff_sleep,
-    ids::ServiceID,
-    net::{ArpResponse, IPAddr, Networking, NetworkingResp, NotSameSubnetError},
-    service::{
-        generate_tracking_number, get_public_service_id, make_message, register_public_service,
-        SendServiceMessageDest, ServiceMessageDesc, ServiceTrackingNumber,
-    },
-    syscall::{
-        receive_service_message_blocking, receive_service_message_blocking_tracking,
-        send_and_get_response_service_message, send_service_message, service_create,
-        service_subscribe, spawn_thread,
-    },
+    message::MessageHandle,
+    net::{ArpResponse, IPAddr, Networking, NotSameSubnetError},
+    object::KernelObjectType,
+    service::{deserialize, make_message_new},
+    socket::{SocketHandle, SocketListenHandle},
+    syscall::spawn_thread,
 };
 use modular_bitfield::{bitfield, specifiers::B48};
 use x86_64::instructions::interrupts::without_interrupts;
 
-use crate::{
-    cpu_localstorage::CPULocalStorageRW,
-    net::arp::{ARP, ARP_TABLE},
-};
+use crate::net::arp::{ARP, ARP_TABLE};
 
 use super::arp::ARPEth;
 
@@ -75,7 +67,11 @@ pub fn handle_ethernet_frame(frame: EthernetFrame) {
 const IP_ADDR: IPAddr = IPAddr::V4(10, 0, 2, 15);
 const SUBNET: u32 = 0xFF0000;
 
-pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) -> Result<(), NotSameSubnetError> {
+pub fn send_arp(
+    service: &SocketHandle,
+    mac_addr: u64,
+    ip: IPAddr,
+) -> Result<(), NotSameSubnetError> {
     IP_ADDR.same_subnet(&ip, SUBNET)?;
     let mut arp = ARP::new();
     arp.set_hardware_type(1u16.to_be()); // Ethernet
@@ -95,95 +91,79 @@ pub fn send_arp(service: ServiceID, mac_addr: u64, ip: IPAddr) -> Result<(), Not
     let arp_req = ARPEth { header, arp };
     let buf: &[u8; size_of::<ARPEth>()] = &unsafe { transmute(arp_req) };
 
-    let mut buffer = Vec::new();
-
-    send_and_get_response_service_message(
-        &ServiceMessageDesc {
-            service_id: service,
-            sender_pid: CPULocalStorageRW::get_current_pid(),
-            tracking_number: generate_tracking_number(),
-            destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-        },
-        &make_message(
-            &kernel_userspace::net::PhysicalNet::SendPacket(buf),
-            &mut buffer,
-        ),
-    );
+    let msg = make_message_new(&kernel_userspace::net::PhysicalNet::SendPacket(buf));
+    service.blocking_send(msg.kref()).unwrap();
+    // wait for ack
+    service.blocking_recv().unwrap();
 
     Ok(())
 }
 
 pub fn userspace_networking_main() {
-    let sid = service_create();
-    register_public_service("NETWORKING", sid, &mut Vec::new());
+    let service = SocketListenHandle::listen("NETWORKING").unwrap();
 
-    let mut buffer = Vec::new();
-    let pcnet = backoff_sleep(|| get_public_service_id("PCNET", &mut buffer));
+    let pcnet = backoff_sleep(|| SocketHandle::connect("PCNET"));
 
-    service_subscribe(pcnet);
+    let msg = make_message_new(&kernel_userspace::net::PhysicalNet::MacAddrGet);
+    pcnet.blocking_send(msg.kref()).unwrap();
+    let (mac, ty) = pcnet.blocking_recv().unwrap();
 
-    println!("SIDS: {sid:?} {pcnet:?}");
+    assert_eq!(ty, KernelObjectType::Message);
+    let mac = MessageHandle::from_kref(mac).read_vec();
+    let mac: u64 = deserialize(&mac).unwrap();
 
-    let kernel_userspace::net::PhysicalNetResp::MacAddrResp(mac) =
-        send_and_get_response_service_message(
-            &kernel_userspace::service::ServiceMessageDesc {
-                service_id: pcnet,
-                sender_pid: CPULocalStorageRW::get_current_pid(),
-                tracking_number: generate_tracking_number(),
-                destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-            },
-            &make_message(
-                &kernel_userspace::net::PhysicalNet::MacAddrGet,
-                &mut Vec::new(),
-            ),
-        )
-        .read(&mut buffer)
-        .unwrap()
-    else {
-        panic!()
-    };
+    let msg = make_message_new(&kernel_userspace::net::PhysicalNet::ListenToPackets);
+    pcnet.blocking_send(msg.kref()).unwrap();
+    let (listen, ty) = pcnet.blocking_recv().unwrap();
 
-    spawn_thread(move || monitor_packets(pcnet));
+    assert_eq!(ty, KernelObjectType::Socket);
+    let listener = SocketHandle::from_raw_socket(listen);
+
+    spawn_thread(move || monitor_packets(listener));
+    let pcnet = Arc::new(pcnet);
     loop {
-        let mut buf = Vec::new();
-        let query = receive_service_message_blocking(sid);
-        let resp = match query.read(&mut buf).unwrap() {
-            Networking::ArpRequest(ip) => {
+        let query = service.blocking_accept();
+        let (q, ty) = query.blocking_recv().unwrap();
+
+        if ty != KernelObjectType::Message {
+            println!("usernetworking invalid message");
+            continue;
+        }
+
+        let q = MessageHandle::from_kref(q).read_vec();
+        match deserialize(&q) {
+            Ok(Networking::ArpRequest(ip)) => {
                 let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
 
                 let resp = match mac_addr {
                     Some(mac) => ArpResponse::Mac(mac),
-                    None => ArpResponse::Pending(send_arp(pcnet, mac, ip)),
+                    None => ArpResponse::Pending(send_arp(&pcnet, mac, ip)),
                 };
 
-                NetworkingResp::ArpResponse(resp)
+                let resp = make_message_new(&resp);
+                if let Err(_) = query.blocking_send(resp.kref()) {
+                    println!("usernetworking eof");
+                    continue;
+                }
             }
+            Err(_) => continue,
         };
-
-        send_service_message(
-            &ServiceMessageDesc {
-                service_id: sid,
-                sender_pid: CPULocalStorageRW::get_current_pid(),
-                tracking_number: query.tracking_number,
-                destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-            },
-            &make_message(&resp, &mut buf),
-        );
     }
 }
 
-pub fn monitor_packets(pcnet: ServiceID) {
+pub fn monitor_packets(socket: SocketHandle) {
+    let mut buffer = Vec::new();
     loop {
-        let mut buf = Vec::new();
-        let message = receive_service_message_blocking_tracking(pcnet, ServiceTrackingNumber(0));
-        match message.read(&mut buf).unwrap() {
-            kernel_userspace::net::PhysicalNetResp::ReceivedPacket(packet) => {
-                let header = unsafe { *(packet.as_ptr() as *const EthernetFrameHeader) };
-                let data = &packet[size_of::<EthernetFrameHeader>()..];
+        let (message, ty) = socket.blocking_recv().unwrap();
 
-                handle_ethernet_frame(EthernetFrame { header, data })
-            }
-            _ => unimplemented!("{message:?}"),
-        }
+        assert_eq!(ty, KernelObjectType::Message);
+        MessageHandle::from_kref(message).read_into_vec(&mut buffer);
+
+        assert!(buffer.len() > size_of::<EthernetFrameHeader>());
+
+        let header = unsafe { *(buffer.as_ptr() as *const EthernetFrameHeader) };
+        let data = &buffer[size_of::<EthernetFrameHeader>()..];
+
+        handle_ethernet_frame(EthernetFrame { header, data })
     }
 }

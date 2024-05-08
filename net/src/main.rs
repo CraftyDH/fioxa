@@ -1,11 +1,13 @@
 #![no_std]
 #![no_main]
 
-use alloc::vec::Vec;
 use kernel_userspace::{
-    net::{ArpResponse, IPAddr, NetworkingResp, NotSameSubnetError},
-    service::{generate_tracking_number, get_public_service_id, make_message},
-    syscall::{exit, read_args, send_and_get_response_service_message, CURRENT_PID},
+    message::MessageHandle,
+    net::{ArpResponse, IPAddr, NotSameSubnetError},
+    object::KernelObjectType,
+    service::{deserialize, make_message_new},
+    socket::SocketHandle,
+    syscall::{exit, read_args},
 };
 
 extern crate alloc;
@@ -45,24 +47,16 @@ pub extern "C" fn main() {
 }
 
 pub fn lookup_ip(ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
-    let mut buf = Vec::new();
-    let networking = get_public_service_id("NETWORKING", &mut buf).unwrap();
-    match send_and_get_response_service_message(
-        &kernel_userspace::service::ServiceMessageDesc {
-            service_id: networking,
-            sender_pid: *CURRENT_PID,
-            tracking_number: generate_tracking_number(),
-            destination: kernel_userspace::service::SendServiceMessageDest::ToProvider,
-        },
-        &make_message(&kernel_userspace::net::Networking::ArpRequest(ip), &mut buf),
-    )
-    .read(&mut buf)
-    .unwrap()
-    {
-        NetworkingResp::ArpResponse(resp) => match resp {
-            ArpResponse::Mac(mac) => return Ok(Some(mac)),
-            ArpResponse::Pending(pend) => pend?,
-        },
+    let networking = SocketHandle::connect("NETWORKING").unwrap();
+    let msg = make_message_new(&kernel_userspace::net::Networking::ArpRequest(ip));
+    networking.blocking_send(msg.kref());
+    let (resp, ty) = networking.blocking_recv().unwrap();
+    assert_eq!(ty, KernelObjectType::Message);
+    let msg = MessageHandle::from_kref(resp);
+    let resp = msg.read_vec();
+    match deserialize(&resp).unwrap() {
+        ArpResponse::Mac(mac) => return Ok(Some(mac)),
+        ArpResponse::Pending(pend) => pend?,
     }
     Ok(None)
 }

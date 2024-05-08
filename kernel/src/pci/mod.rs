@@ -1,19 +1,20 @@
 use crate::{
     acpi::FioxaAcpiHandler,
     bootfs::AMD_PCNET_DRIVER,
-    cpu_localstorage::CPULocalStorageRW,
     driver::{disk::ahci::AHCIDriver, driver::Driver},
     elf,
     fs::FSDRIVES,
     pci::mcfg::get_mcfg,
 };
 
-use alloc::{boxed::Box, format, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, format, sync::Arc};
 
 use kernel_userspace::{
-    ids::ServiceID,
-    service::{make_message, ServiceMessageDesc},
-    syscall::{send_service_message, spawn_thread},
+    message::MessageHandle,
+    object::{KernelObjectType, KernelReference},
+    service::deserialize,
+    socket::{socket_connect, socket_create, SocketHandle},
+    syscall::spawn_thread,
 };
 use spin::Mutex;
 mod express;
@@ -214,7 +215,16 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                 println!("AMD PCnet");
                 let sid = pci_dev_handler(pci_bus, segment, bus, device, function);
 
-                elf::load_elf(AMD_PCNET_DRIVER, &sid.0.to_ne_bytes(), true).unwrap();
+                elf::load_elf(
+                    AMD_PCNET_DRIVER,
+                    &[],
+                    &[
+                        KernelReference::from_id(socket_connect("STDOUT").unwrap()),
+                        sid,
+                    ],
+                    true,
+                )
+                .unwrap();
                 return;
             }
             _ => (),
@@ -265,35 +275,39 @@ fn pci_dev_handler(
     bus: u8,
     device: u8,
     function: u8,
-) -> ServiceID {
+) -> KernelReference {
     let mut device = pci_bus.get_device_raw(segment, bus, device, function);
-    let sid = kernel_userspace::syscall::service_create();
-
+    let (left, right) = socket_create(10, 10);
+    let right = KernelReference::from_id(right);
+    let socket = SocketHandle::from_raw_socket(KernelReference::from_id(left));
     spawn_thread(move || loop {
-        let mut buf = Vec::new();
-        let req = kernel_userspace::syscall::receive_service_message_blocking(sid);
-        let resp = match req.read(&mut buf).unwrap() {
+        let Ok((msg, KernelObjectType::Message)) = socket.blocking_recv() else {
+            println!("Error to blocking recv pci");
+            return;
+        };
+        let msg = MessageHandle::from_kref(msg).read_vec();
+        let Ok(msg) = deserialize(&msg) else {
+            println!("Bad msg to pci dev");
+            return;
+        };
+        match msg {
             kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
-                kernel_userspace::pci::PCIDevCmd::Data(device.read_u32(offset))
+                let resp = device.read_u32(offset);
+                let resp = MessageHandle::create(&resp.to_ne_bytes());
+                if let Err(_) = socket.blocking_send(resp.kref()) {
+                    println!("pci dev eof");
+                    return;
+                }
             },
             kernel_userspace::pci::PCIDevCmd::Write(offset, data) if offset <= 256 => unsafe {
                 device.write_u32(offset, data);
-                kernel_userspace::pci::PCIDevCmd::Ack
             },
-            _ => kernel_userspace::pci::PCIDevCmd::UnknownCommand,
+            _ => {
+                println!("Bad args to pci");
+                return;
+            }
         };
-        send_service_message(
-            &ServiceMessageDesc {
-                service_id: sid,
-                sender_pid: CPULocalStorageRW::get_current_pid(),
-                tracking_number: req.tracking_number,
-                destination: kernel_userspace::service::SendServiceMessageDest::ToProcess(
-                    req.sender_pid,
-                ),
-            },
-            &make_message(&resp, &mut buf),
-        );
     });
 
-    sid
+    right
 }

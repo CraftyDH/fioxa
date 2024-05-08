@@ -1,13 +1,7 @@
-use core::mem::MaybeUninit;
-
 use alloc::{boxed::Box, string::String, vec};
 use conquer_once::spin::Lazy;
 
-use crate::{
-    ids::{ProcessID, ServiceID, ThreadID},
-    message::MessageHandle,
-    service::{ServiceMessage, ServiceMessageDesc, ServiceMessageK, ServiceTrackingNumber},
-};
+use crate::ids::{ProcessID, ThreadID};
 
 pub const SYSCALL_NUMBER: usize = 0x80;
 
@@ -23,24 +17,16 @@ pub const SPAWN_THREAD: usize = 3;
 pub const SLEEP: usize = 4;
 pub const EXIT_THREAD: usize = 5;
 pub const MMAP_PAGE: usize = 6;
-
-pub const SERVICE: usize = 7;
-
-pub const SERVICE_CREATE: usize = 0;
-pub const SERVICE_SUBSCRIBE: usize = 1;
-pub const SERVICE_PUSH: usize = 2;
-pub const SERVICE_FETCH: usize = 3;
-pub const SERVICE_WAIT: usize = 4;
-
-pub const READ_ARGS: usize = 8;
-
-pub const GET_PID: usize = 9;
-pub const UNMMAP_PAGE: usize = 10;
-pub const MMAP_PAGE32: usize = 11;
-
-pub const INTERNAL_KERNEL_WAKER: usize = 12;
-
-pub const MESSAGE: usize = 13;
+pub const READ_ARGS: usize = 7;
+pub const GET_PID: usize = 8;
+pub const UNMMAP_PAGE: usize = 9;
+pub const MMAP_PAGE32: usize = 10;
+pub const MESSAGE: usize = 11;
+pub const EVENT: usize = 12;
+pub const EVENT_QUEUE: usize = 13;
+pub const SOCKET: usize = 14;
+pub const OBJECT: usize = 15;
+pub const PROCESS: usize = 16;
 
 // ! BEWARE, DO NOT USE THIS FROM THE KERNEL
 // As it is static is won't give the correct answer
@@ -78,6 +64,9 @@ macro_rules! make_syscall {
     };
     ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr => $result:ident) => {
         core::arch::asm!("int 0x80", in("rax") $syscall, in("r8") $arg1, in("r9") $arg2, in("r10") $arg3, in("r11") $arg4, lateout("rax") $result, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr => $result:ident) => {
+        core::arch::asm!("int 0x80", in("rax") $syscall, in("r8") $arg1, in("r9") $arg2, in("r10") $arg3, in("r11") $arg4, in("r12") $arg5, lateout("rax") $result, options(nostack))
     };
 
     // 2 results
@@ -164,106 +153,6 @@ pub fn unmmap_page(vmem: usize, mapping_length: usize) {
     unsafe { make_syscall!(UNMMAP_PAGE, vmem, mapping_length) };
 }
 
-pub fn send_service_message(msg: &ServiceMessageDesc, descriptor: &MessageHandle) {
-    let msg = ServiceMessageK {
-        service_id: msg.service_id,
-        sender_pid: msg.sender_pid,
-        tracking_number: msg.tracking_number,
-        destination: msg.destination,
-        descriptor: descriptor.id(),
-    };
-
-    unsafe { make_syscall!(SERVICE, SERVICE_PUSH, &msg) };
-}
-
-pub fn try_receive_service_message_tracking(
-    id: ServiceID,
-    tracking_number: ServiceTrackingNumber,
-) -> Option<ServiceMessage>
-where
-{
-    fetch_service_message(id, tracking_number)
-}
-
-pub fn try_receive_service_message(id: ServiceID) -> Option<ServiceMessage> {
-    try_receive_service_message_tracking(id, ServiceTrackingNumber(u64::MAX))
-}
-
-pub fn receive_service_message_blocking_tracking(
-    id: ServiceID,
-    tracking_number: ServiceTrackingNumber,
-) -> ServiceMessage {
-    fetch_service_message_blocking(id, tracking_number)
-}
-
-pub fn receive_service_message_blocking(id: ServiceID) -> ServiceMessage {
-    receive_service_message_blocking_tracking(id, ServiceTrackingNumber(u64::MAX))
-}
-
-pub fn fetch_service_message(
-    id: ServiceID,
-    tracking_number: ServiceTrackingNumber,
-) -> Option<ServiceMessage> {
-    unsafe {
-        let res: usize;
-        let mut msg = MaybeUninit::uninit();
-        make_syscall!(
-            SERVICE,
-            SERVICE_FETCH,
-            msg.as_mut_ptr(),
-            id.0 as usize,
-            tracking_number.0 as usize
-            => res
-        );
-
-        if res == 0 {
-            None
-        } else {
-            Some(msg.assume_init())
-        }
-    }
-}
-
-pub fn service_wait(id: ServiceID) {
-    unsafe { make_syscall!(SERVICE, SERVICE_WAIT, id.0) }
-}
-
-pub fn fetch_service_message_blocking(
-    id: ServiceID,
-    tracking_number: ServiceTrackingNumber,
-) -> ServiceMessage {
-    loop {
-        if let Some(r) = fetch_service_message(id, tracking_number) {
-            return r;
-        }
-        service_wait(id);
-    }
-}
-
-pub fn send_and_get_response_service_message(
-    msg: &ServiceMessageDesc,
-    descriptor: &MessageHandle,
-) -> ServiceMessage {
-    let id = msg.service_id;
-    let tracking = msg.tracking_number;
-    send_service_message(msg, descriptor);
-    receive_service_message_blocking_tracking(id, tracking)
-}
-
-pub fn service_create() -> ServiceID {
-    unsafe {
-        let sid: usize;
-        make_syscall!(SERVICE, SERVICE_CREATE => sid);
-        ServiceID(sid.try_into().unwrap())
-    }
-}
-
-pub fn service_subscribe(id: ServiceID) {
-    unsafe {
-        make_syscall!(SERVICE, SERVICE_SUBSCRIBE, id.0 as usize);
-    }
-}
-
 pub fn read_args() -> String {
     unsafe {
         let size;
@@ -309,11 +198,5 @@ pub fn get_pid() -> ProcessID {
         let pid: u64;
         make_syscall!(GET_PID => pid);
         ProcessID(pid)
-    }
-}
-
-pub fn internal_kernel_waker_wait(id: usize) {
-    unsafe {
-        make_syscall!(INTERNAL_KERNEL_WAKER, id);
     }
 }

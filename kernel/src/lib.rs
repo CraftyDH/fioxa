@@ -33,6 +33,7 @@ pub mod bootfs;
 pub mod cpu_localstorage;
 pub mod driver;
 pub mod elf;
+pub mod event;
 pub mod fs;
 pub mod gdt;
 pub mod interrupts;
@@ -45,9 +46,8 @@ pub mod net;
 pub mod paging;
 pub mod pci;
 pub mod scheduling;
-pub mod service;
+pub mod socket;
 pub mod syscall;
-pub mod thread_waker;
 pub mod time;
 pub mod uefi;
 

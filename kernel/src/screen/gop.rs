@@ -1,13 +1,20 @@
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use bootloader::gop::GopInfo;
 use conquer_once::spin::OnceCell;
 use core::fmt::Write;
-use kernel_userspace::service::{
-    generate_tracking_number, make_message_new, register_public_service, SendServiceMessageDest,
-    ServiceMessageDesc, Stdout,
+use core::num::NonZeroUsize;
+use hashbrown::HashMap;
+use kernel_userspace::event::{
+    event_queue_create, event_queue_get_event, event_queue_listen, event_queue_pop,
+    event_queue_unlisten, receive_event, EventCallback, EventQueueListenId,
 };
-use kernel_userspace::syscall::{get_pid, send_service_message, service_create, spawn_thread};
+use kernel_userspace::message::MessageHandle;
+use kernel_userspace::object::{KernelObjectType, KernelReference};
+use kernel_userspace::socket::{
+    socket_accept, socket_handle_get_event, socket_listen, socket_listen_get_event, socket_recv,
+    SocketEvents, SocketRecieveResult,
+};
+use kernel_userspace::syscall::spawn_thread;
 
 #[derive(Clone, Copy)]
 pub struct Pos {
@@ -270,39 +277,86 @@ pub fn _print(args: Arguments) {
     }
 }
 
+struct GopMonitorInfo {
+    queued: EventQueueListenId,
+    #[allow(dead_code)]
+    event: KernelReference,
+    sock: KernelReference,
+}
+
 pub fn monitor_stdout_task() {
-    let sid = service_create();
-    let pid = get_pid();
-    register_public_service("STDOUT", sid, &mut Vec::new());
+    let service = socket_listen("STDOUT").unwrap();
+    let service_accept = socket_listen_get_event(service);
 
-    let mut buffer = Vec::new();
-    let resp = make_message_new(&());
+    let mut connections: HashMap<EventCallback, GopMonitorInfo> = HashMap::new();
+    let event_queue = event_queue_create();
+    let event_queue_ev = event_queue_get_event(event_queue);
+
+    let accept_cbk = EventCallback(NonZeroUsize::new(1).unwrap());
+    let mut callbacks = 2;
+    event_queue_listen(
+        event_queue,
+        service_accept,
+        accept_cbk,
+        kernel_userspace::event::KernelEventQueueListenMode::OnLevelHigh,
+    );
+
     loop {
-        let msg = kernel_userspace::syscall::receive_service_message_blocking(sid);
-
-        match msg.read(&mut buffer).unwrap() {
-            Stdout::Str(str) => {
-                print!("{str}");
-            }
-            Stdout::Char(chr) => {
-                print!("{chr}");
+        receive_event(
+            event_queue_ev,
+            kernel_userspace::event::ReceiveMode::LevelHigh,
+        );
+        while let Some(callback) = event_queue_pop(event_queue) {
+            if callback == accept_cbk {
+                let Some(sock) = socket_accept(service) else {
+                    continue;
+                };
+                let event = socket_handle_get_event(sock, SocketEvents::RecvBufferEmpty);
+                let cbk = EventCallback(NonZeroUsize::new(callbacks).unwrap());
+                callbacks += 1;
+                let queued = event_queue_listen(
+                    event_queue,
+                    event,
+                    cbk,
+                    kernel_userspace::event::KernelEventQueueListenMode::OnLevelLow,
+                );
+                connections.insert(
+                    cbk,
+                    GopMonitorInfo {
+                        event: KernelReference::from_id(event),
+                        sock: KernelReference::from_id(sock),
+                        queued,
+                    },
+                );
+            } else {
+                let conn = connections.get(&callback).unwrap();
+                match socket_recv(conn.sock.id()) {
+                    Ok((msg, ty)) => {
+                        if ty == KernelObjectType::Message {
+                            let msg = MessageHandle::from_kref(KernelReference::from_id(msg));
+                            let msg = msg.read_vec();
+                            if let Ok(s) = core::str::from_utf8(&msg) {
+                                print!("{s}")
+                            } else {
+                                println!("GOP STDOUT invalid bytes");
+                            }
+                            continue;
+                        }
+                        println!("GOP STDOUT only accepts messages")
+                    }
+                    Err(SocketRecieveResult::None) => continue,
+                    Err(SocketRecieveResult::EOF) => (),
+                }
+                // did something to exit
+                let conn = connections.remove(&callback).unwrap();
+                event_queue_unlisten(event_queue, conn.queued);
             }
         }
-
-        send_service_message(
-            &ServiceMessageDesc {
-                service_id: sid,
-                sender_pid: pid,
-                tracking_number: generate_tracking_number(),
-                destination: SendServiceMessageDest::ToProcess(msg.sender_pid),
-            },
-            &resp,
-        );
     }
 }
 
 pub fn gop_entry() {
     // TODO: Once isnt mapped for everyone, map it
     spawn_thread(monitor_cursor_task);
-    monitor_stdout_task()
+    monitor_stdout_task();
 }

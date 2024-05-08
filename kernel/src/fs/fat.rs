@@ -451,7 +451,7 @@ impl FileSystemDev for FAT {
             .ok_or(FSServiceError::FileNotFound)?;
 
         let length = match fat_file.entry_type {
-            FATFileType::Folder(_) => todo!(),
+            FATFileType::Folder(_) => return Err(FSServiceError::InvalidRequestForFileType),
             FATFileType::File(f) => f,
         };
 
@@ -510,7 +510,7 @@ impl FileSystemDev for FAT {
         let fat_file = self.get_fat_file(file_id)?;
 
         let length = match fat_file.entry_type {
-            FATFileType::Folder(_) => todo!(),
+            FATFileType::Folder(_) => return Err(FSServiceError::InvalidRequestForFileType),
             FATFileType::File(f) => f,
         };
 

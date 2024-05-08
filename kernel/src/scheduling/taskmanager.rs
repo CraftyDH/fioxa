@@ -2,13 +2,15 @@ use core::ptr::slice_from_raw_parts;
 
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 
-use kernel_userspace::{ids::ProcessID, syscall::thread_bootstraper};
+use kernel_userspace::{ids::ProcessID, process::ProcessExit, syscall::thread_bootstraper};
 use spin::{Lazy, Mutex};
 use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
     assembly::registers::{jump_to_userspace, Registers},
     cpu_localstorage::CPULocalStorageRW,
+    kassert,
+    syscall::SyscallError,
     time::pit::is_switching_tasks,
 };
 
@@ -118,6 +120,17 @@ pub fn kill_bad_task() -> ! {
             crate::scheduling::process::ProcessPrivilige::USER => (),
         }
 
+        let p = thread.process();
+        let mut t = p.threads.lock();
+        t.threads
+            .remove(&thread.handle().tid())
+            .expect("thread should be in thread list");
+        if t.threads.is_empty() {
+            *p.exit_status.lock() = ProcessExit::Exited;
+            p.exit_signal.lock().set_level(true);
+            PROCESSES.lock().remove(&p.pid);
+        }
+
         let thread = get_next_task();
 
         if CPULocalStorageRW::get_current_pid() != thread.process().pid {
@@ -156,6 +169,8 @@ pub unsafe fn exit_thread(stack_frame: &mut InterruptStackFrame, reg: &mut Regis
             .remove(&thread.handle().tid())
             .expect("thread should be in thread list");
         if t.threads.is_empty() {
+            *p.exit_status.lock() = ProcessExit::Exited;
+            p.exit_signal.lock().set_level(true);
             PROCESSES.lock().remove(&p.pid);
         }
     }
@@ -163,7 +178,17 @@ pub unsafe fn exit_thread(stack_frame: &mut InterruptStackFrame, reg: &mut Regis
     load_new_task(stack_frame, reg);
 }
 
-pub fn spawn_process(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
+pub fn spawn_process(
+    _stack_frame: &mut InterruptStackFrame,
+    reg: &mut Registers,
+) -> Result<(), SyscallError> {
+    let curr = unsafe { CPULocalStorageRW::get_current_task() };
+
+    kassert!(
+        curr.process().privilege == super::process::ProcessPrivilige::KERNEL,
+        "Only kernel may use spawn process"
+    );
+
     let nbytes = unsafe { &*slice_from_raw_parts(reg.r9 as *const u8, reg.r10) };
 
     let privilege = if reg.r11 == 1 {
@@ -181,6 +206,7 @@ pub fn spawn_process(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers
     push_task_queue(thread);
     // Return process id as successful result;
     reg.rax = pid.0 as usize;
+    Ok(())
 }
 
 pub unsafe fn spawn_thread(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {

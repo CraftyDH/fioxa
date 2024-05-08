@@ -1,9 +1,11 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
-    elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
-    ids::ProcessID,
-    service::{make_message, register_public_service, SendServiceMessageDest, ServiceMessageDesc},
-    syscall::{get_pid, receive_service_message_blocking, send_service_message, service_create},
+    elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, SpawnElfProcess, PT_LOAD},
+    message::MessageHandle,
+    object::{KernelObjectType, KernelReference},
+    service::{deserialize, make_message_new},
+    socket::{SocketHandle, SocketListenHandle},
+    syscall::spawn_thread,
 };
 use x86_64::{align_down, align_up, instructions::interrupts::without_interrupts};
 
@@ -39,8 +41,9 @@ impl ElfSegmentFlags {
 pub fn load_elf<'a>(
     data: &'a [u8],
     args: &[u8],
+    references: &[KernelReference],
     kernel: bool,
-) -> Result<ProcessID, LoadElfError<'a>> {
+) -> Result<Arc<Process>, LoadElfError<'a>> {
     // Transpose the header as an elf header
     let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
@@ -54,6 +57,22 @@ pub fn load_elf<'a>(
         },
         args,
     );
+
+    // build initial refs
+    without_context_switch(|| unsafe {
+        let mut refs = process.references.lock();
+        let this = CPULocalStorageRW::get_current_task();
+        let mut this_refs = this.process().references.lock();
+        for r in references {
+            refs.add_value(
+                this_refs
+                    .references()
+                    .get(&r.id())
+                    .expect("loader proc should have ref in its map")
+                    .clone(),
+            );
+        }
+    });
 
     let headers = (elf_header.e_phoff..((elf_header.e_phnum * elf_header.e_phentsize).into()))
         .step_by(elf_header.e_phentsize.into())
@@ -108,38 +127,74 @@ pub fn load_elf<'a>(
     drop(memory);
     println!("STARTING PROC...");
     let thread = process.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
-    let pid = process.pid;
     without_context_switch(|| {
-        PROCESSES.lock().insert(pid, process);
+        PROCESSES.lock().insert(process.pid, process.clone());
     });
     push_task_queue(thread);
-    Ok(pid)
+    Ok(process)
 }
 
 pub fn elf_new_process_loader() {
-    let sid = service_create();
-    let pid = get_pid();
-    register_public_service("ELF_LOADER", sid, &mut Vec::new());
-
-    let mut message_buffer = Vec::new();
-    let mut send_buffer = Vec::new();
+    let service = SocketListenHandle::listen("ELF_LOADER").unwrap();
     loop {
-        let query = receive_service_message_blocking(sid);
-
-        let (elf, args, kernel): (&[u8], &[u8], bool) = query.read(&mut message_buffer).unwrap();
-
-        println!("LOADING...");
-
-        let resp = load_elf(elf, args, kernel);
-
-        send_service_message(
-            &ServiceMessageDesc {
-                service_id: sid,
-                sender_pid: pid,
-                tracking_number: query.tracking_number,
-                destination: SendServiceMessageDest::ToProcess(query.sender_pid),
-            },
-            &make_message(&resp, &mut send_buffer),
-        );
+        let job = service.blocking_accept();
+        spawn_thread(|| match elf_loader_handler(job) {
+            Ok(()) => (),
+            Err(e) => println!("Error handling elf load: {e}"),
+        });
     }
+}
+
+fn elf_loader_handler(handle: SocketHandle) -> Result<(), &'static str> {
+    let (descriptor, desc_type) = handle
+        .blocking_recv()
+        .map_err(|_| "Couldn't get descriptor")?;
+
+    if desc_type != KernelObjectType::Message {
+        return Err("Desc type not message");
+    }
+
+    let descriptor = MessageHandle::from_kref(descriptor);
+
+    let descriptor_vec = descriptor.read_vec();
+
+    let spawn: SpawnElfProcess = deserialize(&descriptor_vec).map_err(|_| "error deserializing")?;
+
+    let (elf, elf_type) = handle.blocking_recv().map_err(|_| "couldn't get elf")?;
+
+    if elf_type != KernelObjectType::Message {
+        return Err("Elf type not message");
+    }
+
+    let elf = MessageHandle::from_kref(elf);
+    let elf_data = elf.read_vec();
+
+    let mut refs = Vec::with_capacity(spawn.init_references_count);
+
+    for _ in 0..spawn.init_references_count {
+        let (desc, _) = handle
+            .blocking_recv()
+            .map_err(|_| "couldn't get user descriptor")?;
+        refs.push(desc);
+    }
+
+    let res = load_elf(&elf_data, spawn.args, &refs, false);
+
+    match res {
+        Ok(proc) => {
+            let proc = without_context_switch(|| unsafe {
+                let thread = CPULocalStorageRW::get_current_task();
+                KernelReference::from_id(thread.process().add_value(proc.into()))
+            });
+            handle.blocking_send(&proc).map_err(|_| "sock closed")?;
+        }
+        Err(err) => {
+            let msg = make_message_new(&err);
+            handle
+                .blocking_send(msg.kref())
+                .map_err(|_| "sock closed")?;
+        }
+    }
+
+    Ok(())
 }
