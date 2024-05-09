@@ -17,7 +17,7 @@ use kernel_userspace::{
     object::{KernelObjectType, KernelReferenceID},
     process::ProcessExit,
 };
-use spin::{Lazy, Mutex};
+use spin::{mutex::Mutex, Lazy};
 use x86_64::{
     structures::{
         gdt::SegmentSelector,
@@ -169,7 +169,7 @@ impl Process {
         &self,
         entry_point: *const u64,
         register_state: Registers,
-    ) -> Box<Thread> {
+    ) -> Option<Box<Thread>> {
         let mut threads = self.threads.lock();
         let tid = threads.get_next_id();
 
@@ -198,21 +198,30 @@ impl Process {
         let handle = Arc::new(ThreadHandle {
             process: self.this.upgrade().unwrap(),
             tid,
+            status: Mutex::new(ThreadStatus::Ok),
         });
 
+        let status = self.exit_status.lock();
+
+        if let ProcessExit::Exited = *status {
+            return None;
+        }
+
         threads.threads.insert(tid, handle.clone());
-        Box::new(Thread {
+        Some(Box::new(Thread {
+            cached_event_listener: Arc::new(ThreadEventListener {
+                thread: Arc::downgrade(&handle),
+            }),
             handle,
             state: SavedThreadState {
                 register_state,
                 interrupt_frame,
             },
             linked_next: None,
-            cached_event_listener: Default::default(),
-        })
+        }))
     }
 
-    pub fn new_thread(&self, entry_point: *const u64, arg: usize) -> Box<Thread> {
+    pub fn new_thread(&self, entry_point: *const u64, arg: usize) -> Option<Box<Thread>> {
         let register_state = Registers {
             rdi: arg,
             ..Default::default()
@@ -227,6 +236,27 @@ impl Process {
 
     pub fn get_value(&self, id: KernelReferenceID) -> Option<KernelValue> {
         self.references.lock().references.get(&id).cloned()
+    }
+
+    pub fn kill_threads(&self) {
+        let mut threads = self.threads.lock();
+        threads.threads.retain(|_, thread| {
+            let mut status = thread.status.lock();
+            match core::mem::replace(&mut *status, ThreadStatus::PleaseKill) {
+                // Something will kill it soon
+                ThreadStatus::Ok => true,
+                // already scheduled for kill
+                ThreadStatus::PleaseKill => true,
+                // drop it (we own it)
+                ThreadStatus::Blocked(_) => false,
+            }
+        });
+        if threads.threads.is_empty() {
+            drop(threads);
+            *self.exit_status.lock() = ProcessExit::Exited;
+            self.exit_signal.lock().set_level(true);
+            PROCESSES.lock().remove(&self.pid);
+        }
     }
 }
 
@@ -246,6 +276,17 @@ impl ProcessThreads {
 pub struct ThreadHandle {
     process: Arc<Process>,
     tid: ThreadID,
+    pub status: Mutex<ThreadStatus>,
+}
+
+/// Only valid while running
+#[derive(Debug, Default)]
+pub enum ThreadStatus {
+    #[default]
+    Ok,
+    /// The thread should kill itself
+    PleaseKill,
+    Blocked(Box<Thread>),
 }
 
 impl ThreadHandle {
@@ -408,17 +449,14 @@ impl Into<KernelValue> for Arc<Process> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ThreadEventListener {
-    waiting: Mutex<Option<Box<Thread>>>,
+    thread: Weak<ThreadHandle>,
 }
 
 impl Thread {
-    pub fn wait_on(self: Box<Self>, ev: &mut KEvent, direction: EdgeTrigger) {
+    pub fn wait_on(&self, ev: &mut KEvent, direction: EdgeTrigger) {
         let cached = self.cached_event_listener.clone();
-        let mut listener = cached.waiting.lock();
-        *listener = Some(self);
-        drop(listener);
         ev.listeners().push(EdgeListener::new(
             cached,
             EventCallback(NonZeroUsize::new(1).unwrap()),
@@ -427,18 +465,25 @@ impl Thread {
         ));
     }
 }
+
 impl KEventListener for ThreadEventListener {
     fn trigger_edge(&self, _: EventCallback, direction: bool) {
-        let mut this = self
-            .waiting
-            .lock()
-            .take()
-            .expect("thread should've been waiting, or bad notification");
-        this.state.register_state.rax = match direction {
-            true => 1,
-            false => 0,
+        let Some(handle) = self.thread.upgrade() else {
+            return;
         };
-        push_task_queue(this);
+        let mut status = handle.status.lock();
+        match core::mem::take(&mut *status) {
+            // probably got killed
+            ThreadStatus::Ok | ThreadStatus::PleaseKill => (),
+            ThreadStatus::Blocked(mut this) => {
+                drop(status);
+                this.state.register_state.rax = match direction {
+                    true => 1,
+                    false => 0,
+                };
+                push_task_queue(this);
+            }
+        }
     }
 }
 

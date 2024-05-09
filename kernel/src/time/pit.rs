@@ -14,7 +14,10 @@ use x86_64::{
 use crate::{
     assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
-    scheduling::taskmanager::{self, append_task_queue},
+    scheduling::{
+        process::ThreadStatus,
+        taskmanager::{self, push_task_queue},
+    },
     wrap_function_registers,
 };
 
@@ -114,10 +117,18 @@ unsafe extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Regi
         // If we have a sleep target, wake up the job
         if uptime >= SLEEP_TARGET.load(Ordering::Relaxed) {
             // if over the target, try waking up processes
-            SLEPT_PROCESSES.try_lock().map(|mut procs| {
+            if let Some(mut procs) = SLEPT_PROCESSES.try_lock() {
                 procs.retain(|&req_time, el| {
                     if req_time <= uptime {
-                        append_task_queue(el);
+                        while let Some(e) = el.pop() {
+                            if let Some(handle) = e.upgrade() {
+                                if let ThreadStatus::Blocked(thread) =
+                                    core::mem::take(&mut *handle.status.lock())
+                                {
+                                    push_task_queue(thread);
+                                }
+                            }
+                        }
                         false
                     } else {
                         true
@@ -127,7 +138,7 @@ unsafe extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Regi
                     procs.first_key_value().map(|(&k, _)| k).unwrap_or(u64::MAX),
                     core::sync::atomic::Ordering::Relaxed,
                 )
-            });
+            }
         }
     }
 

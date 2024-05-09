@@ -191,11 +191,9 @@ impl Mouse {
             y_mov: y as i8,
         };
 
-        let msg = make_message(
+        make_message(
             &InputServiceMessage::MouseEvent(packet),
             &mut self.send_buffer,
-        );
-
-        msg
+        )
     }
 }

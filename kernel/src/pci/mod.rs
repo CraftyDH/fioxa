@@ -10,6 +10,7 @@ use crate::{
 use alloc::{boxed::Box, format, sync::Arc};
 
 use kernel_userspace::{
+    backoff_sleep,
     message::MessageHandle,
     object::{KernelObjectType, KernelReference},
     service::deserialize,
@@ -219,7 +220,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                     AMD_PCNET_DRIVER,
                     &[],
                     &[
-                        KernelReference::from_id(socket_connect("STDOUT").unwrap()),
+                        KernelReference::from_id(backoff_sleep(|| socket_connect("STDOUT"))),
                         sid,
                     ],
                     true,
@@ -294,7 +295,7 @@ fn pci_dev_handler(
             kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
                 let resp = device.read_u32(offset);
                 let resp = MessageHandle::create(&resp.to_ne_bytes());
-                if let Err(_) = socket.blocking_send(resp.kref()) {
+                if socket.blocking_send(resp.kref()).is_err() {
                     println!("pci dev eof");
                     return;
                 }

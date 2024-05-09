@@ -49,7 +49,7 @@ pub extern "C" fn main() {
 pub fn lookup_ip(ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
     let networking = SocketHandle::connect("NETWORKING").unwrap();
     let msg = make_message_new(&kernel_userspace::net::Networking::ArpRequest(ip));
-    networking.blocking_send(msg.kref());
+    networking.blocking_send(msg.kref()).unwrap();
     let (resp, ty) = networking.blocking_recv().unwrap();
     assert_eq!(ty, KernelObjectType::Message);
     let msg = MessageHandle::from_kref(resp);

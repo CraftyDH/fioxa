@@ -17,12 +17,13 @@ use kernel_userspace::{
     socket::{MakeSocket, SocketEvents, SocketOperation, SocketRecv},
     syscall::SYSCALL_NUMBER,
 };
+use spin::MutexGuard;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
     assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
-    event::{EdgeTrigger, KEventQueue},
+    event::{EdgeTrigger, KEvent, KEventQueue},
     gdt::TASK_SWITCH_INDEX,
     message::KMessage,
     paging::{
@@ -30,8 +31,8 @@ use crate::{
         MemoryMappingFlags,
     },
     scheduling::{
-        process::KernelValue,
-        taskmanager::{self, kill_bad_task, load_new_task},
+        process::{KernelValue, ThreadStatus},
+        taskmanager::{self, exit_thread_inner, kill_bad_task, load_new_task},
     },
     socket::{create_sockets, KSocketListener, PUBLIC_SOCKETS},
     time::{pit, SLEEP_TARGET, SLEPT_PROCESSES},
@@ -147,7 +148,7 @@ unsafe extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs
         YIELD_NOW => Ok(taskmanager::yield_now(stack_frame, regs)),
         SPAWN_PROCESS => taskmanager::spawn_process(stack_frame, regs),
         SPAWN_THREAD => Ok(taskmanager::spawn_thread(stack_frame, regs)),
-        SLEEP => Ok(sleep_handler(stack_frame, regs)),
+        SLEEP => sleep_handler(stack_frame, regs),
         EXIT_THREAD => Ok(taskmanager::exit_thread(stack_frame, regs)),
         MMAP_PAGE => mmap_page_handler(regs),
         MMAP_PAGE32 => mmap_page32_handler(regs),
@@ -273,64 +274,53 @@ unsafe fn sys_receive_event(
     let event = kunwrap!(thread.process().references.lock().references().get(&event)).clone();
     let event = kenum_cast!(event, KernelValue::Event);
 
-    let mut ev = event.lock();
+    let ev = event.lock();
+
+    let mut save_state = |mut event: MutexGuard<KEvent>, edge: EdgeTrigger| {
+        let mut thread = CPULocalStorageRW::take_current_task();
+        let handle = thread.handle().clone();
+        let mut status = handle.status.lock();
+        if let ThreadStatus::PleaseKill = *status {
+            drop(event);
+            drop(status);
+            exit_thread_inner(thread);
+        } else {
+            thread.save_state(stack_frame, regs);
+            thread.wait_on(&mut event, edge);
+            *status = ThreadStatus::Blocked(thread);
+            drop(event);
+            drop(status);
+        }
+
+        taskmanager::load_new_task(stack_frame, regs);
+        Ok(())
+    };
 
     match mode {
-        ReceiveMode::GetLevel => regs.rax = ev.level() as usize,
+        ReceiveMode::GetLevel => {
+            regs.rax = ev.level() as usize;
+            Ok(())
+        }
         ReceiveMode::LevelHigh => {
             if ev.level() {
                 regs.rax = 1;
+                Ok(())
             } else {
-                // we cannot have two pointers to thread
-                let _ = thread;
-                let mut thread = CPULocalStorageRW::take_current_task();
-                thread.save_state(stack_frame, regs);
-                thread.wait_on(&mut ev, EdgeTrigger::RISING_EDGE);
-                taskmanager::load_new_task(stack_frame, regs)
+                save_state(ev, EdgeTrigger::RISING_EDGE)
             }
         }
         ReceiveMode::LevelLow => {
             if !ev.level() {
                 regs.rax = 0;
+                Ok(())
             } else {
-                // we cannot have two pointers to thread
-                let _ = thread;
-                let mut thread = CPULocalStorageRW::take_current_task();
-                thread.save_state(stack_frame, regs);
-                thread.wait_on(&mut ev, EdgeTrigger::FALLING_EDGE);
-                taskmanager::load_new_task(stack_frame, regs)
+                save_state(ev, EdgeTrigger::FALLING_EDGE)
             }
         }
-        ReceiveMode::Edge => {
-            // we cannot have two pointers to thread
-            let _ = thread;
-            let mut thread = CPULocalStorageRW::take_current_task();
-            thread.save_state(stack_frame, regs);
-            thread.wait_on(
-                &mut ev,
-                EdgeTrigger::RISING_EDGE | EdgeTrigger::FALLING_EDGE,
-            );
-            taskmanager::load_new_task(stack_frame, regs)
-        }
-        ReceiveMode::EdgeHigh => {
-            // we cannot have two pointers to thread
-            let _ = thread;
-            let mut thread = CPULocalStorageRW::take_current_task();
-            thread.save_state(stack_frame, regs);
-            thread.wait_on(&mut ev, EdgeTrigger::RISING_EDGE);
-            taskmanager::load_new_task(stack_frame, regs)
-        }
-        ReceiveMode::EdgeLow => {
-            // we cannot have two pointers to thread
-            let _ = thread;
-            let mut thread = CPULocalStorageRW::take_current_task();
-            thread.save_state(stack_frame, regs);
-            thread.save_state(stack_frame, regs);
-            thread.wait_on(&mut ev, EdgeTrigger::FALLING_EDGE);
-            taskmanager::load_new_task(stack_frame, regs)
-        }
+        ReceiveMode::Edge => save_state(ev, EdgeTrigger::RISING_EDGE | EdgeTrigger::FALLING_EDGE),
+        ReceiveMode::EdgeHigh => save_state(ev, EdgeTrigger::RISING_EDGE),
+        ReceiveMode::EdgeLow => save_state(ev, EdgeTrigger::FALLING_EDGE),
     }
-    Ok(())
 }
 
 unsafe fn sys_event_queue(regs: &mut Registers) -> Result<(), SyscallError> {
@@ -538,18 +528,37 @@ unsafe fn sys_process_handler(regs: &mut Registers) -> Result<(), SyscallError> 
                 .0
                 .get();
         }
+        KernelProcessOperation::Kill => {
+            proc.kill_threads();
+        }
     }
     Ok(())
 }
 
-unsafe fn sleep_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
+unsafe fn sleep_handler(
+    stack_frame: &mut InterruptStackFrame,
+    regs: &mut Registers,
+) -> Result<(), SyscallError> {
     let time = pit::get_uptime() + regs.r8 as u64;
     let mut thread = CPULocalStorageRW::take_current_task();
     thread.save_state(stack_frame, regs);
 
-    // println!("Sleep {} {}", thread.process.pid.0, thread.tid.0);
+    let handle = thread.handle().clone();
+    let mut status = handle.status.lock();
+    if let ThreadStatus::PleaseKill = *status {
+        drop(status);
+        exit_thread_inner(thread);
+        load_new_task(stack_frame, regs);
+        return Ok(());
+    }
+    *status = ThreadStatus::Blocked(thread);
+    drop(status);
 
-    SLEPT_PROCESSES.lock().entry(time).or_default().push(thread);
+    SLEPT_PROCESSES
+        .lock()
+        .entry(time)
+        .or_default()
+        .push(Arc::downgrade(&handle));
 
     // Ensure that the sleep waker is called if this was a shorter timeout
     let _ = SLEEP_TARGET.fetch_update(
@@ -559,6 +568,7 @@ unsafe fn sleep_handler(stack_frame: &mut InterruptStackFrame, regs: &mut Regist
     );
 
     load_new_task(stack_frame, regs);
+    Ok(())
 }
 
 unsafe fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
@@ -599,7 +609,7 @@ unsafe fn message_handler(regs: &mut Registers) -> Result<(), SyscallError> {
                 loc.len()
             );
 
-            loc.copy_from_slice(&data);
+            loc.copy_from_slice(data);
         },
     }
 

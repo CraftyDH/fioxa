@@ -61,10 +61,25 @@ pub unsafe extern "C" fn nop_task() -> ! {
 
 fn get_next_task() -> Box<Thread> {
     // get the next available task or run core mgmt
-    TASK_QUEUE
-        .lock()
-        .pop()
-        .unwrap_or_else(|| CPULocalStorageRW::take_coremgmt_task())
+    loop {
+        // we cannot hold task queue for long,
+        // because exit_thread might trigger a notification that places a task into the queue
+        let Some(task) = TASK_QUEUE.lock().pop() else {
+            return CPULocalStorageRW::take_coremgmt_task();
+        };
+        let status = core::mem::take(&mut *task.handle().status.lock());
+        match status {
+            super::process::ThreadStatus::Ok => {
+                return task;
+            }
+            super::process::ThreadStatus::PleaseKill => {
+                exit_thread_inner(task);
+            }
+            super::process::ThreadStatus::Blocked(_) => {
+                panic!("a thread in the queue should not be blocked")
+            }
+        };
+    }
 }
 
 unsafe fn save_current_task(stack_frame: &InterruptStackFrame, reg: &Registers) {
@@ -126,6 +141,7 @@ pub fn kill_bad_task() -> ! {
             .remove(&thread.handle().tid())
             .expect("thread should be in thread list");
         if t.threads.is_empty() {
+            drop(t);
             *p.exit_status.lock() = ProcessExit::Exited;
             p.exit_signal.lock().set_level(true);
             PROCESSES.lock().remove(&p.pid);
@@ -161,21 +177,23 @@ pub unsafe fn switch_task(stack_frame: &mut InterruptStackFrame, reg: &mut Regis
 }
 
 pub unsafe fn exit_thread(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-    {
-        let thread = CPULocalStorageRW::take_current_task();
-        let p = thread.process();
-        let mut t = p.threads.lock();
-        t.threads
-            .remove(&thread.handle().tid())
-            .expect("thread should be in thread list");
-        if t.threads.is_empty() {
-            *p.exit_status.lock() = ProcessExit::Exited;
-            p.exit_signal.lock().set_level(true);
-            PROCESSES.lock().remove(&p.pid);
-        }
-    }
-
+    let thread = CPULocalStorageRW::take_current_task();
+    exit_thread_inner(thread);
     load_new_task(stack_frame, reg);
+}
+
+pub fn exit_thread_inner(thread: Box<Thread>) {
+    let p = thread.process();
+    let mut t = p.threads.lock();
+    t.threads
+        .remove(&thread.handle().tid())
+        .expect("thread should be in thread list");
+    if t.threads.is_empty() {
+        drop(t);
+        *p.exit_status.lock() = ProcessExit::Exited;
+        p.exit_signal.lock().set_level(true);
+        PROCESSES.lock().remove(&p.pid);
+    }
 }
 
 pub fn spawn_process(
@@ -203,20 +221,27 @@ pub fn spawn_process(
     // TODO: Validate r8 is a valid entrypoint
     let thread = process.new_thread(thread_bootstraper as *const u64, reg.r8);
     PROCESSES.lock().insert(process.pid, process);
-    push_task_queue(thread);
+    push_task_queue(thread.expect("new process shouldn't have died"));
+
     // Return process id as successful result;
     reg.rax = pid.0 as usize;
     Ok(())
 }
 
-pub unsafe fn spawn_thread(_stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
+pub unsafe fn spawn_thread(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
     let thread = CPULocalStorageRW::get_current_task();
 
     // TODO: Validate r8 is a valid entrypoint
     let thread = thread.process().new_thread(reg.r8 as *const u64, reg.r9);
-    // Return task id as successful result;
-    reg.rax = thread.handle().tid().0 as usize;
-    push_task_queue(thread);
+    match thread {
+        Some(thread) => {
+            // Return process id as successful result;
+            reg.rax = thread.handle().tid().0 as usize;
+            push_task_queue(thread)
+        }
+        // process has been killed
+        None => unsafe { exit_thread(stack_frame, reg) },
+    }
 }
 
 pub unsafe fn yield_now(stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {

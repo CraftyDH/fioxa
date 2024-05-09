@@ -141,7 +141,7 @@ pub fn userspace_networking_main() {
                 };
 
                 let resp = make_message_new(&resp);
-                if let Err(_) = query.blocking_send(resp.kref()) {
+                if query.blocking_send(resp.kref()).is_err() {
                     println!("usernetworking eof");
                     continue;
                 }

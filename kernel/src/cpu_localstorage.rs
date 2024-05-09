@@ -202,7 +202,8 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
         .lock()
         .get(&ProcessID(0))
         .unwrap()
-        .new_thread_direct(nop_task as *const u64, Registers::default());
+        .new_thread_direct(nop_task as *const u64, Registers::default())
+        .expect("init process shouldn't have died");
 
     ls.core_mgmt_task_ptr = 0;
     ls.current_task_ptr = Box::into_raw(task) as u64;

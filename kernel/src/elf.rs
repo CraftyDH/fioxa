@@ -130,7 +130,7 @@ pub fn load_elf<'a>(
     without_context_switch(|| {
         PROCESSES.lock().insert(process.pid, process.clone());
     });
-    push_task_queue(thread);
+    push_task_queue(thread.expect("new process shouldn't have died"));
     Ok(process)
 }
 

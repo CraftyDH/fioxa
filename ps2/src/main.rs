@@ -102,29 +102,23 @@ pub extern "C" fn main() {
         receive_event(event_queue_event, ReceiveMode::LevelHigh);
         while let Some(event) = event_queue_pop(event_queue) {
             if event == kb_cbk {
-                match ps2_controller.keyboard.check_interrupts() {
-                    Some(ev) => {
-                        let message = make_message_new(
-                            &kernel_userspace::input::InputServiceMessage::KeyboardEvent(ev),
-                        );
-                        // ignore if pipe is full, just drop
-                        kb_listeners.retain(|l| match socket_send(l.id(), message.kref().id()) {
-                            Err(kernel_userspace::socket::SocketSendResult::Closed) => false,
-                            _ => true,
-                        });
-                    }
-                    None => (),
+                if let Some(ev) = ps2_controller.keyboard.check_interrupts() {
+                    let message = make_message_new(
+                        &kernel_userspace::input::InputServiceMessage::KeyboardEvent(ev),
+                    );
+                    // ignore if pipe is full, just drop
+                    kb_listeners.retain(|l| match socket_send(l.id(), message.kref().id()) {
+                        Err(kernel_userspace::socket::SocketSendResult::Closed) => false,
+                        _ => true,
+                    });
                 }
             } else if event == ms_cbk {
-                match ps2_controller.mouse.check_interrupts() {
-                    Some(message) => {
-                        // ignore if pipe is full, just drop
-                        ms_listeners.retain(|l| match socket_send(l.id(), message.kref().id()) {
-                            Err(kernel_userspace::socket::SocketSendResult::Closed) => false,
-                            _ => true,
-                        });
-                    }
-                    None => (),
+                if let Some(message) = ps2_controller.mouse.check_interrupts() {
+                    // ignore if pipe is full, just drop
+                    ms_listeners.retain(|l| match socket_send(l.id(), message.kref().id()) {
+                        Err(kernel_userspace::socket::SocketSendResult::Closed) => false,
+                        _ => true,
+                    });
                 }
             } else if event == kb_srv_cbk {
                 if let Some(sock) = socket_accept(kb_service) {

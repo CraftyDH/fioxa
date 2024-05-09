@@ -133,9 +133,9 @@ impl KSocketHandle {
 
 impl Drop for KSocketHandle {
     fn drop(&mut self) {
-        self.other_side.upgrade().map(|o| {
+        if let Some(o) = self.other_side.upgrade() {
             o.closed_event.lock().set_level(true);
             o.recv_queue_empty_event.lock().set_level(false);
-        });
+        }
     }
 }

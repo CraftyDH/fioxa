@@ -27,7 +27,7 @@ pub extern "C" fn main() {
     let msg = make_message_new(&());
 
     for _ in 0..count {
-        sid.blocking_send(msg.kref());
+        sid.blocking_send(msg.kref()).unwrap();
     }
 
     exit();

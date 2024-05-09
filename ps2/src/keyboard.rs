@@ -64,8 +64,7 @@ impl Keyboard {
     pub fn check_interrupts(&mut self) -> Option<KeyboardEvent> {
         let scancode: u8 = unsafe { self.command.data_port.read() };
 
-        let res = self.decoder.add_byte(scancode);
-        res
+        self.decoder.add_byte(scancode)
     }
 
     // fn update_leds(&mut self) {

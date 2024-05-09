@@ -1,11 +1,11 @@
 use core::sync::atomic::AtomicU64;
 
 use acpi::AcpiTables;
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, sync::Weak, vec::Vec};
 use conquer_once::spin::Lazy;
 use spin::Mutex;
 
-use crate::{acpi::FioxaAcpiHandler, scheduling::process::LinkedThreadList};
+use crate::{acpi::FioxaAcpiHandler, scheduling::process::ThreadHandle};
 
 use self::pit::ProgrammableIntervalTimer;
 
@@ -41,5 +41,5 @@ pub fn uptime() -> u64 {
 }
 
 pub static SLEEP_TARGET: AtomicU64 = AtomicU64::new(u64::MAX);
-pub static SLEPT_PROCESSES: Lazy<Mutex<BTreeMap<u64, LinkedThreadList>>> =
+pub static SLEPT_PROCESSES: Lazy<Mutex<BTreeMap<u64, Vec<Weak<ThreadHandle>>>>> =
     Lazy::new(|| Mutex::new(BTreeMap::new()));

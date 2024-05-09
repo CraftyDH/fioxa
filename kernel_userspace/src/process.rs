@@ -11,6 +11,7 @@ use crate::{
 pub enum KernelProcessOperation {
     GetExitCode,
     GetExitEvent,
+    Kill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
@@ -40,6 +41,16 @@ pub fn process_get_exit_event(handle: KernelReferenceID) -> KernelReferenceID {
             handle.0.get() => id
         );
         KernelReferenceID::from_usize(id).unwrap()
+    }
+}
+
+pub fn process_kill(handle: KernelReferenceID) {
+    unsafe {
+        make_syscall!(
+            crate::syscall::PROCESS,
+            KernelProcessOperation::Kill as usize,
+            handle.0.get()
+        );
     }
 }
 
@@ -83,5 +94,9 @@ impl ProcessHandle {
                 crate::event::ReceiveMode::LevelHigh,
             );
         }
+    }
+
+    pub fn kill(&self) {
+        process_kill(self.handle.id())
     }
 }
