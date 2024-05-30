@@ -226,7 +226,7 @@ impl DiskDevice for Port {
             yield_now();
         }
         if spin == 0 {
-            println!("Port is hung");
+            error!("Port is hung");
             return None;
         }
 
@@ -237,13 +237,13 @@ impl DiskDevice for Port {
                 break;
             }
             if self.hba_port.interrupt_status.read() & (1 << 30) > 0 {
-                println!("Err");
+                debug!("Err");
                 return None;
                 // Read error
             }
         }
         if self.hba_port.interrupt_status.read() & (1 << 30) > 0 {
-            println!("Err");
+            debug!("Err");
             return None; // Read error
         }
 
@@ -305,7 +305,7 @@ impl DiskDevice for Port {
                 break;
             }
             if self.hba_port.interrupt_status.read() & (1 << 30) > 0 {
-                println!("Error reading");
+                debug!("Error reading");
                 break;
             }
             i -= 1;

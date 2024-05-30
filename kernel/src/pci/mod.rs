@@ -7,7 +7,7 @@ use crate::{
     pci::mcfg::get_mcfg,
 };
 
-use alloc::{boxed::Box, format, sync::Arc};
+use alloc::{boxed::Box, sync::Arc};
 
 use kernel_userspace::{
     backoff_sleep,
@@ -141,7 +141,7 @@ pub fn enumerate_pci(acpi_tables: acpi::AcpiTables<FioxaAcpiHandler>) {
     // Enumerate PCI using mcfg;
     match &mcfg {
         Ok(mcfg) => {
-            println!("Enumerating PCI using MCFG...");
+            debug!("Enumerating PCI using MCFG...");
             let mut pci_bus = express::ExpressPCI::new(mcfg);
             for entry in mcfg.entries() {
                 for bus_number in entry.bus_number_start..entry.bus_number_end {
@@ -150,11 +150,11 @@ pub fn enumerate_pci(acpi_tables: acpi::AcpiTables<FioxaAcpiHandler>) {
             }
             return;
         }
-        Err(e) => println!("Error with getting MCFG table: {:?}", e),
+        Err(e) => error!("Error with getting MCFG table: {:?}", e),
     }
     // Enumerate using legacy port based
     {
-        println!("Enumerating PCI using legacy ports...");
+        debug!("Enumerating PCI using legacy ports...");
         let mut pci_bus = legacy::LegacyPCI {};
         for bus_number in 0..255 {
             enumerate_bus(&mut pci_bus, 0, bus_number)
@@ -198,7 +198,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
         "Unknown"
     };
 
-    println!(
+    info!(
         "Class: {}, Vendor: {}, Device: {}",
         cls,
         pci_descriptors::get_vendor_name(pci_header.get_vendor_id())
@@ -213,7 +213,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
         0x1022 => match pci_header.get_device_id() {
             // AM79c973
             0x2000 => {
-                println!("AMD PCnet");
+                debug!("AMD PCnet");
                 let sid = pci_dev_handler(pci_bus, segment, bus, device, function);
 
                 elf::load_elf(
@@ -242,11 +242,11 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                 match pci_header.get_prog_if() {
                     // AHCI 1.0 device
                     0x01 => {
-                        println!("AHCI");
+                        debug!("AHCI");
                         match AHCIDriver::new(pci_header) {
                             Some(d) => FSDRIVES.lock().add_device(Box::new(d)),
                             None => {
-                                println!("AHCI Driver failed to init.");
+                                error!("AHCI Driver failed to init.");
                             }
                         };
                     }
@@ -283,12 +283,11 @@ fn pci_dev_handler(
     let socket = SocketHandle::from_raw_socket(KernelReference::from_id(left));
     spawn_thread(move || loop {
         let Ok((msg, KernelObjectType::Message)) = socket.blocking_recv() else {
-            println!("Error to blocking recv pci");
             return;
         };
         let msg = MessageHandle::from_kref(msg).read_vec();
         let Ok(msg) = deserialize(&msg) else {
-            println!("Bad msg to pci dev");
+            error!("Bad msg to pci dev");
             return;
         };
         match msg {
@@ -296,7 +295,7 @@ fn pci_dev_handler(
                 let resp = device.read_u32(offset);
                 let resp = MessageHandle::create(&resp.to_ne_bytes());
                 if socket.blocking_send(resp.kref()).is_err() {
-                    println!("pci dev eof");
+                    error!("pci dev eof");
                     return;
                 }
             },
@@ -304,7 +303,7 @@ fn pci_dev_handler(
                 device.write_u32(offset, data);
             },
             _ => {
-                println!("Bad args to pci");
+                error!("Bad args to pci");
                 return;
             }
         };

@@ -29,7 +29,7 @@ pub fn enable_localapic() {
     // Spurious vector
     val |= 0xFF;
 
-    println!("LAPIC ID {:?}", unsafe {
+    trace!("LAPIC ID {:?}", unsafe {
         *((LAPIC_ADDR + 0x20) as *const u32)
     });
 

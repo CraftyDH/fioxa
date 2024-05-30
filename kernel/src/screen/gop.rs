@@ -236,13 +236,13 @@ impl core::fmt::Write for Writer<'_> {
 pub static WRITER: OnceCell<Mutex<Writer>> = OnceCell::uninit();
 
 #[macro_export]
-macro_rules! println {
+macro_rules! early_println {
     () => (print!("\n"));
-    ($($arg:tt)*) => (print!("{}\n", format_args!($($arg)*)));
+    ($($arg:tt)*) => (early_print!("{}\n", format_args!($($arg)*)));
 }
 
 #[macro_export]
-macro_rules! print {
+macro_rules! early_print {
     ($($arg:tt)*) => ($crate::screen::gop::_print(format_args!($($arg)*)));
 }
 
@@ -336,13 +336,13 @@ pub fn monitor_stdout_task() {
                             let msg = MessageHandle::from_kref(KernelReference::from_id(msg));
                             let msg = msg.read_vec();
                             if let Ok(s) = core::str::from_utf8(&msg) {
-                                print!("{s}")
+                                _print(format_args!("{s}"))
                             } else {
-                                println!("GOP STDOUT invalid bytes");
+                                warn!("GOP STDOUT invalid bytes");
                             }
                             continue;
                         }
-                        println!("GOP STDOUT only accepts messages")
+                        error!("GOP STDOUT only accepts messages")
                     }
                     Err(SocketRecieveResult::None) => continue,
                     Err(SocketRecieveResult::EOF) => (),

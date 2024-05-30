@@ -43,16 +43,13 @@ pub fn read_partitions(drive: Arc<Mutex<dyn DiskDevice>>) {
 
     for part in &mbr.partitions {
         if part.start_lba > 0 || part.bootable > 0 {
-            print!(
-                "Partition id {}: start:{} size:{}mb",
+            info!(
+                "Partition id {}: start:{} size:{}mb, bootable:{}",
                 part.partition_id,
                 { part.start_lba },
-                part.length / 1024 * 512 / 1024
+                part.length / 1024 * 512 / 1024,
+                { part.bootable } == 0x80
             );
-            if { part.bootable } == 0x80 {
-                print!(" bootable!")
-            }
-            print!("\n");
             let fs_disk =
                 FSPartitionDisk::new(drive.clone(), part.start_lba as usize, part.length as usize);
             read_bios_block(fs_disk);

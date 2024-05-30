@@ -52,7 +52,7 @@ pub fn monitor_cursor_task() {
             match socket_recv(mouse_id.id()) {
                 Ok((msg, ty)) => {
                     if ty != KernelObjectType::Message {
-                        println!("Cursor task got non message");
+                        error!("Cursor task got non message");
                         continue 'outer;
                     }
                     let msg = MessageHandle::from_kref(KernelReference::from_id(msg));
@@ -62,7 +62,7 @@ pub fn monitor_cursor_task() {
                             print_cursor(&mut mouse_pos, packet)
                         }
                         _ => {
-                            println!("Mouse got non mouse packet");
+                            error!("Mouse got non mouse packet");
                             continue 'outer;
                         }
                     }

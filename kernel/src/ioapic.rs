@@ -23,7 +23,7 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
     let (_, _, io_apics, apic_ints) = madt.find_ioapic();
 
     for apic in &io_apics {
-        println!("APIC: {:?}", apic);
+        debug!("APIC: {:?}", apic);
         mapper
             .identity_map_memory(
                 Page::<Size4KB>::new(apic.apic_addr.into()),
@@ -38,7 +38,7 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
     IOAPIC.try_init_once(|| *apic).unwrap();
 
     for i in apic_ints {
-        println!("Int override: {:?}", i);
+        debug!("Int override: {:?}", i);
     }
 
     // Timer is usually overridden to irq 2
@@ -186,7 +186,7 @@ impl Madt {
                     let ptr2 = unsafe { *start_ptr.add(2) };
                     let ptr3 = unsafe { *start_ptr.add(3) };
                     let ptr4 = unsafe { *start_ptr.add(4) };
-                    println!("Core: {ptr2} {ptr3}");
+                    trace!("Core: {ptr2} {ptr3}");
                     if ptr4 & 1 > 0 && ptr3 <= 8 {
                         lapic_ids.push(ptr3)
                     }
@@ -196,7 +196,7 @@ impl Madt {
                 }
                 2 => {
                     let x = unsafe { *(start_ptr.add(2) as *const ApicInterruptOveride) };
-                    println!("X{:?}", x);
+                    trace!("X{:?}", x);
                     apic_overide.push(x);
                 }
                 5 => {

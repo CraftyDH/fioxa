@@ -8,6 +8,9 @@ extern crate alloc;
 #[macro_use]
 extern crate kernel;
 
+#[macro_use]
+extern crate log;
+
 use core::ffi::c_void;
 
 use ::acpi::{AcpiError, RsdpError};
@@ -22,6 +25,7 @@ use kernel::interrupts::{self, check_interrupts};
 
 use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::{enable_localapic, map_lapic};
+use kernel::logging::KERNEL_LOGGER;
 use kernel::memory::MemoryMapIter;
 use kernel::net::ethernet::userspace_networking_main;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map};
@@ -84,7 +88,10 @@ pub fn main_entry(info: *const BootInfo) -> ! {
         mmap
     };
 
-    log!("Welcome to Fioxa...");
+    log::set_logger(&KERNEL_LOGGER).unwrap();
+    log::set_max_level(log::LevelFilter::Debug);
+
+    early_println!("Welcome to Fioxa...");
 
     // remap and jump kernel to correct location
     unsafe {
@@ -120,7 +127,7 @@ pub fn main_entry(info: *const BootInfo) -> ! {
                 boot_info,
             );
 
-            println!("Remapping to higher half");
+            debug!("Remapping to higher half");
             map.shift_table_to_offset();
             set_mem_offset(MemoryLoc::PhysMapOffset as u64);
             map.into_page().get_address()
@@ -149,7 +156,7 @@ fn main(info: *const BootInfo) {
 
     let init_process = PROCESSES.lock().get(&ProcessID(0)).unwrap().clone();
 
-    log!("Initializing BSP for multicore...");
+    info!("Initializing BSP for multicore...");
     unsafe { init_bsp_task() };
 
     unsafe {
@@ -161,15 +168,15 @@ fn main(info: *const BootInfo) {
             .unwrap()
             .ignore();
     }
-    log!("Getting UEFI runtime table");
+    info!("Getting UEFI runtime table");
     let runtime_table =
         unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
             .unwrap();
 
-    log!("Loading UEFI runtime table");
+    info!("Loading UEFI runtime table");
     let config_tables = runtime_table.config_table();
 
-    println!("Config table: ptr{:?}", config_tables.as_ptr());
+    info!("Config table: ptr{:?}", config_tables.as_ptr());
 
     let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
         .ok_or(AcpiError::Rsdp(RsdpError::NoValidRsdp))
@@ -204,13 +211,13 @@ fn main(info: *const BootInfo) {
     unsafe { core::arch::asm!("cli") };
     start_switching_tasks();
 
-    println!("Start multi");
+    info!("Start multi");
 
     unsafe { core_start_multitasking() };
 }
 
 fn after_boot() {
-    println!("After boot");
+    info!("After boot");
 
     // TODO: Reclaim memory, but first need to drop any references to the memory region
     // unsafe {
@@ -244,7 +251,7 @@ fn after_boot() {
     spawn_process(gop::gop_entry, &[], true);
     spawn_thread(fs::file_handler);
 
-    log!("Enumnerating PCI...");
+    info!("Enumnerating PCI...");
 
     enumerate_pci(acpi_tables);
 
@@ -280,13 +287,13 @@ fn after_boot() {
                         match handle.blocking_recv() {
                             Ok(_) => (),
                             Err(SocketRecieveResult::EOF) => {
-                                println!("ACCEPTED {i}");
+                                early_println!("ACCEPTED {i}");
                                 return;
                             }
                             Err(e) => panic!("{e:?}"),
                         };
                         if i % 10000 == 0 {
-                            println!("ACCEPTER: {i}")
+                            early_println!("ACCEPTER: {i}")
                         }
                     }
                 });

@@ -21,6 +21,7 @@ volatile = "0.3"
 serde = { version = "1.0.*", default-features = false, features = ["derive"] }
 bitflags = { version = "2.4.1", default-features = false }
 hashbrown = { version = "0.14.3", default-features = false, features = ["ahash"] }
+log = { version = "0.4", default-features = false }
 
 [profile.dev]
 # Increase speed by 1000% since there are lots of hot loops / "zero cost" abstrations that need optimising

@@ -83,7 +83,6 @@ pub fn load_elf<'a>(
 
     let this_mem = unsafe { &CPULocalStorageRW::get_current_task().process().memory };
 
-    println!("COPYING MEM...");
     // Iterate over each header
     for program_header in headers {
         if program_header.p_type == PT_LOAD {
@@ -125,7 +124,6 @@ pub fn load_elf<'a>(
         }
     }
     drop(memory);
-    println!("STARTING PROC...");
     let thread = process.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
     without_context_switch(|| {
         PROCESSES.lock().insert(process.pid, process.clone());
@@ -140,7 +138,7 @@ pub fn elf_new_process_loader() {
         let job = service.blocking_accept();
         spawn_thread(|| match elf_loader_handler(job) {
             Ok(()) => (),
-            Err(e) => println!("Error handling elf load: {e}"),
+            Err(e) => error!("Error handling elf load: {e}"),
         });
     }
 }

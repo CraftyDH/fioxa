@@ -106,7 +106,7 @@ impl AHCIDriver {
         if interface_power_management != HBA_PORT_IPM_ACTIVE {
             return PortType::None;
         }
-        println!("Port: {:X}", port.signature.read());
+        trace!("Port: {:X}", port.signature.read());
         match port.signature.read() {
             SATA_SIG_ATAPI => PortType::SATAPI,
             SATA_SIG_ATA => PortType::SATA,
@@ -125,11 +125,11 @@ impl Driver for AHCIDriver {
         Self: Sized,
     {
         let pci_device = device;
-        println!("AHCI: {}", pci_device.get_device_id());
+        trace!("AHCI: {}", pci_device.get_device_id());
         let header0 = unsafe { pci_device.get_as_header0() };
         let mut mapper = unsafe { get_uefi_active_mapper() };
 
-        println!("BAR5: {}", header0.get_bar(5));
+        trace!("BAR5: {}", header0.get_bar(5));
         let abar = header0.get_bar(5);
 
         mapper
@@ -152,7 +152,7 @@ impl Driver for AHCIDriver {
             if ports_implemented.get_bit(i) {
                 let port_type = Self::check_port_type(port);
 
-                println!("SATA: {:?}", port_type);
+                trace!("SATA: {:?}", port_type);
 
                 if port_type == PortType::SATA {
                     let mut port = Port::new(port);

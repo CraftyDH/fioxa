@@ -122,7 +122,7 @@ pub fn kill_bad_task() -> ! {
     {
         let thread = CPULocalStorageRW::take_current_task();
 
-        println!(
+        warn!(
             "KILLING BAD TASK: PID: {:?}, TID: {:?}",
             thread.process().pid,
             thread.handle().tid()

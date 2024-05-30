@@ -12,9 +12,9 @@ use crate::{
 pub fn prepare_acpi(rsdp: usize) -> Result<AcpiTables<FioxaAcpiHandler>, AcpiError> {
     let root_acpi_handler = unsafe { acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, rsdp) }?;
 
-    println!("ACPI");
+    debug!("ACPI");
     for y in &root_acpi_handler.sdts {
-        println!("{}", y.0);
+        debug!("{}", y.0);
     }
     Ok(root_acpi_handler)
 }

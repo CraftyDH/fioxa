@@ -22,7 +22,8 @@ pub unsafe fn create_offset_map(mapper: &mut PageTable<PageLvl3>, mmap: MemoryMa
     // This means we will get a page fault on access to a non ram in the offset table
     // (instead of accessing memory holes/complely non existend addresses)
     for r in mmap {
-        print!(".");
+        // this is a sign to help determine boot life
+        early_print!(".");
         let r = unsafe { &*virt_addr_offset(r) };
 
         assert!(

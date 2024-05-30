@@ -51,6 +51,5 @@ pub fn set_spurious_interrupts(idt: &mut InterruptDescriptorTable) {
 }
 
 pub extern "x86-interrupt" fn pic_spurious_interrupt(_: InterruptStackFrame) {
-    println!("WARN: Interrupt received from PIC")
+    warn!("Interrupt received from PIC")
 }
-

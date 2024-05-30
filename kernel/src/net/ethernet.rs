@@ -45,7 +45,7 @@ pub struct EthernetFrame<'a> {
 }
 
 pub fn handle_ethernet_frame(frame: EthernetFrame) {
-    println!("{:?}", frame.header);
+    trace!("{:?}", frame.header);
     if frame.header.ether_type_be() == 1544 {
         without_interrupts(|| {
             assert!(frame.data.len() >= size_of::<ARP>());
@@ -126,7 +126,7 @@ pub fn userspace_networking_main() {
         let (q, ty) = query.blocking_recv().unwrap();
 
         if ty != KernelObjectType::Message {
-            println!("usernetworking invalid message");
+            error!("usernetworking invalid message");
             continue;
         }
 
@@ -142,7 +142,7 @@ pub fn userspace_networking_main() {
 
                 let resp = make_message_new(&resp);
                 if query.blocking_send(resp.kref()).is_err() {
-                    println!("usernetworking eof");
+                    info!("usernetworking eof");
                     continue;
                 }
             }

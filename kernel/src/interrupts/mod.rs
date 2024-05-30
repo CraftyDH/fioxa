@@ -118,13 +118,13 @@ pub fn init_idt() {
 interrupt_handler!(ipi_handler => ipi_interrupt_handler);
 
 pub fn ipi_handler(s: InterruptStackFrame) {
-    println!("IPI {:?}", s)
+    info!("IPI {:?}", s)
 }
 
 interrupt_handler!(spurious => spurious_handler);
 
 pub fn spurious(s: InterruptStackFrame) {
-    println!("Spurious {:?}", s)
+    debug!("Spurious {:?}", s)
 }
 
 // wrap_function_registers!(task_switch => task_switch_handler);
@@ -189,23 +189,23 @@ pub fn check_interrupts() {
                 match conn.blocking_recv() {
                     Ok((msg, ty)) => {
                         if ty != KernelObjectType::Message {
-                            println!("INTERRUPTS service got invalid message");
+                            error!("INTERRUPTS service got invalid message");
                             return;
                         }
                         let msg = MessageHandle::from_kref(msg).read_vec();
 
                         let Ok(req) = deserialize::<usize>(&msg) else {
-                            println!("INTERRUPTS service got invalid message desc");
+                            error!("INTERRUPTS service got invalid message desc");
                             return;
                         };
 
                         let Some(id) = ids.get(req) else {
-                            println!("INTERRUPTS service got invalid id");
+                            error!("INTERRUPTS service got invalid id");
                             return;
                         };
 
                         let Ok(()) = conn.blocking_send(id) else {
-                            println!("INTERRUPT service got eof");
+                            error!("INTERRUPT service got eof");
                             return;
                         };
                     }

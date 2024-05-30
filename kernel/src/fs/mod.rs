@@ -57,7 +57,7 @@ impl FileSystemDrives {
     pub fn identify(&mut self) {
         for bus in &mut self.disks_buses {
             for disk in bus.get_disks() {
-                println!("{:?}", disk.lock().identify());
+                info!("{:?}", disk.lock().identify());
                 read_partitions(disk);
             }
         }
@@ -211,7 +211,7 @@ fn file_job_runner(conn: SocketHandle) -> Option<()> {
     loop {
         let (msg, ty) = conn.blocking_recv().ok()?;
         if ty != KernelObjectType::Message {
-            println!("bad message type");
+            info!("bad message type");
             return None;
         }
         let msg = MessageHandle::from_kref(msg);

@@ -80,7 +80,7 @@ impl<T, U> Unwraper<T> for Result<T, U> {
 #[macro_export]
 macro_rules! kpanic {
     ($($arg:tt)*) => {
-        println!("Panicked in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
+        error!("Panicked in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
         return Err(SyscallError::Error);
     };
 }
@@ -89,13 +89,13 @@ macro_rules! kpanic {
 macro_rules! kassert {
     ($x: expr) => {
         if !$x {
-            println!("KAssert failed in {}:{}:{}.", file!(), line!(), column!());
+            error!("KAssert failed in {}:{}:{}.", file!(), line!(), column!());
             return Err(SyscallError::Error);
         }
     };
     ($x: expr, $($arg:tt)+) => {
         if !$x {
-            println!("KAssert failed in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
+            error!("KAssert failed in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
             return Err(SyscallError::Error);
         }
     };
@@ -107,7 +107,7 @@ macro_rules! kunwrap {
         match Unwraper::unwrap($x) {
             Ok(r) => r,
             Err(e) => {
-                println!(
+                error!(
                     "KUnwrap failed in {}:{}:{} on {e:?}",
                     file!(),
                     line!(),
@@ -125,7 +125,7 @@ macro_rules! kenum_cast {
         match $x {
             $t(v) => v,
             _ => {
-                println!(
+                error!(
                     "KEnum cast failed in {}:{}:{}, expected {} got {:?}.",
                     file!(),
                     line!(),
@@ -169,22 +169,22 @@ unsafe extern "C" fn syscall_handler(stack_frame: &mut InterruptStackFrame, regs
         OBJECT => sys_reference_handler(regs),
         PROCESS => sys_process_handler(regs),
         _ => {
-            println!("Unknown syscall class: {}", regs.rax);
-            Ok(())
+            error!("Unknown syscall class: {}", regs.rax);
+            Err(SyscallError::Error)
         }
     };
     match res {
         Ok(()) => (),
         Err(SyscallError::Error) => kill_bad_task(),
         Err(SyscallError::Info(e)) => {
-            println!("Error occured during syscall {e:?}");
+            error!("Error occured during syscall {e:?}");
             kill_bad_task()
         }
     }
 }
 
 fn echo_handler(regs: &mut Registers) -> Result<(), SyscallError> {
-    println!("Echoing: {}", regs.r8);
+    info!("Echoing: {}", regs.r8);
     regs.rax = regs.r8;
     Ok(())
 }

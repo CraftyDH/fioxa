@@ -214,7 +214,7 @@ impl PhysPageTable {
     fn set_table(&mut self, idx: usize, table: &mut PhysPageTable) {
         let entry = &mut self.entries[idx];
         if entry.present() {
-            println!("WARN: setting table over existing entry");
+            warn!("setting table over existing entry");
         }
         entry.set_address(table.entries.as_ptr() as u64);
         entry.set_present(true);

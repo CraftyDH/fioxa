@@ -24,6 +24,9 @@ use crate::{
 extern crate alloc;
 
 #[macro_use]
+extern crate log;
+
+#[macro_use]
 pub mod screen;
 pub mod acpi;
 pub mod allocator;
@@ -40,6 +43,7 @@ pub mod interrupts;
 pub mod ioapic;
 pub mod lapic;
 pub mod locked_mutex;
+pub mod logging;
 pub mod memory;
 pub mod message;
 pub mod net;
@@ -72,8 +76,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // unsafe { WRITER.force_unlock() };
     // unsafe { core::arch::asm!("cli") }
     without_context_switch(|| {
-        log!("KERNEL PANIC: {}", info);
-        log!(
+        early_println!("KERNEL PANIC: {}", info);
+        early_println!(
             "  Caused by {:?}, {:?}",
             CPULocalStorageRW::get_current_pid(),
             CPULocalStorageRW::get_current_tid()
@@ -90,36 +94,24 @@ fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
     panic!("Allocation Error: {:?}", layout)
 }
 
-#[macro_export]
-macro_rules! log {
-    () => ({
-        // s_print("\n");
-        print!("\n");
-    });
-    ($($arg:tt)*) => ({
-        // s_print!("{}\n", format_args!($($arg)*));
-        print!("{}\n", format_args!($($arg)*));
-    });
-}
-
 /// Walks rbp to find all call frames, additionally prints out the return address of each frame
 /// TODO: find the associated function from the ip
 pub fn stack_trace() {
     unsafe {
         let mut rbp: usize;
-        println!("Performing stack trace...");
+        early_println!("Performing stack trace...");
         core::arch::asm!("mov {}, rbp", lateout(reg) rbp);
         for depth in 0.. {
             let caller = *((rbp + 8) as *const usize);
-            println!("Frame {depth}: base pointer: {rbp:#x}, return address: {caller:#x}");
+            early_println!("Frame {depth}: base pointer: {rbp:#x}, return address: {caller:#x}");
 
             rbp = *(rbp as *const usize);
             // at rbp 0 we have walked to the end
             if rbp == 0 {
-                println!("Stack trace finished.");
+                early_println!("Stack trace finished.");
                 return;
             } else if rbp <= MemoryLoc::EndUserMem as usize {
-                println!("Stopping at user mode, base pointer: {rbp:#x}");
+                early_println!("Stopping at user mode, base pointer: {rbp:#x}");
                 return;
             }
         }

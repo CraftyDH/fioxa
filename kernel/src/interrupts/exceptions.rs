@@ -18,7 +18,7 @@ macro_rules! exception_handler {
     ($handler: ident, $error:expr) => {
         pub extern "x86-interrupt" fn $handler(stack_frame: InterruptStackFrame) {
             // Find the relevent handler and call it
-            println!("EXCEPTION: caught {}, frame: {:?}", $error, stack_frame);
+            warn!("EXCEPTION: caught {}, frame: {:?}", $error, stack_frame);
             kill_bad_task();
         }
     };
@@ -77,7 +77,7 @@ pub fn set_exceptions_idt(idt: &mut InterruptDescriptorTable) {
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    println!("BREAKPOINT {:#?}", stack_frame);
+    info!("BREAKPOINT {:#?}", stack_frame);
 }
 
 extern "x86-interrupt" fn double_fault_handler(
@@ -94,7 +94,7 @@ extern "x86-interrupt" fn general_protection_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    println!(
+    error!(
         "EXCEPTION: GENERAL PROTECTION FAULT Error: {}\n{:#?}",
         error_code, stack_frame
     );
@@ -116,7 +116,7 @@ unsafe extern "x86-interrupt" fn page_fault_handler(
     // WRITER.lock().pos.y = 0;
     let addr = Cr2::read();
     if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
-        println!(
+        error!(
             "EXCEPTION: PAGE FAULT: Protection violation at {:?} {error_code:?}",
             addr
         );
@@ -126,10 +126,10 @@ unsafe extern "x86-interrupt" fn page_fault_handler(
             | PageFaultErrorCode::USER_MODE
             | PageFaultErrorCode::INSTRUCTION_FETCH,
     )) {
-        println!("EXCEPTION: PAGE FAULT: {:?}", error_code);
         panic!(
-            "Accessed Address: {:?} by {:?}",
-            addr, stack_frame.instruction_pointer
+            "EXCEPTION: PAGE FAULT: {:?}\n
+            Accessed Address: {:?} by {:?}",
+            error_code, addr, stack_frame.instruction_pointer
         );
     } else {
         let process = CPULocalStorageRW::get_current_task().process();
@@ -139,7 +139,7 @@ unsafe extern "x86-interrupt" fn page_fault_handler(
             .page_fault_handler(addr.as_u64() as usize)
             .is_none()
         {
-            println!("EXCEPTION: PAGE FAULT: Failed to map {:?}", addr);
+            warn!("EXCEPTION: PAGE FAULT: Failed to map {:?}", addr);
             kill_bad_task()
         }
     }

@@ -19,7 +19,7 @@ use crate::{
 /// It is assumed that 0x8000 is identity mapped before this point
 pub unsafe fn boot_aps(madt: &Madt) {
     if !frame_alloc_exec(|a| a.captured_0x8000()) {
-        println!("WARNING: SINGLE CORE BOOT -- The physical memory region `0x8000` was not availble during initialization.");
+        warn!("WARNING: SINGLE CORE BOOT -- The physical memory region `0x8000` was not availble during initialization.");
         return;
     }
 
@@ -67,7 +67,7 @@ pub unsafe fn boot_aps(madt: &Madt) {
             continue;
         };
         let id = *core;
-        println!("Booting Core: {id}");
+        info!("Booting Core: {id}");
 
         let local_storage = unsafe { new_cpu(id) };
 
@@ -113,7 +113,7 @@ pub unsafe fn boot_aps(madt: &Madt) {
 
     loop {
         let c = aprunning.load(core::sync::atomic::Ordering::SeqCst);
-        println!("{c}/{n_cores} cores booted...");
+        debug!("{c}/{n_cores} cores booted...");
         if c as usize == n_cores {
             break;
         };
@@ -138,7 +138,7 @@ pub extern "C" fn ap_startup_f(core_id: u32) {
         enable_localapic();
     }
 
-    println!("Core: {core_id} booted");
+    info!("Core: {core_id} booted");
 
     // loop {}
     unsafe { core_start_multitasking() }
