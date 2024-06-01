@@ -14,6 +14,7 @@ enum MouseTypeId {
     WithExtraButtons,
 }
 
+#[derive(Debug)]
 enum PS2MousePackets {
     None,
     One(u8),
@@ -147,7 +148,7 @@ impl Mouse {
             (PS2MousePackets::None, _) => PS2MousePackets::One(data),
             (PS2MousePackets::One(a), _) => PS2MousePackets::Two(*a, data),
             (PS2MousePackets::Two(a, b), MouseTypeId::Standard) => {
-                self.send_packet(*a, *b, data);
+                res = Some(self.send_packet(*a, *b, data));
                 PS2MousePackets::None
             }
             (_, MouseTypeId::Standard) => unreachable!(),

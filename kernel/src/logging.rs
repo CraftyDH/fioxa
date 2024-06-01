@@ -16,13 +16,12 @@ impl Log for KernelLogger {
         if self.enabled(record.metadata()) {
             without_context_switch(|| {
                 let mut w = WRITER.get().unwrap().lock();
-                let color = w.fg_colour;
-                w.fg_colour = get_color_for_level(record.level());
+                let color = w.tty.set_fg_colour(get_color_for_level(record.level()));
                 w.write_fmt(format_args!("{} ", record.level())).unwrap();
-                w.fg_colour = 0xFFFFFF;
+                w.tty.set_fg_colour(0xFFFFFF);
                 w.write_fmt(format_args!("{} > {}\n", record.target(), record.args()))
                     .unwrap();
-                w.fg_colour = color;
+                w.tty.set_fg_colour(color);
             });
         }
     }

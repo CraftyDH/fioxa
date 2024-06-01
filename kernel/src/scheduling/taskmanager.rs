@@ -82,7 +82,7 @@ fn get_next_task() -> Box<Thread> {
     }
 }
 
-unsafe fn save_current_task(stack_frame: &InterruptStackFrame, reg: &Registers) {
+pub unsafe fn save_current_task(stack_frame: &InterruptStackFrame, reg: &Registers) {
     let mut thread = CPULocalStorageRW::take_current_task();
     thread.save_state(stack_frame, reg);
 

@@ -29,6 +29,7 @@ pub struct CPULocalStorage {
     // If not set the task should stay scheduled
     stay_scheduled: bool,
     core_mgmt_task_ptr: u64,
+    screen_redraw: u64,
     // at 0x1000 (1 page down is GDT)
 }
 
@@ -170,6 +171,15 @@ impl CPULocalStorageRW {
             let ptr = Box::into_raw(task);
             localstorage_write!(ptr => current_task_ptr: u64);
         }
+    }
+
+    #[inline]
+    pub fn get_screen_redraw_time() -> u64 {
+        unsafe { localstorage_read_imm!(screen_redraw: u64) }
+    }
+
+    pub fn set_screen_redraw_time(t: u64) {
+        unsafe { localstorage_write!(t => screen_redraw: u64) }
     }
 }
 

@@ -14,7 +14,11 @@
 #![feature(error_in_core)]
 #![feature(const_try)]
 
+use core::fmt::Write;
+
 use bootloader::BootInfo;
+use screen::gop::WRITER;
+use terminal::Writer;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW, paging::MemoryLoc, scheduling::without_context_switch,
@@ -52,6 +56,7 @@ pub mod pci;
 pub mod scheduling;
 pub mod socket;
 pub mod syscall;
+pub mod terminal;
 pub mod time;
 pub mod uefi;
 
@@ -76,13 +81,18 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // unsafe { WRITER.force_unlock() };
     // unsafe { core::arch::asm!("cli") }
     without_context_switch(|| {
-        early_println!("KERNEL PANIC: {}", info);
-        early_println!(
-            "  Caused by {:?}, {:?}",
+        let mut w = WRITER.get().unwrap().lock();
+        w.write_fmt(format_args!(
+            "KERNEL PANIC: {}\n  Caused by {:?}, {:?}",
+            info,
             CPULocalStorageRW::get_current_pid(),
             CPULocalStorageRW::get_current_tid()
-        );
-        crate::stack_trace();
+        ))
+        .unwrap();
+        // since we drop context switch manually trigger redraw
+        w.redraw_if_needed();
+        crate::stack_trace(&mut w);
+        w.redraw_if_needed();
         loop {
             unsafe { core::arch::asm!("hlt") }
         }
@@ -96,22 +106,28 @@ fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
 
 /// Walks rbp to find all call frames, additionally prints out the return address of each frame
 /// TODO: find the associated function from the ip
-pub fn stack_trace() {
+pub fn stack_trace(w: &mut Writer) {
     unsafe {
         let mut rbp: usize;
-        early_println!("Performing stack trace...");
+        w.write_str("Performing stack trace...").unwrap();
         core::arch::asm!("mov {}, rbp", lateout(reg) rbp);
         for depth in 0.. {
             let caller = *((rbp + 8) as *const usize);
-            early_println!("Frame {depth}: base pointer: {rbp:#x}, return address: {caller:#x}");
+            w.write_fmt(format_args!(
+                "Frame {depth}: base pointer: {rbp:#x}, return address: {caller:#x}"
+            ))
+            .unwrap();
 
             rbp = *(rbp as *const usize);
             // at rbp 0 we have walked to the end
             if rbp == 0 {
-                early_println!("Stack trace finished.");
+                w.write_str("Stack trace finished.").unwrap();
                 return;
             } else if rbp <= MemoryLoc::EndUserMem as usize {
-                early_println!("Stopping at user mode, base pointer: {rbp:#x}");
+                w.write_fmt(format_args!(
+                    "Stopping at user mode, base pointer: {rbp:#x}"
+                ))
+                .unwrap();
                 return;
             }
         }

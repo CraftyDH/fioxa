@@ -120,8 +120,20 @@ impl ProcessReferences {
 
 impl Process {
     pub fn new(privilege: ProcessPrivilige, args: &[u8]) -> Arc<Self> {
-        let mut page_mapper = PageMapperManager::new();
+        unsafe { Self::new_inner(privilege, args, false) }
+    }
 
+    // if kernel_proc is true, it must be the init kernel_proc
+    pub unsafe fn new_inner(
+        privilege: ProcessPrivilige,
+        args: &[u8],
+        kernel_proc: bool,
+    ) -> Arc<Self> {
+        let mut page_mapper = if kernel_proc {
+            PageMapperManager::new_32()
+        } else {
+            PageMapperManager::new()
+        };
         unsafe {
             let m = page_mapper.get_mapper_mut();
             m.set_next_table(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());

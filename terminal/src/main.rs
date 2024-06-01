@@ -38,6 +38,7 @@ use input::keyboard::{
     virtual_code::{Letter, Modifier, VirtualKeyCode},
     KeyboardEvent,
 };
+use userspace::print::WRITER;
 
 pub struct KBInputDecoder {
     socket: KernelReferenceID,
@@ -238,7 +239,7 @@ pub extern "C" fn main() {
                         };
                         if let Some(data) = sect {
                             data.read_into_vec(&mut file_buffer);
-                            print!("{}", String::from_utf8_lossy(&file_buffer))
+                            WRITER.lock().write_raw(&file_buffer);
                         } else {
                             print!("Error reading");
                             break;

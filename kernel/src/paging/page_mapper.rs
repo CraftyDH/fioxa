@@ -102,6 +102,17 @@ impl<'a> PageMapperManager<'a> {
         }
     }
 
+    /// Unsafe as this can't be dropped as we shim the alloc32page into allocpage
+    pub unsafe fn new_32() -> Self {
+        let pml4 = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
+        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(*pml4) };
+        Self {
+            _pml4: AllocatedPage::new(pml4.leak()),
+            page_mapper,
+            mappings: Vec::new(),
+        }
+    }
+
     pub unsafe fn get_mapper_mut(&mut self) -> &mut PageTable<'a, PageLvl4> {
         &mut self.page_mapper
     }

@@ -16,7 +16,7 @@ use crate::scheduling::without_context_switch;
 
 use super::gop::{Pos, WRITER};
 
-const MOUSE_POINTER: &[u16; 16] = &[
+pub const MOUSE_POINTER: &[u16; 16] = &[
     0b1111111111000000,
     0b1111111110000000,
     0b1111111100000000,
@@ -94,7 +94,7 @@ pub fn print_cursor(pos: &mut Pos, mouse: MousePacket) {
 
     without_context_switch(|| {
         let gop_mutex = &mut WRITER.get().unwrap().lock();
-        let gop_info = &gop_mutex.gop;
+        let gop_info = &gop_mutex.screen.gop;
 
         if pos.x > gop_info.horizonal - 8 {
             pos.x = gop_info.horizonal - 8
@@ -103,6 +103,6 @@ pub fn print_cursor(pos: &mut Pos, mouse: MousePacket) {
         if pos.y > gop_info.vertical - 16 {
             pos.y = gop_info.vertical - 16
         }
-        gop_mutex.draw_cursor(*pos, colour, MOUSE_POINTER);
+        gop_mutex.update_cursor(*pos, colour);
     });
 }

@@ -19,15 +19,15 @@ pub static WRITER: Lazy<Mutex<Writer>> = Lazy::new(|| {
 });
 
 impl Writer {
-    pub fn write_string(&mut self, s: &str) {
-        let msg = MessageHandle::create(s.as_bytes());
+    pub fn write_raw(&mut self, bytes: &[u8]) {
+        let msg = MessageHandle::create(bytes);
         self.stdout_socket.blocking_send(msg.kref()).unwrap();
     }
 }
 
 impl core::fmt::Write for Writer {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.write_string(s);
+        self.write_raw(s.as_bytes());
         Ok(())
     }
 }

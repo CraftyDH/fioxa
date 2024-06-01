@@ -18,6 +18,7 @@ use crate::{
         process::ThreadStatus,
         taskmanager::{self, push_task_queue},
     },
+    screen::gop::WRITER,
     wrap_function_registers,
 };
 
@@ -109,9 +110,15 @@ pub fn is_switching_tasks() -> bool {
 wrap_function_registers!(tick => tick_handler);
 
 unsafe extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
+    let switch = !CPULocalStorageRW::get_stay_scheduled() && SWITCH_TASK.load(Ordering::Relaxed);
+
+    if switch {
+        taskmanager::save_current_task(stack_frame, regs);
+    }
+
     if CPULocalStorageRW::get_core_id() == 0 {
         // Get the amount of milliseconds per interrupt
-        let freq = 1000 / get_frequency();
+        let freq = 1000 / get_frequency() / 2;
         // Increment the uptime counter
         let uptime = TIME_SINCE_BOOT.fetch_add(freq, Ordering::Relaxed) + freq;
         // If we have a sleep target, wake up the job
@@ -140,18 +147,21 @@ unsafe extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Regi
                 )
             }
         }
+
+        // potentially update screen every 16ms
+        //* Very important that CPU doesn't have the stay scheduled flag (deadlock possible otherwise)
+        // TODO: Can we VSYNC this? Could stop the tearing.
+        if !CPULocalStorageRW::get_stay_scheduled()
+            && uptime > CPULocalStorageRW::get_screen_redraw_time()
+        {
+            CPULocalStorageRW::set_screen_redraw_time(uptime + 16);
+            let mut w = WRITER.get().unwrap().lock();
+            w.redraw_if_needed();
+        }
     }
 
-    // If timer is used for switching tasks switch task
-    if SWITCH_TASK.load(Ordering::Acquire) {
-        // match get_task_mgr_current_ticks().checked_sub(1) {
-        //     Some(n) => set_task_mgr_current_ticks(n),
-        //     None => {
-        if !CPULocalStorageRW::get_stay_scheduled() {
-            taskmanager::switch_task(stack_frame, regs);
-        }
-        //     }
-        // }
+    if switch {
+        taskmanager::load_new_task(stack_frame, regs);
     }
     // Ack interrupt
     unsafe { *(0xfee000b0 as *mut u32) = 0 }

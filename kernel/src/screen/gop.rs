@@ -1,4 +1,5 @@
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use bootloader::gop::GopInfo;
 use conquer_once::spin::OnceCell;
 use core::fmt::Write;
@@ -22,49 +23,18 @@ pub struct Pos {
     pub y: usize,
 }
 
-pub struct Writer<'a> {
-    pub pos: Pos,
+pub const CHAR_HEIGHT: usize = 16;
+pub const CHAR_WIDTH: usize = 8;
+
+pub struct Screen<'a> {
     pub gop: GopInfo,
     pub font: PSF1Font<'a>,
-    pub fg_colour: u32,
-    pub bg_colour: u32,
     pub unicode_table: BTreeMap<char, usize>,
 }
 
-impl<'a> Writer<'a> {
-    pub fn new(gop: GopInfo, font: PSF1Font<'a>) -> Writer {
-        let unicode_buffer = &font.unicode_buffer;
-
-        let mut unicode_table: BTreeMap<char, usize> = BTreeMap::new();
-
-        let mut index = 0;
-        for byte_index in (0..unicode_buffer.len()).step_by(2) {
-            let unicode_byte =
-                (unicode_buffer[byte_index] as u16) | (unicode_buffer[byte_index + 1] as u16) << 8;
-
-            if unicode_byte == 0xFFFF {
-                index += 1;
-            } else {
-                unicode_table.insert(
-                    char::from_u32(unicode_byte.into())
-                        .expect("unicode table should only have valid chars"),
-                    index,
-                );
-            }
-        }
-
-        Self {
-            pos: Pos { x: 0, y: 0 },
-            gop,
-            font,
-            unicode_table,
-            fg_colour: 0xFF_FF_FF,
-            bg_colour: 0x00_00_00,
-        }
-    }
-
-    pub fn put_char(&mut self, colour: u32, chr: char, xoff: usize, yoff: usize) {
-        let mut addr: usize = *self.unicode_table.get(&chr).unwrap_or(&0);
+impl Screen<'_> {
+    pub fn update_cell(&mut self, cell: &Cell, x: usize, y: usize) {
+        let mut addr: usize = *self.unicode_table.get(&cell.chr).unwrap_or(&0);
 
         // let mut addr = chr as usize;
         // if addr > 255 {
@@ -74,94 +44,22 @@ impl<'a> Writer<'a> {
 
         let ptr = self.gop.buffer.get_mut();
 
+        let xoff = x * CHAR_WIDTH;
+        let yoff = y * CHAR_HEIGHT;
+
         for y in yoff..(yoff + 16) {
             let glyph = self.font.glyph_buffer[addr];
             for x in xoff..(xoff + 8) {
                 // Fancy math to check if bit is on.
-                if (glyph & (0b10_000_000 >> (x - xoff))) > 0 {
-                    let loc = (x + (y * self.gop.stride)) * 4;
-                    unsafe { core::ptr::write_volatile(ptr.add(loc) as *mut u32, colour) }
-                }
+                let color = if (glyph & (0b10_000_000 >> (x - xoff))) > 0 {
+                    cell.fg
+                } else {
+                    cell.bg
+                };
+                let loc = (x + (y * self.gop.stride)) * 4;
+                unsafe { core::ptr::write_volatile(ptr.add(loc) as *mut u32, color) }
             }
             addr += 1;
-        }
-    }
-
-    pub fn fill_screen(&mut self, colour: u32) {
-        unsafe {
-            let buf = (*self.gop.buffer.get_mut()) as *mut u32;
-
-            for y in 0..self.gop.vertical {
-                for x in 0..self.gop.horizonal {
-                    core::ptr::write_volatile(buf.add(y * self.gop.stride + x), colour);
-                }
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn set_colour(&mut self, colour: u32) {
-        // Get pointer to then change colour
-        self.fg_colour = colour;
-    }
-
-    pub fn write_byte(&mut self, chr: char) {
-        match chr {
-            '\n' => {
-                self.pos.x = 0;
-                self.pos.y += 16;
-            }
-            // Backspace control character
-            '\x08' => {
-                // Check bounds
-                if self.pos.x < 8 {
-                    self.pos.x = self.gop.horizonal - 8;
-                    if self.pos.y >= 16 {
-                        self.pos.y -= 16
-                    }
-                } else {
-                    self.pos.x -= 8;
-                }
-
-                let buf = self.gop.buffer.get_mut();
-                unsafe {
-                    for y in self.pos.y..(self.pos.y + 16) {
-                        for x in self.pos.x..(self.pos.x + 8) {
-                            core::ptr::write_volatile(
-                                buf.add((y * self.gop.stride + x) * 4) as *mut u32,
-                                self.bg_colour,
-                            )
-                        }
-                    }
-                }
-            }
-            '\u{7F}' => {
-                if self.pos.x >= self.gop.horizonal - 8 {
-                    return;
-                }
-                let buf = self.gop.buffer.get_mut();
-                unsafe {
-                    for y in self.pos.y..(self.pos.y + 16) {
-                        for x in self.pos.x..(self.pos.x + 8) {
-                            core::ptr::write_volatile(
-                                buf.add((y * self.gop.stride + x) * 4) as *mut u32,
-                                self.bg_colour,
-                            )
-                        }
-                    }
-                }
-            }
-            chr => {
-                self.put_char(self.fg_colour, chr, self.pos.x, self.pos.y);
-                self.pos.x += 8
-            }
-        }
-        self.check_bounds();
-    }
-
-    pub fn write_string(&mut self, s: &str) {
-        for chr in s.chars() {
-            self.write_byte(chr);
         }
     }
 
@@ -189,50 +87,8 @@ impl<'a> Writer<'a> {
             }
         }
     }
-
-    fn check_bounds(&mut self) {
-        // Check if next character will excede width
-        let res = (self.gop.horizonal, self.gop.vertical);
-        if self.pos.x + 8 > res.0 {
-            self.pos.x = 0;
-            self.pos.y += 16;
-        }
-        let max = self.gop.vertical - (self.gop.vertical % 16);
-        // Check if next line will excede height
-        if self.pos.y + 16 > max {
-            let buf = self.gop.buffer.get_mut();
-            unsafe {
-                // Copy memory from bottom to top (aka scroll)
-                for l in 16..max {
-                    core::ptr::copy(
-                        buf.offset((l * self.gop.stride * 4) as isize),
-                        buf.offset(((l - 16) * self.gop.stride * 4) as isize),
-                        self.gop.horizonal * 4,
-                    )
-                }
-
-                // Clear the bottom line by writing zeros
-                for l in (max - 16)..self.gop.vertical {
-                    core::ptr::write_bytes(
-                        buf.offset((l * self.gop.stride * 4) as isize),
-                        0,
-                        self.gop.horizonal * 4,
-                    )
-                }
-            }
-
-            self.pos.y -= 16;
-            self.pos.x = 0
-        }
-    }
 }
 
-impl core::fmt::Write for Writer<'_> {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.write_string(s);
-        Ok(())
-    }
-}
 pub static WRITER: OnceCell<Mutex<Writer>> = OnceCell::uninit();
 
 #[macro_export]
@@ -254,6 +110,7 @@ macro_rules! colour {
 }
 
 use crate::scheduling::without_context_switch;
+use crate::terminal::{Cell, Writer};
 use core::fmt::Arguments;
 use spin::mutex::Mutex;
 
@@ -335,11 +192,11 @@ pub fn monitor_stdout_task() {
                         if ty == KernelObjectType::Message {
                             let msg = MessageHandle::from_kref(KernelReference::from_id(msg));
                             let msg = msg.read_vec();
-                            if let Ok(s) = core::str::from_utf8(&msg) {
-                                _print(format_args!("{s}"))
-                            } else {
-                                warn!("GOP STDOUT invalid bytes");
-                            }
+                            let s = String::from_utf8_lossy(&msg);
+                            without_context_switch(|| {
+                                let mut w = WRITER.get().unwrap().lock();
+                                w.write_str(&s).unwrap();
+                            });
                             continue;
                         }
                         error!("GOP STDOUT only accepts messages")

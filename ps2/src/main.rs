@@ -17,7 +17,7 @@ use kernel_userspace::{
     object::{KernelObjectType, KernelReference},
     service::{make_message, make_message_new},
     socket::{socket_accept, socket_listen, socket_listen_get_event, socket_send, SocketHandle},
-    syscall::exit,
+    syscall::{exit, sleep},
     INT_KB, INT_MOUSE,
 };
 use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
@@ -80,6 +80,21 @@ pub extern "C" fn main() {
         ms_cbk,
         KernelEventQueueListenMode::OnEdgeHigh,
     );
+
+    // TODO: The rest of the kernel sped up and weird behaviour came up (mouse dying)
+    // sleep to add delay :(
+    sleep(500);
+    ps2_controller.flush();
+    while let Some(event) = event_queue_pop(event_queue) {
+        println!("PS2 Flushing");
+        if event == kb_cbk || event == ms_cbk {
+            ps2_controller.flush();
+        } else {
+            panic!("unreachable")
+        }
+    }
+
+    println!("PS2 Ready");
 
     event_queue_listen(
         event_queue,
@@ -199,6 +214,16 @@ impl PS2Controller {
             command,
             keyboard,
             mouse,
+        }
+    }
+
+    pub fn flush(&mut self) {
+        let timeout = 100_000;
+        for _ in 0..timeout {
+            let test = unsafe { self.command.status_port.read() };
+            if test & 0b1 == 0b1 {
+                unsafe { self.command.data_port.read() };
+            }
         }
     }
 

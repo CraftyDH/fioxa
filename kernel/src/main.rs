@@ -37,8 +37,10 @@ use kernel::paging::{
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::Process;
 use kernel::scheduling::taskmanager::{core_start_multitasking, PROCESSES};
-use kernel::screen::gop::{self, Writer};
+use kernel::scheduling::without_context_switch;
+use kernel::screen::gop;
 use kernel::screen::psf1;
+use kernel::terminal::Writer;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
@@ -79,12 +81,13 @@ pub fn main_entry(info: *const BootInfo) -> ! {
         let font = psf1::load_psf1_font(DEFAULT_FONT).expect("cannot load psf1 font");
         gop::WRITER.init_once(|| Writer::new(boot_info.gop, font).into());
         // Test screen colours
-        gop::WRITER.get().unwrap().lock().fill_screen(0xFF_00_00);
-        gop::WRITER.get().unwrap().lock().fill_screen(0x00_FF_00);
-        gop::WRITER.get().unwrap().lock().fill_screen(0x00_00_FF);
-        gop::WRITER.get().unwrap().lock().fill_screen(0xFF_FF_FF);
-        gop::WRITER.get().unwrap().lock().fill_screen(0x00_00_00);
-
+        without_context_switch(|| {
+            gop::WRITER.get().unwrap().lock().reset_screen(0xFF_00_00);
+            gop::WRITER.get().unwrap().lock().reset_screen(0x00_FF_00);
+            gop::WRITER.get().unwrap().lock().reset_screen(0x00_00_FF);
+            gop::WRITER.get().unwrap().lock().reset_screen(0xFF_FF_FF);
+            gop::WRITER.get().unwrap().lock().reset_screen(0x00_00_00);
+        });
         mmap
     };
 
