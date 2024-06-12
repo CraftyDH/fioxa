@@ -18,6 +18,23 @@ impl PageTable<'_, PageLvl4> {
         );
     }
 
+    pub unsafe fn load_into_cr3_lazy(&self) {
+        let cr3 = self.into_page().get_address();
+        let current_cr3: u64;
+        core::arch::asm!(
+            "mov {}, cr3",
+            lateout(reg) current_cr3,
+            options(nostack, preserves_flags)
+        );
+        if cr3 != current_cr3 {
+            core::arch::asm!(
+                "mov cr3, {}",
+                in(reg) cr3,
+                options(nostack, preserves_flags)
+            );
+        }
+    }
+
     pub fn get_phys_addr_from_vaddr(&mut self, address: u64) -> Option<u64> {
         Some(self.get_phys_addr(Page::<Size4KB>::containing(address))? + address % 0x1000)
     }

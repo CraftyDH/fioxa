@@ -52,9 +52,9 @@ pub unsafe fn init_bootgdt() {
 }
 
 pub struct CPULocalGDT {
-    gdt: GlobalDescriptorTable,
-    tss: TaskStateSegment,
-    tss_stack: [[u8; TSS_STACK_SIZE]; 10],
+    pub gdt: GlobalDescriptorTable,
+    pub tss: TaskStateSegment,
+    pub tss_stack: [[u8; TSS_STACK_SIZE]; 10],
 }
 
 impl CPULocalGDT {

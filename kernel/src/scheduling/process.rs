@@ -19,23 +19,22 @@ use kernel_userspace::{
 };
 use spin::{mutex::Mutex, Lazy};
 use x86_64::{
-    structures::{
-        gdt::SegmentSelector,
-        idt::{InterruptStackFrame, InterruptStackFrameValue},
-    },
+    structures::{gdt::SegmentSelector, idt::InterruptStackFrameValue},
     VirtAddr,
 };
 
 use crate::{
-    assembly::registers::{Registers, SavedThreadState},
+    assembly::registers::SavedTaskState,
+    cpu_localstorage::CPULocalStorageRW,
     event::{EdgeListener, EdgeTrigger, KEvent, KEventListener, KEventQueue},
-    gdt,
+    gdt::{self, TASK_SWITCH_INDEX},
     message::KMessage,
     paging::{
         offset_map::get_gop_range,
         page_allocator::Allocated32Page,
         page_mapper::{PageMapperManager, PageMapping},
-        MemoryLoc, MemoryMappingFlags, KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
+        virt_addr_for_phys, MemoryLoc, MemoryMappingFlags, KERNEL_DATA_MAP, KERNEL_HEAP_MAP,
+        OFFSET_MAP, PER_CPU_MAP,
     },
     socket::{KSocketHandle, KSocketListener},
     BOOT_INFO,
@@ -44,8 +43,10 @@ use crate::{
 use super::taskmanager::{push_task_queue, PROCESSES};
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
+pub const KSTACK_ADDR: u64 = 0xffff_800_000_000_000;
 
 pub const STACK_SIZE: u64 = 0x10000;
+pub const KSTACK_SIZE: u64 = 0x2000;
 
 pub const THREAD_TEMP_COUNT: usize = 8;
 
@@ -177,11 +178,7 @@ impl Process {
         })
     }
 
-    pub fn new_thread_direct(
-        &self,
-        entry_point: *const u64,
-        register_state: Registers,
-    ) -> Option<Box<Thread>> {
+    pub fn new_thread(&self, entry_point: *const u64, arg: usize) -> Option<Box<Thread>> {
         let mut threads = self.threads.lock();
         let tid = threads.get_next_id();
 
@@ -199,6 +196,17 @@ impl Process {
             .insert_mapping_at_set(stack_base as usize, stack, MemoryMappingFlags::all())
             .unwrap();
 
+        let kstack_base = KSTACK_ADDR + (KSTACK_SIZE + 0x1000) * tid.0;
+        let kstack_top = (kstack_base + KSTACK_SIZE) as usize;
+        let stack = PageMapping::new_lazy_filled(KSTACK_SIZE as usize);
+        let kstack_base_virt = virt_addr_for_phys(stack.base() as u64) as usize;
+
+        self.memory
+            .lock()
+            .page_mapper
+            .insert_mapping_at_set(kstack_base as usize, stack, MemoryMappingFlags::WRITEABLE)
+            .unwrap();
+
         let interrupt_frame = InterruptStackFrameValue {
             instruction_pointer: VirtAddr::from_ptr(entry_point),
             code_segment: self.privilege.get_code_segment().0 as u64,
@@ -207,6 +215,7 @@ impl Process {
             stack_segment: self.privilege.get_data_segment().0 as u64,
         };
 
+        unsafe { *(kstack_base_virt as *mut InterruptStackFrameValue) = interrupt_frame }
         let handle = Arc::new(ThreadHandle {
             process: self.this.upgrade().unwrap(),
             tid,
@@ -225,21 +234,14 @@ impl Process {
                 thread: Arc::downgrade(&handle),
             }),
             handle,
-            state: SavedThreadState {
-                register_state,
-                interrupt_frame,
-            },
+            kstack_top: VirtAddr::from_ptr(kstack_top as *const ()),
+            state: Some(SavedTaskState {
+                saved_arg: arg,
+                sp: kstack_base_virt,
+                ip: start_new_task as usize,
+            }),
             linked_next: None,
         }))
-    }
-
-    pub fn new_thread(&self, entry_point: *const u64, arg: usize) -> Option<Box<Thread>> {
-        let register_state = Registers {
-            rdi: arg,
-            ..Default::default()
-        };
-
-        self.new_thread_direct(entry_point, register_state)
     }
 
     pub fn add_value(&self, value: KernelValue) -> KernelReferenceID {
@@ -256,7 +258,7 @@ impl Process {
             let mut status = thread.status.lock();
             match core::mem::replace(&mut *status, ThreadStatus::PleaseKill) {
                 // Something will kill it soon
-                ThreadStatus::Ok => true,
+                ThreadStatus::Ok | ThreadStatus::Blocking | ThreadStatus::BlockingRet(_) => true,
                 // already scheduled for kill
                 ThreadStatus::PleaseKill => true,
                 // drop it (we own it)
@@ -269,6 +271,34 @@ impl Process {
             self.exit_signal.lock().set_level(true);
             PROCESSES.lock().remove(&self.pid);
         }
+    }
+}
+
+#[naked]
+pub extern "C" fn start_new_task(arg: usize) {
+    unsafe {
+        core::arch::asm!(
+            // move the result into arg
+            "mov rdi, rax",
+            // Zero registers (except rdi which has arg)
+            "xor r15d, r15d",
+            "xor r14d, r14d",
+            "xor r13d, r13d",
+            "xor r12d, r12d",
+            "xor r11d, r11d",
+            "xor r10d, r10d",
+            "xor r9d,  r9d",
+            "xor r8d,  r8d",
+            "xor esi,  esi",
+            "xor edx,  edx",
+            "xor ecx,  ecx",
+            "xor ebx,  ebx",
+            "xor eax,  eax",
+            "xor ebp,  ebp",
+            // start
+            "iretq",
+            options(noreturn)
+        );
     }
 }
 
@@ -298,6 +328,11 @@ pub enum ThreadStatus {
     Ok,
     /// The thread should kill itself
     PleaseKill,
+    // Thread scheduled to block but hasn't saved yet
+    Blocking,
+    // Thread was woken before it could be saved
+    BlockingRet(usize),
+    // Thread blocked
     Blocked(Box<Thread>),
 }
 
@@ -384,7 +419,8 @@ impl Default for LinkedThreadList {
 
 pub struct Thread {
     handle: Arc<ThreadHandle>,
-    state: SavedThreadState,
+    pub state: Option<SavedTaskState>,
+    kstack_top: VirtAddr,
     linked_next: Option<Box<Thread>>,
     cached_event_listener: Arc<ThreadEventListener>,
 }
@@ -489,12 +525,11 @@ impl KEventListener for ThreadEventListener {
             ThreadStatus::Ok | ThreadStatus::PleaseKill => (),
             ThreadStatus::Blocked(mut this) => {
                 drop(status);
-                this.state.register_state.rax = match direction {
-                    true => 1,
-                    false => 0,
-                };
+                this.state.as_mut().unwrap().saved_arg = direction as usize;
                 push_task_queue(this);
             }
+            ThreadStatus::Blocking => *status = ThreadStatus::BlockingRet(direction as usize),
+            ThreadStatus::BlockingRet(_) => panic!("thread shouldn't be here"),
         }
     }
 }
@@ -508,20 +543,24 @@ impl Thread {
         &self.handle.process
     }
 
-    pub fn state(&self) -> &SavedThreadState {
-        &self.state
-    }
+    pub unsafe fn switch_to(mut self: Box<Self>) -> ! {
+        let state = self.state.take().unwrap();
 
-    pub unsafe fn save_state(&mut self, stack_frame: &InterruptStackFrame, reg: &Registers) {
-        self.state = SavedThreadState::new(stack_frame, reg)
-    }
-
-    pub unsafe fn restore_state(&self, stack_frame: &mut InterruptStackFrame, reg: &mut Registers) {
-        stack_frame
-            .as_mut()
-            .extract_inner()
-            .clone_from(&self.state.interrupt_frame);
-        reg.clone_from(&self.state.register_state);
+        unsafe {
+            self.process()
+                .memory
+                .lock()
+                .page_mapper
+                .get_mapper_mut()
+                .load_into_cr3_lazy()
+        }
+        CPULocalStorageRW::get_gdt().tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize] =
+            self.kstack_top;
+        CPULocalStorageRW::set_current_pid(self.process().pid);
+        CPULocalStorageRW::set_current_tid(self.handle().tid());
+        CPULocalStorageRW::set_current_task(self);
+        CPULocalStorageRW::set_ticks_left(5);
+        state.jump()
     }
 }
 

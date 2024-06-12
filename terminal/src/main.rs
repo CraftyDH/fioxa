@@ -358,7 +358,10 @@ pub extern "C" fn main() {
             //     println!("Up: {:02}:{:02}:{:02}", uptime, minutes, seconds)
             // }
             "sleep" => match rest.parse::<u64>() {
-                Ok(n) => sleep(n),
+                Ok(n) => {
+                    let act = sleep(n);
+                    println!("sleep: slept for {act}");
+                }
                 Err(e) => println!("sleep: {e:?}"),
             },
             "test" => {

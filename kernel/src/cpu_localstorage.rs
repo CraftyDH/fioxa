@@ -4,7 +4,6 @@ use alloc::boxed::Box;
 use kernel_userspace::ids::{ProcessID, ThreadID};
 
 use crate::{
-    assembly::registers::Registers,
     gdt::CPULocalGDT,
     paging::{
         get_uefi_active_mapper,
@@ -22,6 +21,7 @@ use crate::{
 pub struct CPULocalStorage {
     core_id: u8,
     stack_top: u64,
+    current_context: u8,
     current_pid: u64,
     current_tid: u64,
     current_task_ptr: u64,
@@ -30,6 +30,7 @@ pub struct CPULocalStorage {
     stay_scheduled: bool,
     core_mgmt_task_ptr: u64,
     screen_redraw: u64,
+    gdt_pointer: usize,
     // at 0x1000 (1 page down is GDT)
 }
 
@@ -181,6 +182,10 @@ impl CPULocalStorageRW {
     pub fn set_screen_redraw_time(t: u64) {
         unsafe { localstorage_write!(t => screen_redraw: u64) }
     }
+
+    pub fn get_gdt() -> &'static mut CPULocalGDT {
+        unsafe { &mut *(localstorage_read_imm!(gdt_pointer: u64) as *mut CPULocalGDT) }
+    }
 }
 
 pub unsafe fn init_core(core_id: u8) -> u64 {
@@ -207,12 +212,13 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     ls.current_tid = core_id as u64;
     ls.ticks_left = 0;
     ls.stay_scheduled = true;
+    ls.gdt_pointer = (vaddr_base + 0x1000) as usize;
 
     let task = PROCESSES
         .lock()
         .get(&ProcessID(0))
         .unwrap()
-        .new_thread_direct(nop_task as *const u64, Registers::default())
+        .new_thread(nop_task as *const u64, 0)
         .expect("init process shouldn't have died");
 
     ls.core_mgmt_task_ptr = 0;
@@ -224,7 +230,7 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
 }
 
 pub unsafe fn init_bsp_task() {
-    let gs_base = init_core(0);
+    let gs_base = new_cpu(0);
 
     // Load new core GDT
     // TODO: Remove old GDT

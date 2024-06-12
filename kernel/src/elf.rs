@@ -10,7 +10,6 @@ use kernel_userspace::{
 use x86_64::{align_down, align_up, instructions::interrupts::without_interrupts};
 
 use crate::{
-    assembly::registers::Registers,
     cpu_localstorage::CPULocalStorageRW,
     paging::{page_mapper::PageMapping, MemoryMappingFlags},
     scheduling::{
@@ -124,7 +123,7 @@ pub fn load_elf<'a>(
         }
     }
     drop(memory);
-    let thread = process.new_thread_direct(elf_header.e_entry as *const u64, Registers::default());
+    let thread = process.new_thread(elf_header.e_entry as *const u64, 0);
     without_context_switch(|| {
         PROCESSES.lock().insert(process.pid, process.clone());
     });

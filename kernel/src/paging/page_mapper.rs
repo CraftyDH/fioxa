@@ -27,6 +27,16 @@ impl PageMapping {
     pub fn size(&self) -> usize {
         self.size
     }
+
+    // panics if first doesn't have addr
+    pub fn base(&self) -> usize {
+        match &self.mapping {
+            PageMappingType::MMAP { base_address } => *base_address,
+            PageMappingType::LazyMapping { pages } => {
+                pages.lock()[0].0.unwrap().get_address() as usize
+            }
+        }
+    }
 }
 
 pub enum PageMappingType {
@@ -298,7 +308,7 @@ impl<'a> PageMapperManager<'a> {
 pub struct MaybeAllocatedPage(Option<Page<Size4KB>>);
 
 impl MaybeAllocatedPage {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self(None)
     }
 

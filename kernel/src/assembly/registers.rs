@@ -74,6 +74,28 @@ macro_rules! wrap_function_registers {
     };
 }
 
+#[derive(Debug)]
+pub struct SavedTaskState {
+    pub sp: usize,
+    pub ip: usize,
+    // goes into rax
+    pub saved_arg: usize,
+}
+
+impl SavedTaskState {
+    pub unsafe fn jump(self) -> ! {
+        let Self { sp, ip, saved_arg } = self;
+        core::arch::asm!(
+            "mov rsp, rdi",
+            "jmp rsi",
+            in("rdi") sp,
+            in("rsi") ip,
+            in("rax") saved_arg,
+            options(noreturn)
+        )
+    }
+}
+
 /// The order is very important
 #[derive(Debug)]
 #[repr(C)]

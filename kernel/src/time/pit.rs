@@ -12,14 +12,13 @@ use x86_64::{
 };
 
 use crate::{
-    assembly::registers::Registers,
+    assembly::registers::SavedTaskState,
     cpu_localstorage::CPULocalStorageRW,
     scheduling::{
         process::ThreadStatus,
-        taskmanager::{self, push_task_queue},
+        taskmanager::{self, push_task_queue, queue_thread},
     },
     screen::gop::WRITER,
-    wrap_function_registers,
 };
 
 use super::{SLEEP_TARGET, SLEPT_PROCESSES};
@@ -107,13 +106,71 @@ pub fn is_switching_tasks() -> bool {
     SWITCH_TASK.load(Ordering::Relaxed)
 }
 
-wrap_function_registers!(tick => tick_handler);
+#[naked]
+pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
+    unsafe {
+        core::arch::asm!(
+            "push rbp",
+            "push rax",
+            "push rbx",
+            "push rcx",
+            "push rdx",
+            "push rsi",
+            "push rdi",
+            "push r8",
+            "push r9",
+            "push r10",
+            "push r11",
+            "push r12",
+            "push r13",
+            "push r14",
+            "push r15",
+            "mov rdi, rsp",  // Arg #1: saved rsp
+            "mov rsp, gs:1", // load cpu stack
+            "xor ebp, ebp",  // reset frame base
+            "jmp {}",
+            sym tick,
+            options(noreturn)
+        );
+    }
+}
 
-unsafe extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
+#[naked]
+pub extern "x86-interrupt" fn context_switch_ret() {
+    unsafe {
+        core::arch::asm!(
+            "pop r15",
+            "pop r14",
+            "pop r13",
+            "pop r12",
+            "pop r11",
+            "pop r10",
+            "pop r9",
+            "pop r8",
+            "pop rdi",
+            "pop rsi",
+            "pop rdx",
+            "pop rcx",
+            "pop rbx",
+            "pop rax",
+            "pop rbp",
+            "iretq",
+            options(noreturn)
+        );
+    }
+}
+
+unsafe extern "C" fn tick(saved_rsp: usize) -> ! {
     let switch = !CPULocalStorageRW::get_stay_scheduled() && SWITCH_TASK.load(Ordering::Relaxed);
 
     if switch {
-        taskmanager::save_current_task(stack_frame, regs);
+        let mut task = CPULocalStorageRW::take_current_task();
+        task.state = Some(SavedTaskState {
+            sp: saved_rsp,
+            ip: context_switch_ret as usize,
+            saved_arg: 0, // meaningless for this
+        });
+        queue_thread(task);
     }
 
     if CPULocalStorageRW::get_core_id() == 0 {
@@ -122,17 +179,22 @@ unsafe extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Regi
         // Increment the uptime counter
         let uptime = TIME_SINCE_BOOT.fetch_add(freq, Ordering::Relaxed) + freq;
         // If we have a sleep target, wake up the job
-        if uptime >= SLEEP_TARGET.load(Ordering::Relaxed) {
+        if switch && uptime >= SLEEP_TARGET.load(Ordering::Relaxed) {
             // if over the target, try waking up processes
             if let Some(mut procs) = SLEPT_PROCESSES.try_lock() {
                 procs.retain(|&req_time, el| {
                     if req_time <= uptime {
                         while let Some(e) = el.pop() {
                             if let Some(handle) = e.upgrade() {
-                                if let ThreadStatus::Blocked(thread) =
-                                    core::mem::take(&mut *handle.status.lock())
-                                {
-                                    push_task_queue(thread);
+                                let status = &mut *handle.status.lock();
+                                match core::mem::take(status) {
+                                    ThreadStatus::Ok | ThreadStatus::BlockingRet(_) => {
+                                        panic!("bad state")
+                                    }
+                                    ThreadStatus::Blocking | ThreadStatus::PleaseKill => {
+                                        *status = ThreadStatus::BlockingRet(0)
+                                    }
+                                    ThreadStatus::Blocked(thread) => push_task_queue(thread),
                                 }
                             }
                         }
@@ -160,9 +222,22 @@ unsafe extern "C" fn tick(stack_frame: &mut InterruptStackFrame, regs: &mut Regi
         }
     }
 
-    if switch {
-        taskmanager::load_new_task(stack_frame, regs);
+    unsafe {
+        // Ack interrupt
+        *(0xfee000b0 as *mut u32) = 0;
+
+        if switch {
+            let task = taskmanager::get_next_task();
+            task.switch_to();
+        } else {
+            // go back
+            core::arch::asm!(
+                "mov rsp, rsi",
+                "jmp {}",
+                sym context_switch_ret,
+                in("rsi") saved_rsp,
+                options(noreturn)
+            )
+        }
     }
-    // Ack interrupt
-    unsafe { *(0xfee000b0 as *mut u32) = 0 }
 }

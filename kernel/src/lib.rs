@@ -83,7 +83,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     without_context_switch(|| {
         let mut w = WRITER.get().unwrap().lock();
         w.write_fmt(format_args!(
-            "KERNEL PANIC: {}\n  Caused by {:?}, {:?}",
+            "KERNEL PANIC: {}\n  Caused by {:?}, {:?}\n",
             info,
             CPULocalStorageRW::get_current_pid(),
             CPULocalStorageRW::get_current_tid()
@@ -109,23 +109,23 @@ fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
 pub fn stack_trace(w: &mut Writer) {
     unsafe {
         let mut rbp: usize;
-        w.write_str("Performing stack trace...").unwrap();
+        w.write_str("Performing stack trace...\n").unwrap();
         core::arch::asm!("mov {}, rbp", lateout(reg) rbp);
         for depth in 0.. {
             let caller = *((rbp + 8) as *const usize);
             w.write_fmt(format_args!(
-                "Frame {depth}: base pointer: {rbp:#x}, return address: {caller:#x}"
+                "Frame {depth}: base pointer: {rbp:#x}, return address: {caller:#x}\n"
             ))
             .unwrap();
 
             rbp = *(rbp as *const usize);
             // at rbp 0 we have walked to the end
             if rbp == 0 {
-                w.write_str("Stack trace finished.").unwrap();
+                w.write_str("Stack trace finished.\n").unwrap();
                 return;
             } else if rbp <= MemoryLoc::EndUserMem as usize {
                 w.write_fmt(format_args!(
-                    "Stopping at user mode, base pointer: {rbp:#x}"
+                    "Stopping at user mode, base pointer: {rbp:#x}\n"
                 ))
                 .unwrap();
                 return;

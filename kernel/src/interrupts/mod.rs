@@ -127,16 +127,6 @@ pub fn spurious(s: InterruptStackFrame) {
     debug!("Spurious {:?}", s)
 }
 
-// wrap_function_registers!(task_switch => task_switch_handler);
-
-// pub fn task_switch(stack_frame: &mut InterruptStackFrame, regs: &mut Registers) {
-//     print!("$");
-//     without_interrupts(|| {
-//         taskmanager::switch_task(stack_frame, regs);
-//         unsafe { core::ptr::write_volatile(0xfee000B0 as *mut u32, 0) }
-//     })
-// }
-
 #[inline(always)]
 fn int_interrupt_handler(vector: usize) {
     INTERRUPT_SOURCES
