@@ -10,7 +10,6 @@ use super::{
 };
 
 pub struct PageMapperManager<'a> {
-    _pml4: AllocatedPage,
     page_mapper: PageTable<'a, PageLvl4>,
     // start offset, end offset, mapping
     // this should always be ordered
@@ -103,10 +102,9 @@ impl PageMapping {
 
 impl<'a> PageMapperManager<'a> {
     pub fn new() -> Self {
-        let pml4 = request_page().unwrap();
-        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(*pml4) };
+        let pml4 = unsafe { request_page().unwrap().leak() };
+        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(pml4) };
         Self {
-            _pml4: pml4,
             page_mapper,
             mappings: Vec::new(),
         }
@@ -114,10 +112,11 @@ impl<'a> PageMapperManager<'a> {
 
     /// Unsafe as this can't be dropped as we shim the alloc32page into allocpage
     pub unsafe fn new_32() -> Self {
-        let pml4 = frame_alloc_exec(|a| a.request_32bit_reserved_page()).unwrap();
-        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(*pml4) };
+        let pml4 = frame_alloc_exec(|a| a.request_32bit_reserved_page())
+            .unwrap()
+            .leak();
+        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(pml4) };
         Self {
-            _pml4: AllocatedPage::new(pml4.leak()),
             page_mapper,
             mappings: Vec::new(),
         }
