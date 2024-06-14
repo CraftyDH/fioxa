@@ -30,10 +30,7 @@ fn panic(i: &core::panic::PanicInfo) -> ! {
     exit()
 }
 
-use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{boxed::Box, collections::VecDeque, string::String, vec::Vec};
 use input::keyboard::{
     virtual_code::{Letter, Modifier, VirtualKeyCode},
     KeyboardEvent,
@@ -142,19 +139,48 @@ pub extern "C" fn main() {
 
     let mut input: KBInputDecoder = KBInputDecoder::new(keyboard_sid);
 
+    let mut input_history: VecDeque<Box<str>> = VecDeque::new();
+
     loop {
-        print!("{partiton_id}:/ ");
+        print!("{partiton_id}:{cwd} ");
 
         let mut curr_line = String::new();
+        let mut history_pos: usize = 0;
 
         loop {
             let c = input.next().unwrap();
             if c == '\n' {
+                if !curr_line.is_empty() {
+                    input_history.push_front(curr_line.clone().into());
+                    if input_history.len() > 1000 {
+                        input_history.pop_back();
+                    }
+                }
                 println!();
                 break;
             } else if c == '\x08' {
                 if curr_line.pop().is_some() {
                     print!("\x08");
+                }
+            } else if c == '\u{02193}' {
+                history_pos = history_pos.saturating_sub(1);
+                while curr_line.pop().is_some() {
+                    print!("\x08");
+                }
+                if history_pos > 0 {
+                    if let Some(chr) = input_history.get(history_pos - 1) {
+                        curr_line.push_str(chr);
+                        print!("{curr_line}")
+                    }
+                }
+            } else if c == '\u{02191}' {
+                if let Some(chr) = input_history.get(history_pos) {
+                    history_pos += 1;
+                    while curr_line.pop().is_some() {
+                        print!("\x08");
+                    }
+                    curr_line.push_str(chr);
+                    print!("{curr_line}")
                 }
             } else {
                 curr_line.push(c);
@@ -168,10 +194,8 @@ pub extern "C" fn main() {
             .unwrap_or((curr_line.as_str(), ""));
         match command {
             "" => (),
-            "pwd" => println!("{}", cwd.to_string()),
-            "echo" => {
-                print!("ECHO!");
-            }
+            "pwd" => println!("{cwd}"),
+            "echo" => println!("{rest}"),
             "disk" => {
                 let c = rest.trim();
                 let c = c.chars().next();

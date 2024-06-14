@@ -135,6 +135,8 @@ impl USKeymap {
                 Control::Backspace => '\x08',
                 Control::Delete => '\u{7F}',
                 Control::Tab => '\x09',
+                Control::ArrowUp => '\u{2191}',
+                Control::ArrowDown => '\u{2193}',
                 _ => '\0',
             },
             VirtualKeyCode::Misc(key) => {
