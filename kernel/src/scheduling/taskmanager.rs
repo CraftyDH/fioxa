@@ -28,9 +28,8 @@ pub fn append_task_queue(list: &mut LinkedThreadList) {
 }
 
 pub unsafe fn core_start_multitasking() -> ! {
-    let task = CPULocalStorageRW::get_current_task();
-
-    task.state.take().unwrap().jump();
+    let task = CPULocalStorageRW::take_coremgmt_task();
+    task.switch_to();
 }
 
 /// Used for sleeping each core after the task queue becomes empty
@@ -38,19 +37,22 @@ pub unsafe fn core_start_multitasking() -> ! {
 /// Or when an async task (like interrupts) need to be in an actual process to dispatch (to avoid deadlocks)
 /// This reduces CPU load normally (doesn't thrash every core to 100%)
 /// However is does reduce performance when there are actually tasks that could use the time
-pub unsafe extern "C" fn nop_task() -> ! {
-    // enable interrupts and wait for multitasking to start
-    core::arch::asm!("sti");
-    while !is_switching_tasks() {
-        core::arch::asm!("hlt");
-    }
+pub extern "C" fn nop_task() {
+    info!("Starting nop task");
+    unsafe {
+        // enable interrupts and wait for multitasking to start
+        core::arch::asm!("sti");
+        while !is_switching_tasks() {
+            core::arch::asm!("hlt");
+        }
 
-    // Init complete, start executing tasks
-    CPULocalStorageRW::set_stay_scheduled(false);
+        // Init complete, start executing tasks
+        CPULocalStorageRW::set_stay_scheduled(false);
 
-    loop {
-        // nothing to do so sleep
-        unsafe { core::arch::asm!("hlt") };
+        loop {
+            // nothing to do so sleep
+            core::arch::asm!("hlt");
+        }
     }
 }
 
@@ -65,10 +67,15 @@ pub fn get_next_task() -> Box<Thread> {
         let status = core::mem::take(&mut *task.handle().status.lock());
         match status {
             super::process::ThreadStatus::Ok => {
-                return task;
-            }
-            super::process::ThreadStatus::PleaseKill => {
-                exit_thread_inner(task);
+                if task
+                    .handle()
+                    .kill_signal
+                    .load(core::sync::atomic::Ordering::Relaxed)
+                {
+                    exit_thread_inner(task);
+                } else {
+                    return task;
+                }
             }
             super::process::ThreadStatus::Blocked(_)
             | super::process::ThreadStatus::Blocking
@@ -89,30 +96,41 @@ pub fn queue_thread(thread: Box<Thread>) {
 
 /// Kills the current task and jumps into a new one
 /// DO NOT HOLD ANYTHING BEFORE CALLING THIS
-pub fn kill_bad_task() -> ! {
-    // switch stack
-    unsafe { core::arch::asm!("mov rsp, gs:1") }
-    let thread = {
-        let thread = CPULocalStorageRW::take_current_task();
+#[naked]
+pub extern "C" fn kill_bad_task() -> ! {
+    extern "C" fn inner() -> ! {
+        let thread = {
+            let thread = CPULocalStorageRW::take_current_task();
 
-        warn!(
-            "KILLING BAD TASK: PID: {:?}, TID: {:?}",
-            thread.process().pid,
-            thread.handle().tid()
-        );
+            warn!(
+                "KILLING BAD TASK: PID: {:?}, TID: {:?}, PRIV: {:?}",
+                thread.process().pid,
+                thread.handle().tid(),
+                thread.process().privilege
+            );
 
-        match thread.process().privilege {
-            crate::scheduling::process::ProcessPrivilige::KERNEL => {
-                panic!("STOPPING CORE AS KERNEL CANNOT DO BAD")
+            if thread.process().pid.0 == 0 {
+                panic!("Cannot kill process 0");
             }
-            crate::scheduling::process::ProcessPrivilige::USER => (),
-        }
 
-        exit_thread_inner(thread);
-        get_next_task()
+            exit_thread_inner(thread);
+            get_next_task()
+        };
+
+        unsafe { thread.switch_to() }
+    }
+    // switch stack
+    unsafe {
+        core::arch::asm!(
+            "cli",
+            "mov rsp, gs:0xA",
+            "xor eax, eax",
+            "mov gs:0x9, al",
+            "jmp {}",
+            sym inner,
+            options(noreturn)
+        )
     };
-
-    unsafe { thread.switch_to() }
 }
 
 pub unsafe extern "C" fn exit_thread(_: usize, _: usize) -> ! {
@@ -144,7 +162,7 @@ pub fn spawn_process(
     let curr = unsafe { CPULocalStorageRW::get_current_task() };
 
     kassert!(
-        curr.process().privilege == super::process::ProcessPrivilige::KERNEL,
+        curr.process().privilege != super::process::ProcessPrivilige::USER,
         "Only kernel may use spawn process"
     );
 
@@ -187,18 +205,28 @@ pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Result<usize, SyscallErr
 
 pub unsafe fn block_task(callback: unsafe extern "C" fn(usize, usize) -> !) -> usize {
     let res;
-    // save rbx, rbp and make llvm save anything it cares about
+
+    assert!(
+        !CPULocalStorageRW::get_stay_scheduled(),
+        "Thread should not be asking to stay scheduled and block."
+    );
+
+    // save rbx, rbp, flags and make llvm save anything it cares about
     core::arch::asm!(
         "push rbx",
         "push rbp",
+        "pushfq",
+        "mov gs:0x9, dil",
         "lea rdi, [rip+2f]", // ret addr
         "mov rsi, rsp",      // save rsp
-        "mov rsp, gs:1",     // load new stack
-        "jmp rax",
+        "mov rsp, gs:0xA",     // load new stack
+        "call rax",
         "2:",
+        "popfq",
         "pop rbp",
         "pop rbx",
         in("rax") callback,
+        in("dil") 0u8,
         lateout("rax") res,
         lateout("r15") _,
         lateout("r14") _,
@@ -212,13 +240,14 @@ pub unsafe fn block_task(callback: unsafe extern "C" fn(usize, usize) -> !) -> u
         lateout("rsi") _,
         lateout("rdx") _,
         lateout("rcx") _,
+        options(preserves_flags),
     );
     res
 }
 
 pub unsafe extern "C" fn yield_task(saved_rip: usize, saved_rsp: usize) -> ! {
     let mut task = CPULocalStorageRW::take_current_task();
-    task.state = Some(SavedTaskState {
+    task.save(SavedTaskState {
         sp: saved_rsp,
         ip: saved_rip,
         saved_arg: 0,
@@ -239,15 +268,10 @@ pub unsafe extern "C" fn switch_task(saved_rip: usize, saved_rsp: usize) -> ! {
     let mut status = task.handle().status.lock();
 
     match &mut *status {
-        // if kill return because we can't leave kernel threads without cleanup
-        super::process::ThreadStatus::PleaseKill => {
-            drop(status);
-            state.jump();
-        }
         // was blocking so start blocking
         super::process::ThreadStatus::Blocking => {
             let mut task = CPULocalStorageRW::take_current_task();
-            task.state = Some(state);
+            task.save(state);
             *status = super::process::ThreadStatus::Blocked(task);
             drop(status);
             get_next_task().switch_to();

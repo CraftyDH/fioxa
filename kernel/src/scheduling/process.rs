@@ -1,7 +1,7 @@
 use core::{
     fmt::Debug,
     num::NonZeroUsize,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use alloc::{
@@ -46,7 +46,7 @@ pub const STACK_ADDR: u64 = 0x100_000_000_000;
 pub const KSTACK_ADDR: u64 = 0xffff_800_000_000_000;
 
 pub const STACK_SIZE: u64 = 0x10000;
-pub const KSTACK_SIZE: u64 = 0x2000;
+pub const KSTACK_SIZE: u64 = 0x10000;
 
 pub const THREAD_TEMP_COUNT: usize = 8;
 
@@ -57,6 +57,8 @@ fn generate_next_process_id() -> ProcessID {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProcessPrivilige {
+    // Always should have pages mapped in
+    HIGHKERNEL,
     KERNEL,
     USER,
 }
@@ -64,14 +66,14 @@ pub enum ProcessPrivilige {
 impl ProcessPrivilige {
     pub fn get_code_segment(&self) -> SegmentSelector {
         match self {
-            ProcessPrivilige::KERNEL => gdt::KERNEL_CODE_SELECTOR,
+            ProcessPrivilige::HIGHKERNEL | ProcessPrivilige::KERNEL => gdt::KERNEL_CODE_SELECTOR,
             ProcessPrivilige::USER => gdt::USER_CODE_SELECTOR,
         }
     }
 
     pub fn get_data_segment(&self) -> SegmentSelector {
         match self {
-            ProcessPrivilige::KERNEL => gdt::KERNEL_DATA_SELECTOR,
+            ProcessPrivilige::HIGHKERNEL | ProcessPrivilige::KERNEL => gdt::KERNEL_DATA_SELECTOR,
             ProcessPrivilige::USER => gdt::USER_DATA_SELECTOR,
         }
     }
@@ -121,17 +123,8 @@ impl ProcessReferences {
 
 impl Process {
     pub fn new(privilege: ProcessPrivilige, args: &[u8]) -> Arc<Self> {
-        unsafe { Self::new_inner(privilege, args, false) }
-    }
-
-    // if kernel_proc is true, it must be the init kernel_proc
-    pub unsafe fn new_inner(
-        privilege: ProcessPrivilige,
-        args: &[u8],
-        kernel_proc: bool,
-    ) -> Arc<Self> {
-        let mut page_mapper = if kernel_proc {
-            PageMapperManager::new_32()
+        let mut page_mapper = if privilege == ProcessPrivilige::HIGHKERNEL {
+            unsafe { PageMapperManager::new_32() }
         } else {
             PageMapperManager::new()
         };
@@ -186,8 +179,8 @@ impl Process {
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0;
 
         let stack = match self.privilege {
-            ProcessPrivilige::KERNEL => PageMapping::new_lazy_filled(STACK_SIZE as usize),
-            ProcessPrivilige::USER => PageMapping::new_lazy(STACK_SIZE as usize),
+            ProcessPrivilige::HIGHKERNEL => PageMapping::new_lazy_filled(STACK_SIZE as usize),
+            _ => PageMapping::new_lazy(STACK_SIZE as usize),
         };
 
         self.memory
@@ -198,8 +191,9 @@ impl Process {
 
         let kstack_base = KSTACK_ADDR + (KSTACK_SIZE + 0x1000) * tid.0;
         let kstack_top = (kstack_base + KSTACK_SIZE) as usize;
-        let stack = PageMapping::new_lazy_filled(KSTACK_SIZE as usize);
-        let kstack_base_virt = virt_addr_for_phys(stack.base() as u64) as usize;
+        let stack = PageMapping::new_lazy(KSTACK_SIZE as usize);
+        let kstack_ptr_for_start = stack.base_top_stack();
+        let kstack_base_virt = virt_addr_for_phys(kstack_ptr_for_start as u64) as usize;
 
         self.memory
             .lock()
@@ -220,6 +214,7 @@ impl Process {
             process: self.this.upgrade().unwrap(),
             tid,
             status: Mutex::new(ThreadStatus::Ok),
+            kill_signal: AtomicBool::new(false),
         });
 
         let status = self.exit_status.lock();
@@ -237,7 +232,7 @@ impl Process {
             kstack_top: VirtAddr::from_ptr(kstack_top as *const ()),
             state: Some(SavedTaskState {
                 saved_arg: arg,
-                sp: kstack_base_virt,
+                sp: kstack_top - 0x1000,
                 ip: start_new_task as usize,
             }),
             linked_next: None,
@@ -253,18 +248,10 @@ impl Process {
     }
 
     pub fn kill_threads(&self) {
-        let mut threads = self.threads.lock();
-        threads.threads.retain(|_, thread| {
-            let mut status = thread.status.lock();
-            match core::mem::replace(&mut *status, ThreadStatus::PleaseKill) {
-                // Something will kill it soon
-                ThreadStatus::Ok | ThreadStatus::Blocking | ThreadStatus::BlockingRet(_) => true,
-                // already scheduled for kill
-                ThreadStatus::PleaseKill => true,
-                // drop it (we own it)
-                ThreadStatus::Blocked(_) => false,
-            }
-        });
+        let threads = self.threads.lock();
+        for t in &threads.threads {
+            t.1.kill_signal.store(true, Ordering::Relaxed);
+        }
         if threads.threads.is_empty() {
             drop(threads);
             *self.exit_status.lock() = ProcessExit::Exited;
@@ -278,6 +265,8 @@ impl Process {
 pub extern "C" fn start_new_task(arg: usize) {
     unsafe {
         core::arch::asm!(
+            "mov cl, 2",
+            "mov gs:0x9, cl", // set cpu context
             // move the result into arg
             "mov rdi, rax",
             // Zero registers (except rdi which has arg)
@@ -319,6 +308,7 @@ pub struct ThreadHandle {
     process: Arc<Process>,
     tid: ThreadID,
     pub status: Mutex<ThreadStatus>,
+    pub kill_signal: AtomicBool,
 }
 
 /// Only valid while running
@@ -326,8 +316,6 @@ pub struct ThreadHandle {
 pub enum ThreadStatus {
     #[default]
     Ok,
-    /// The thread should kill itself
-    PleaseKill,
     // Thread scheduled to block but hasn't saved yet
     Blocking,
     // Thread was woken before it could be saved
@@ -419,7 +407,7 @@ impl Default for LinkedThreadList {
 
 pub struct Thread {
     handle: Arc<ThreadHandle>,
-    pub state: Option<SavedTaskState>,
+    state: Option<SavedTaskState>,
     kstack_top: VirtAddr,
     linked_next: Option<Box<Thread>>,
     cached_event_listener: Arc<ThreadEventListener>,
@@ -521,15 +509,13 @@ impl KEventListener for ThreadEventListener {
         };
         let mut status = handle.status.lock();
         match core::mem::take(&mut *status) {
-            // probably got killed
-            ThreadStatus::Ok | ThreadStatus::PleaseKill => (),
             ThreadStatus::Blocked(mut this) => {
                 drop(status);
                 this.state.as_mut().unwrap().saved_arg = direction as usize;
                 push_task_queue(this);
             }
             ThreadStatus::Blocking => *status = ThreadStatus::BlockingRet(direction as usize),
-            ThreadStatus::BlockingRet(_) => panic!("thread shouldn't be here"),
+            ThreadStatus::Ok | ThreadStatus::BlockingRet(_) => panic!("thread shouldn't be here"),
         }
     }
 }
@@ -541,6 +527,11 @@ impl Thread {
 
     pub fn process(&self) -> &Arc<Process> {
         &self.handle.process
+    }
+
+    pub fn save(&mut self, state: SavedTaskState) {
+        assert!(self.state.is_none());
+        self.state = Some(state);
     }
 
     pub unsafe fn switch_to(mut self: Box<Self>) -> ! {

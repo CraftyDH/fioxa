@@ -17,6 +17,8 @@
 use core::fmt::Write;
 
 use bootloader::BootInfo;
+use kernel_userspace::syscall::exit;
+use scheduling::taskmanager::kill_bad_task;
 use screen::gop::WRITER;
 use terminal::Writer;
 
@@ -78,25 +80,40 @@ pub fn kernel_memory_loc() -> (u64, u64) {
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    // unsafe { WRITER.force_unlock() };
-    // unsafe { core::arch::asm!("cli") }
-    without_context_switch(|| {
-        let mut w = WRITER.get().unwrap().lock();
-        w.write_fmt(format_args!(
-            "KERNEL PANIC: {}\n  Caused by {:?}, {:?}\n",
-            info,
+    let context = CPULocalStorageRW::get_context();
+    if context == 0 {
+        // lowest context, no chance of recovery
+        without_context_switch(|| {
+            let mut w = WRITER.get().unwrap().lock();
+            w.write_fmt(format_args!(
+                "KERNEL PANIC: {}\n  Caused by {:?}, {:?}\n",
+                info,
+                CPULocalStorageRW::get_current_pid(),
+                CPULocalStorageRW::get_current_tid()
+            ))
+            .unwrap();
+            // since we drop context switch manually trigger redraw
+            w.redraw_if_needed();
+            crate::stack_trace(&mut w);
+            w.redraw_if_needed();
+            loop {
+                unsafe { core::arch::asm!("hlt") }
+            }
+        })
+    } else if context == 1 {
+        // see if we can recover
+        error!("KERNEL PANIC: {}", info);
+        kill_bad_task()
+    } else {
+        // it's a kernel thread so exit
+        error!(
+            "KERNEL THREAD PANIC: Caused by {:?} {:?}\n{}",
             CPULocalStorageRW::get_current_pid(),
-            CPULocalStorageRW::get_current_tid()
-        ))
-        .unwrap();
-        // since we drop context switch manually trigger redraw
-        w.redraw_if_needed();
-        crate::stack_trace(&mut w);
-        w.redraw_if_needed();
-        loop {
-            unsafe { core::arch::asm!("hlt") }
-        }
-    })
+            CPULocalStorageRW::get_current_tid(),
+            info
+        );
+        exit()
+    }
 }
 
 #[alloc_error_handler]

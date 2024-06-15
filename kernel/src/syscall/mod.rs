@@ -139,10 +139,11 @@ macro_rules! kenum_cast {
 pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
     unsafe {
         core::arch::asm!(
-            "push rbp",
-            "xor ebp, ebp", // reset frame base
+            "mov al, 1",
+            "mov gs:0x9, al", // set cpu context
             "call {}",
-            "pop rbp",
+            "mov cl, 2",
+            "mov gs:0x9, cl", // set cpu context
             // clear scratch registers (we don't want leaks)
             "xor r11d, r11d",
             "xor r10d, r10d",

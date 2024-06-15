@@ -110,36 +110,40 @@ unsafe extern "x86-interrupt" fn page_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: PageFaultErrorCode,
 ) {
+    let context = CPULocalStorageRW::get_context();
+    let addr = Cr2::read();
+
+    // If context is zero very bad stuff happened
+    if context == 0 {
+        panic!(
+            "EXCEPTION: PAGE FAULT: {:?}\n  Accessed Address: {:?} by {:?}",
+            error_code, addr, stack_frame.instruction_pointer
+        );
+    }
+
     // unsafe { WRITER.force_unlock() };
     // WRITER.lock().fill_screen(0xFF_00_00);
     // WRITER.lock().pos.y = 0;
-    let addr = Cr2::read();
     if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
         error!(
             "EXCEPTION: PAGE FAULT: Protection violation at {:?} {error_code:?}",
             addr
         );
         kill_bad_task()
-    } else if error_code.contains(PageFaultErrorCode::complement(
-        PageFaultErrorCode::CAUSED_BY_WRITE
-            | PageFaultErrorCode::USER_MODE
-            | PageFaultErrorCode::INSTRUCTION_FETCH,
-    )) {
-        panic!(
-            "EXCEPTION: PAGE FAULT: {:?}\n
-            Accessed Address: {:?} by {:?}",
-            error_code, addr, stack_frame.instruction_pointer
+    }
+
+    let process = CPULocalStorageRW::get_current_task().process();
+    let mut mem = process.memory.lock();
+    if mem
+        .page_mapper
+        .page_fault_handler(addr.as_u64() as usize)
+        .is_none()
+    {
+        warn!(
+            "EXCEPTION: PAGE FAULT: Failed to map {:?} {:?}",
+            addr, stack_frame.instruction_pointer
         );
-    } else {
-        let process = CPULocalStorageRW::get_current_task().process();
-        let mut mem = process.memory.lock();
-        if mem
-            .page_mapper
-            .page_fault_handler(addr.as_u64() as usize)
-            .is_none()
-        {
-            warn!("EXCEPTION: PAGE FAULT: Failed to map {:?}", addr);
-            kill_bad_task()
-        }
+        drop(mem);
+        kill_bad_task()
     }
 }

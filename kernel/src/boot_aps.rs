@@ -12,7 +12,7 @@ use crate::{
     ioapic::Madt,
     lapic::{enable_localapic, LAPIC_ADDR},
     paging::{page_allocator::frame_alloc_exec, MemoryLoc},
-    scheduling::taskmanager::core_start_multitasking,
+    scheduling::taskmanager::{core_start_multitasking, nop_task},
     time::spin_sleep_ms,
 };
 
@@ -69,7 +69,7 @@ pub unsafe fn boot_aps(madt: &Madt) {
         let id = *core;
         info!("Booting Core: {id}");
 
-        let local_storage = unsafe { new_cpu(id) };
+        let local_storage = unsafe { new_cpu(id, nop_task) };
 
         let id = id as usize;
 

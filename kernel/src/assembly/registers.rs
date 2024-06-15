@@ -86,8 +86,10 @@ impl SavedTaskState {
     pub unsafe fn jump(self) -> ! {
         let Self { sp, ip, saved_arg } = self;
         core::arch::asm!(
+            "mov gs:0x9, {}",
             "mov rsp, rdi",
             "jmp rsi",
+            in(reg_byte) 1u8,
             in("rdi") sp,
             in("rsi") ip,
             in("rax") saved_arg,

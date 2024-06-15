@@ -18,7 +18,7 @@ use acpi::sdt::Signature;
 use bootloader::{entry_point, BootInfo};
 use kernel::boot_aps::boot_aps;
 use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER, TERMINAL_ELF};
-use kernel::cpu_localstorage::init_bsp_task;
+use kernel::cpu_localstorage::{init_bsp_task, CPULocalStorageRW};
 use kernel::elf::load_elf;
 use kernel::fs::{self, FSDRIVES};
 use kernel::interrupts::{self, check_interrupts};
@@ -36,7 +36,7 @@ use kernel::paging::{
 };
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::Process;
-use kernel::scheduling::taskmanager::{core_start_multitasking, PROCESSES};
+use kernel::scheduling::taskmanager::{core_start_multitasking, nop_task, PROCESSES};
 use kernel::scheduling::without_context_switch;
 use kernel::screen::gop;
 use kernel::screen::psf1;
@@ -99,8 +99,10 @@ pub fn main_entry(info: *const BootInfo) -> ! {
     // remap and jump kernel to correct location
     unsafe {
         let map_addr = {
-            let init_process =
-                Process::new(kernel::scheduling::process::ProcessPrivilige::KERNEL, &[]);
+            let init_process = Process::new(
+                kernel::scheduling::process::ProcessPrivilige::HIGHKERNEL,
+                &[],
+            );
             assert!(init_process.pid == ProcessID(0));
 
             PROCESSES
@@ -110,7 +112,7 @@ pub fn main_entry(info: *const BootInfo) -> ! {
             let mut mem = init_process.memory.lock();
 
             // we need to set 0x8000 for the trampoline
-            mem.page_mapper.insert_mapping_at(
+            mem.page_mapper.insert_mapping_at_set(
                 0x8000,
                 PageMapping::new_mmap(0x8000, 0x1000),
                 MemoryMappingFlags::WRITEABLE,
@@ -133,8 +135,16 @@ pub fn main_entry(info: *const BootInfo) -> ! {
             debug!("Remapping to higher half");
             map.shift_table_to_offset();
             set_mem_offset(MemoryLoc::PhysMapOffset as u64);
+            BOOT_INFO = virt_addr_offset(info);
             map.into_page().get_address()
         };
+
+        unsafe extern "C" fn jump_to_main() {
+            // this needs to be called after the jump into higher half
+            init_bsp_task(main);
+            core_start_multitasking();
+        }
+
         // load and jump stack
         core::arch::asm!(
             "mov rbp, 0",
@@ -143,24 +153,17 @@ pub fn main_entry(info: *const BootInfo) -> ! {
             "jmp {}",
             in(reg) MemoryLoc::PhysMapOffset as u64,
             in(reg) map_addr,
-            in(reg) main,
-            in("rdi") virt_addr_offset(info),
+            in(reg) jump_to_main,
             options(noreturn)
         );
     }
 }
 
-fn main(info: *const BootInfo) {
-    // set global boot info
-    unsafe { BOOT_INFO = info };
-
+extern "C" fn main() {
     // read boot_info
-    let boot_info = unsafe { core::ptr::read(info) };
+    let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
 
-    let init_process = PROCESSES.lock().get(&ProcessID(0)).unwrap().clone();
-
-    info!("Initializing BSP for multicore...");
-    unsafe { init_bsp_task() };
+    let init_process = unsafe { CPULocalStorageRW::get_current_task().process() };
 
     unsafe {
         get_uefi_active_mapper()
@@ -216,7 +219,7 @@ fn main(info: *const BootInfo) {
 
     info!("Start multi");
 
-    unsafe { core_start_multitasking() };
+    nop_task()
 }
 
 fn after_boot() {

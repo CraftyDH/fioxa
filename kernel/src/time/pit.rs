@@ -126,9 +126,10 @@ pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
             "push r14",
             "push r15",
             "mov rdi, rsp",  // Arg #1: saved rsp
-            "mov rsp, gs:1", // load cpu stack
-            "xor ebp, ebp",  // reset frame base
-            "jmp {}",
+            "mov rsp, gs:0xA", // load cpu stack
+            "xor eax, eax",
+            "mov gs:0x9, al", // set cpu context to 0
+            "call {}",
             sym tick,
             options(noreturn)
         );
@@ -139,6 +140,8 @@ pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
 pub extern "x86-interrupt" fn context_switch_ret() {
     unsafe {
         core::arch::asm!(
+            "mov al, 2",
+            "mov gs:0x9, al", // set cpu context
             "pop r15",
             "pop r14",
             "pop r13",
@@ -161,17 +164,13 @@ pub extern "x86-interrupt" fn context_switch_ret() {
 }
 
 unsafe extern "C" fn tick(saved_rsp: usize) -> ! {
-    let switch = !CPULocalStorageRW::get_stay_scheduled() && SWITCH_TASK.load(Ordering::Relaxed);
+    let stay_scheduled = CPULocalStorageRW::get_stay_scheduled();
 
-    if switch {
-        let mut task = CPULocalStorageRW::take_current_task();
-        task.state = Some(SavedTaskState {
-            sp: saved_rsp,
-            ip: context_switch_ret as usize,
-            saved_arg: 0, // meaningless for this
-        });
-        queue_thread(task);
-    }
+    let state = SavedTaskState {
+        sp: saved_rsp,
+        ip: context_switch_ret as usize,
+        saved_arg: 0, // meaningless for this
+    };
 
     if CPULocalStorageRW::get_core_id() == 0 {
         // Get the amount of milliseconds per interrupt
@@ -179,7 +178,7 @@ unsafe extern "C" fn tick(saved_rsp: usize) -> ! {
         // Increment the uptime counter
         let uptime = TIME_SINCE_BOOT.fetch_add(freq, Ordering::Relaxed) + freq;
         // If we have a sleep target, wake up the job
-        if switch && uptime >= SLEEP_TARGET.load(Ordering::Relaxed) {
+        if !stay_scheduled && uptime >= SLEEP_TARGET.load(Ordering::Relaxed) {
             // if over the target, try waking up processes
             if let Some(mut procs) = SLEPT_PROCESSES.try_lock() {
                 procs.retain(|&req_time, el| {
@@ -191,7 +190,7 @@ unsafe extern "C" fn tick(saved_rsp: usize) -> ! {
                                     ThreadStatus::Ok | ThreadStatus::BlockingRet(_) => {
                                         panic!("bad state")
                                     }
-                                    ThreadStatus::Blocking | ThreadStatus::PleaseKill => {
+                                    ThreadStatus::Blocking => {
                                         *status = ThreadStatus::BlockingRet(0)
                                     }
                                     ThreadStatus::Blocked(thread) => push_task_queue(thread),
@@ -213,9 +212,7 @@ unsafe extern "C" fn tick(saved_rsp: usize) -> ! {
         // potentially update screen every 16ms
         //* Very important that CPU doesn't have the stay scheduled flag (deadlock possible otherwise)
         // TODO: Can we VSYNC this? Could stop the tearing.
-        if !CPULocalStorageRW::get_stay_scheduled()
-            && uptime > CPULocalStorageRW::get_screen_redraw_time()
-        {
+        if !stay_scheduled && uptime > CPULocalStorageRW::get_screen_redraw_time() {
             CPULocalStorageRW::set_screen_redraw_time(uptime + 16);
             let mut w = WRITER.get().unwrap().lock();
             w.redraw_if_needed();
@@ -226,18 +223,15 @@ unsafe extern "C" fn tick(saved_rsp: usize) -> ! {
         // Ack interrupt
         *(0xfee000b0 as *mut u32) = 0;
 
-        if switch {
+        if !stay_scheduled && SWITCH_TASK.load(Ordering::Relaxed) {
+            let mut task = CPULocalStorageRW::take_current_task();
+            task.save(state);
+            queue_thread(task);
             let task = taskmanager::get_next_task();
             task.switch_to();
         } else {
             // go back
-            core::arch::asm!(
-                "mov rsp, rsi",
-                "jmp {}",
-                sym context_switch_ret,
-                in("rsi") saved_rsp,
-                options(noreturn)
-            )
+            state.jump()
         }
     }
 }

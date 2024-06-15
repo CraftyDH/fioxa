@@ -27,13 +27,21 @@ impl PageMapping {
         self.size
     }
 
-    // panics if first doesn't have addr
-    pub fn base(&self) -> usize {
+    pub fn base_top_stack(&self) -> usize {
         match &self.mapping {
-            PageMappingType::MMAP { base_address } => *base_address,
             PageMappingType::LazyMapping { pages } => {
-                pages.lock()[0].0.unwrap().get_address() as usize
+                let mut pages = pages.lock();
+                let page = pages.last_mut().unwrap();
+                page.0
+                    .unwrap_or_else(|| {
+                        let apage = request_page().unwrap();
+                        let p = *apage;
+                        page.set(apage);
+                        p
+                    })
+                    .get_address() as usize
             }
+            _ => panic!(),
         }
     }
 }

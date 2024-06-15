@@ -11,10 +11,7 @@ use crate::{
         page_table_manager::{Mapper, Page},
         virt_addr_for_phys, MemoryLoc, MemoryMappingFlags,
     },
-    scheduling::{
-        process::Thread,
-        taskmanager::{nop_task, PROCESSES},
-    },
+    scheduling::{process::Thread, taskmanager::PROCESSES},
 };
 
 #[repr(C, packed)]
@@ -22,6 +19,7 @@ pub struct CPULocalStorage {
     core_id: u8,
     stack_top: u64,
     current_context: u8,
+    scratch_stack_top: u64,
     current_pid: u64,
     current_tid: u64,
     current_task_ptr: u64,
@@ -186,9 +184,13 @@ impl CPULocalStorageRW {
     pub fn get_gdt() -> &'static mut CPULocalGDT {
         unsafe { &mut *(localstorage_read_imm!(gdt_pointer: u64) as *mut CPULocalGDT) }
     }
+
+    pub fn get_context() -> u8 {
+        unsafe { localstorage_read_imm!(current_context: u8) }
+    }
 }
 
-pub unsafe fn init_core(core_id: u8) -> u64 {
+pub unsafe fn init_core(core_id: u8, func: extern "C" fn()) -> u64 {
     let vaddr_base = MemoryLoc::PerCpuMem as u64 + 0x100_0000 * core_id as u64;
 
     let cpu_lsize = size_of::<CPULocalStorage>() as u64;
@@ -213,24 +215,25 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     ls.ticks_left = 0;
     ls.stay_scheduled = true;
     ls.gdt_pointer = (vaddr_base + 0x1000) as usize;
+    ls.current_context = 0;
 
     let task = PROCESSES
         .lock()
         .get(&ProcessID(0))
         .unwrap()
-        .new_thread(nop_task as *const u64, 0)
+        .new_thread(func as *const u64, 0)
         .expect("init process shouldn't have died");
 
-    ls.core_mgmt_task_ptr = 0;
-    ls.current_task_ptr = Box::into_raw(task) as u64;
+    ls.core_mgmt_task_ptr = Box::into_raw(task) as u64;
+    ls.current_task_ptr = 0;
 
     crate::gdt::create_gdt_for_core(unsafe { &mut *((vaddr_base + 0x1000) as *mut CPULocalGDT) });
 
     vaddr_base
 }
 
-pub unsafe fn init_bsp_task() {
-    let gs_base = new_cpu(0);
+pub unsafe fn init_bsp_task(func: extern "C" fn()) {
+    let gs_base = new_cpu(0, func);
 
     // Load new core GDT
     // TODO: Remove old GDT
@@ -256,8 +259,8 @@ pub unsafe fn init_bsp_task() {
 
 pub const CPU_STACK_SIZE_PAGES: u64 = 10;
 
-pub unsafe fn new_cpu(core_id: u8) -> u64 {
-    let vaddr = init_core(core_id);
+pub unsafe fn new_cpu(core_id: u8, func: extern "C" fn()) -> u64 {
+    let vaddr = init_core(core_id, func);
     let ls = unsafe { &mut *(vaddr as *mut CPULocalStorage) };
 
     let stack_base = frame_alloc_exec(|c| c.request_cont_pages(CPU_STACK_SIZE_PAGES as usize))
@@ -268,5 +271,14 @@ pub unsafe fn new_cpu(core_id: u8) -> u64 {
         .get_address();
 
     ls.stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE_PAGES * 0x1000;
+
+    let stack_base = frame_alloc_exec(|c| c.request_cont_pages(CPU_STACK_SIZE_PAGES as usize))
+        .unwrap()
+        .next()
+        .unwrap()
+        .leak()
+        .get_address();
+
+    ls.scratch_stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE_PAGES * 0x1000;
     vaddr
 }
