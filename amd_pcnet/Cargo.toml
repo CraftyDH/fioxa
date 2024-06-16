@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 userspace_slaballoc = { path = "../userspace_slaballoc" }
 userspace = { path = "../userspace" }
-kernel_userspace = { path = "../kernel_userspace" }
+kernel_userspace = { path = "../kernel_userspace", features = ["iret"] }
 
 spin = "0.9"
 x86_64 = "0.14"

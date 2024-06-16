@@ -19,8 +19,9 @@ pub const TSS_STACK_SIZE: usize = 0x1000 * 5;
 // GDT Segment Selectors
 pub const KERNEL_CODE_SELECTOR: SegmentSelector = SegmentSelector::new(1, PrivilegeLevel::Ring0);
 pub const KERNEL_DATA_SELECTOR: SegmentSelector = SegmentSelector::new(2, PrivilegeLevel::Ring0);
-pub const USER_CODE_SELECTOR: SegmentSelector = SegmentSelector::new(3, PrivilegeLevel::Ring3);
-pub const USER_DATA_SELECTOR: SegmentSelector = SegmentSelector::new(4, PrivilegeLevel::Ring3);
+// In Long Mode, userland CS will be loaded from STAR 63:48 + 16 and userland SS from STAR 63:48 + 8 on SYSRET. You may need to modify your GDT accordingly.
+pub const USER_CODE_SELECTOR: SegmentSelector = SegmentSelector::new(4, PrivilegeLevel::Ring3);
+pub const USER_DATA_SELECTOR: SegmentSelector = SegmentSelector::new(3, PrivilegeLevel::Ring3);
 pub const TSS_SELECTOR: SegmentSelector = SegmentSelector::new(5, PrivilegeLevel::Ring0);
 
 pub static TSS: Lazy<TaskStateSegment> = Lazy::new(|| {
@@ -38,8 +39,8 @@ pub static BOOTGDT: Lazy<GlobalDescriptorTable> = Lazy::new(|| {
     let mut gdt = GlobalDescriptorTable::new();
     gdt.add_entry(Descriptor::kernel_code_segment());
     gdt.add_entry(Descriptor::kernel_data_segment());
-    gdt.add_entry(Descriptor::user_code_segment());
     gdt.add_entry(Descriptor::user_data_segment());
+    gdt.add_entry(Descriptor::user_code_segment());
     gdt.add_entry(Descriptor::tss_segment(&TSS));
     gdt
 });
@@ -71,8 +72,8 @@ pub unsafe fn create_gdt_for_core(gdt: &'static mut CPULocalGDT) {
     gdt.gdt.add_entry(Descriptor::kernel_code_segment());
     gdt.gdt.add_entry(Descriptor::kernel_data_segment());
 
-    gdt.gdt.add_entry(Descriptor::user_code_segment());
     gdt.gdt.add_entry(Descriptor::user_data_segment());
+    gdt.gdt.add_entry(Descriptor::user_code_segment());
 
     gdt.tss = TaskStateSegment::new();
 

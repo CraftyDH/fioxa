@@ -6,8 +6,12 @@ use kernel_userspace::{ids::ProcessID, process::ProcessExit, syscall::thread_boo
 use spin::{Lazy, Mutex};
 
 use crate::{
-    assembly::registers::SavedTaskState, cpu_localstorage::CPULocalStorageRW,
-    gdt::TASK_SWITCH_INDEX, kassert, syscall::SyscallError, time::pit::is_switching_tasks,
+    assembly::{registers::SavedTaskState, wrmsr},
+    cpu_localstorage::CPULocalStorageRW,
+    gdt::{KERNEL_CODE_SELECTOR, TASK_SWITCH_INDEX, USER_CODE_SELECTOR},
+    kassert,
+    syscall::{syscall_sysret_handler, SyscallError},
+    time::pit::is_switching_tasks,
 };
 
 use super::{
@@ -27,7 +31,34 @@ pub fn append_task_queue(list: &mut LinkedThreadList) {
     without_context_switch(|| TASK_QUEUE.lock().append(list))
 }
 
+pub unsafe fn enable_syscall() {
+    // set up syscall/syscret
+    // In Long Mode, userland CS will be loaded from STAR 63:48 + 16 and userland SS from STAR 63:48 + 8 on SYSRET.
+    let star = ((USER_CODE_SELECTOR.0 - 16) as u64) << 48 | (KERNEL_CODE_SELECTOR.0 as u64) << 32;
+    // set star
+    wrmsr(0xC0000081, star);
+
+    // set lstar (the rip that it'll go to)
+    wrmsr(0xC0000082, syscall_sysret_handler as u64);
+
+    // set flag mask (mask everything)
+    wrmsr(0xC0000084, 0x200);
+
+    // enable syscall
+    core::arch::asm!(
+        "rdmsr",
+        "or eax, 1",
+        "wrmsr",
+        in("ecx") 0xC0000080u32,
+        lateout("ecx") _,
+        lateout("eax") _,
+        options(preserves_flags, nostack)
+    );
+}
+
 pub unsafe fn core_start_multitasking() -> ! {
+    enable_syscall();
+
     let mut target = CPULocalStorageRW::take_coremgmt_task();
 
     let state = target.state.take().unwrap();

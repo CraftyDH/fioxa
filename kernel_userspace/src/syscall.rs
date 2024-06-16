@@ -32,7 +32,65 @@ pub const PROCESS: usize = 16;
 // As it is static is won't give the correct answer
 pub static CURRENT_PID: Lazy<ProcessID> = Lazy::new(get_pid);
 
+#[cfg(all(feature = "kernel", feature = "iret"))]
+const _: () = compile_error!("kernel and iret syscall types are incompatable");
+
+#[cfg(feature = "kernel")]
+use core::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(feature = "kernel")]
+static SYSCALL_FN: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "kernel")]
+pub unsafe fn get_syscall_fn() -> u64 {
+    SYSCALL_FN.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "kernel")]
+pub unsafe fn set_syscall_fn(f: u64) {
+    SYSCALL_FN.store(f, Ordering::Release);
+}
+
+#[cfg(feature = "kernel")]
+#[macro_export]
+macro_rules! make_syscall {
+    // No result
+    ($syscall:expr) => {
+        core::arch::asm!("call rax", in("rax") crate::syscall::get_syscall_fn(), in("rdi") $syscall, lateout("rax") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr) => {
+        core::arch::asm!("call rax", in("rax") crate::syscall::get_syscall_fn(), in("rdi") $syscall, in("rsi") $arg1, lateout("rax") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr) => {
+        core::arch::asm!("call rax", in("rax") crate::syscall::get_syscall_fn(), in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, lateout("rax") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr) => {
+        core::arch::asm!("call rax", in("rax") crate::syscall::get_syscall_fn(), in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, in("rcx") $arg3, lateout("rax") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+
+    // 1 result
+    ($syscall:expr => $result:ident) => {
+        core::arch::asm!("call rax", in("rax") crate::syscall::get_syscall_fn(), in("rdi") $syscall, lateout("rax") $result, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr => $result:ident) => {
+        core::arch::asm!("call rax", in("rax") crate::syscall::get_syscall_fn(), in("rdi") $syscall, in("rsi") $arg1, lateout("rax") $result, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr => $result:ident) => {
+        core::arch::asm!("call rax", in("rax") crate::syscall::get_syscall_fn(), in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, lateout("rax") $result, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr => $result:ident) => {
+        core::arch::asm!("call rax", in("rax") crate::syscall::get_syscall_fn(), in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, in("rcx") $arg3, lateout("rax") $result, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr => $result:ident) => {
+        core::arch::asm!("call rax", in("rax") crate::syscall::get_syscall_fn(), in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, in("rcx") $arg3, in("r8") $arg4, lateout("rax") $result, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr => $result:ident) => {
+        core::arch::asm!("call rax", in("rax") crate::syscall::get_syscall_fn(), in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, in("rcx") $arg3, in("r8") $arg4, in("r9") $arg5, lateout("rax") $result, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+}
+
 // TODO: Use fancier macros to dynamically build the argss
+#[cfg(feature = "iret")]
 #[macro_export]
 macro_rules! make_syscall {
     // No result
@@ -67,6 +125,44 @@ macro_rules! make_syscall {
     };
     ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr => $result:ident) => {
         core::arch::asm!("int 0x80", in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, in("rcx") $arg3, in("r8") $arg4, in("r9") $arg5, lateout("rax") $result, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+}
+
+#[cfg(all(not(feature = "kernel"), not(feature = "iret")))]
+#[macro_export]
+macro_rules! make_syscall {
+    // No result
+    ($syscall:expr) => {
+        core::arch::asm!("syscall", in("rdi") $syscall, lateout("rax") _, lateout("r15") _, lateout("r14") _, lateout("r13") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr) => {
+        core::arch::asm!("syscall", in("rdi") $syscall, in("rsi") $arg1, lateout("rax") _, lateout("r15") _, lateout("r14") _, lateout("r13") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr) => {
+        core::arch::asm!("syscall", in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, lateout("rax") _, lateout("r15") _, lateout("r14") _, lateout("r13") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr) => {
+        core::arch::asm!("syscall", in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, in("r10") $arg3, lateout("rax") _, lateout("r15") _, lateout("r14") _, lateout("r13") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+
+    // 1 result
+    ($syscall:expr => $result:ident) => {
+        core::arch::asm!("syscall", in("rdi") $syscall, lateout("rax") $result, lateout("r15") _, lateout("r14") _, lateout("r13") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr => $result:ident) => {
+        core::arch::asm!("syscall", in("rdi") $syscall, in("rsi") $arg1, lateout("rax") $result, lateout("r15") _, lateout("r14") _, lateout("r13") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr => $result:ident) => {
+        core::arch::asm!("syscall", in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, lateout("rax") $result, lateout("r15") _, lateout("r14") _, lateout("r13") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr => $result:ident) => {
+        core::arch::asm!("syscall", in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, in("r10") $arg3, lateout("rax") $result, lateout("r15") _, lateout("r14") _, lateout("r13") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr => $result:ident) => {
+        core::arch::asm!("syscall", in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, in("r10") $arg3, in("r8") $arg4, lateout("rax") $result, lateout("r15") _, lateout("r14") _, lateout("r13") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
+    };
+    ($syscall:expr, $arg1:expr, $arg2:expr, $arg3:expr, $arg4:expr, $arg5:expr => $result:ident) => {
+        core::arch::asm!("syscall", in("rdi") $syscall, in("rsi") $arg1, in("rdx") $arg2, in("r10") $arg3, in("r8") $arg4, in("r9") $arg5, lateout("rax") $result, lateout("r15") _, lateout("r14") _, lateout("r13") _, lateout("r11") _, lateout("r10") _, lateout("r9") _, lateout("r8") _, lateout("rdi") _, lateout("rsi") _, lateout("rdx") _, lateout("rcx") _, options(nostack))
     };
 }
 

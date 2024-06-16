@@ -40,6 +40,7 @@ use kernel::scheduling::taskmanager::{core_start_multitasking, nop_task, PROCESS
 use kernel::scheduling::without_context_switch;
 use kernel::screen::gop;
 use kernel::screen::psf1;
+use kernel::syscall::syscall_kernel_handler;
 use kernel::terminal::Writer;
 use kernel::time::init_time;
 use kernel::time::pit::start_switching_tasks;
@@ -52,7 +53,7 @@ use bootloader::uefi::table::{Runtime, SystemTable};
 use kernel_userspace::ids::ProcessID;
 use kernel_userspace::object::KernelReference;
 use kernel_userspace::socket::{socket_connect, SocketListenHandle, SocketRecieveResult};
-use kernel_userspace::syscall::{exit, spawn_process, spawn_thread};
+use kernel_userspace::syscall::{exit, set_syscall_fn, spawn_process, spawn_thread};
 
 // #[no_mangle]
 entry_point!(main_entry);
@@ -64,6 +65,8 @@ pub fn main_entry(info: *const BootInfo) -> ! {
         // init gdt & idt
         gdt::init_bootgdt();
         interrupts::init_idt();
+
+        set_syscall_fn(syscall_kernel_handler as u64);
 
         BOOT_INFO = info;
         let boot_info = info.read();

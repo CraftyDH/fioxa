@@ -21,6 +21,7 @@ pub struct CPULocalStorage {
     current_context: u8,
     scratch_stack_top: u64,
     current_task_ptr: u64,
+    current_task_kernel_stack_top: u64,
     // If not set the task should stay scheduled
     stay_scheduled: bool,
     core_mgmt_task_ptr: u64,
@@ -134,7 +135,9 @@ impl CPULocalStorageRW {
             let old_ptr = localstorage_read_imm!(current_task_ptr: u64);
             assert_eq!(old_ptr, 0);
 
+            let kstack_top = task.kstack_top.as_u64();
             let ptr = Box::into_raw(task);
+            localstorage_write!(kstack_top => current_task_kernel_stack_top: u64);
             localstorage_write!(ptr => current_task_ptr: u64);
         }
     }
@@ -180,6 +183,7 @@ pub unsafe fn init_core(core_id: u8, func: extern "C" fn()) -> u64 {
     ls.stay_scheduled = true;
     ls.gdt_pointer = (vaddr_base + 0x1000) as usize;
     ls.current_context = 0;
+    ls.current_task_kernel_stack_top = 0;
 
     let task = PROCESSES
         .lock()

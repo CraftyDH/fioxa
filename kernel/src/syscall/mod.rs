@@ -135,6 +135,32 @@ macro_rules! kenum_cast {
     };
 }
 
+/// Handler for internal syscalls called by the kernel (Note: not nested).
+#[naked]
+pub unsafe extern "C" fn syscall_kernel_handler() {
+    core::arch::asm!(
+        "push rbp",
+        "push r15",
+        "pushfq",
+        "cli",
+        "mov al, 1",
+        "mov gs:0x9, al",
+        "mov r15, rsp",     // save caller rsp
+        "mov rsp, gs:0x1A", // load kstack top
+        "call {}",
+        "mov cl, 2",
+        "mov gs:0x9, cl", // set cpu context
+        "mov rsp, r15",   // restore caller rip
+        "popfq",
+        "pop r15",
+        "pop rbp",
+        "ret",
+        sym syscall_handler,
+        options(noreturn)
+    );
+}
+
+/// Handler for syscalls via int 0x80
 #[naked]
 pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
     unsafe {
@@ -158,6 +184,35 @@ pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
             options(noreturn)
         );
     }
+}
+
+/// Handler for syscalls via syscall
+#[naked]
+pub unsafe extern "C" fn syscall_sysret_handler() {
+    core::arch::asm!(
+        "mov al, 1",
+        "mov gs:0x9, al",
+        "mov r15, rsp", // save caller rsp
+        "mov r14, r11", // save caller flags
+        "mov r13, rcx", // save caller rip
+        "mov rcx, r10", // move arg3 to match sysv c calling convention
+        "mov rsp, gs:0x1A", // load kstack top
+        "call {}",
+        // clear scratch registers (we don't want leaks)
+        "xor r10d, r10d",
+        "xor r9d,  r9d",
+        "xor r8d,  r8d",
+        "xor edi,  edi",
+        "xor esi,  esi",
+        "mov cl, 2",
+        "mov gs:0x9, cl", // set cpu context
+        "mov rcx, r13", // restore caller rip
+        "mov r11, r14", // restore caller flags
+        "mov rsp, r15", // restore caller rsp
+        "sysretq",
+        sym syscall_handler,
+        options(noreturn)
+    );
 }
 
 unsafe extern "C" fn syscall_handler(

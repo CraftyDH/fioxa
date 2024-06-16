@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 bootloader = {path = "../bootloader"}
-kernel_userspace = {path = "../kernel_userspace"}
+kernel_userspace = { path = "../kernel_userspace", features = ["kernel"] }
 input = {path = "../input"}
 
 x86_64 = "0.14"
