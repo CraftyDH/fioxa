@@ -3,6 +3,7 @@ use core::{
     sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering},
 };
 
+use alloc::boxed::Box;
 use x86_64::{
     instructions::{
         interrupts::{self, without_interrupts},
@@ -12,11 +13,10 @@ use x86_64::{
 };
 
 use crate::{
-    assembly::registers::SavedTaskState,
     cpu_localstorage::CPULocalStorageRW,
     scheduling::{
         process::ThreadStatus,
-        taskmanager::{self, push_task_queue, queue_thread},
+        taskmanager::{context_switch_helper, get_next_task, push_task_queue, queue_task_callback},
     },
     screen::gop::WRITER,
 };
@@ -125,21 +125,17 @@ pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
             "push r13",
             "push r14",
             "push r15",
-            "mov rdi, rsp",  // Arg #1: saved rsp
+            "lea rdi, [rip+2f]",
+            "mov rsi, rsp",
+            "mov rbx, rsi", // save the rsp in a preserved register
             "mov rsp, gs:0xA", // load cpu stack
             "xor eax, eax",
             "mov gs:0x9, al", // set cpu context to 0
             "call {}",
-            sym tick,
-            options(noreturn)
-        );
-    }
-}
-
-#[naked]
-pub extern "x86-interrupt" fn context_switch_ret() {
-    unsafe {
-        core::arch::asm!(
+            // we didn't context switch restore stack
+            "mov rsp, rbx",
+            // come back from context switch
+            "2:",
             "mov al, 2",
             "mov gs:0x9, al", // set cpu context
             "pop r15",
@@ -158,19 +154,14 @@ pub extern "x86-interrupt" fn context_switch_ret() {
             "pop rax",
             "pop rbp",
             "iretq",
+            sym tick,
             options(noreturn)
         );
     }
 }
 
-unsafe extern "C" fn tick(saved_rsp: usize) -> ! {
+unsafe extern "C" fn tick(saved_ip: usize, saved_rsp: usize) {
     let stay_scheduled = CPULocalStorageRW::get_stay_scheduled();
-
-    let state = SavedTaskState {
-        sp: saved_rsp,
-        ip: context_switch_ret as usize,
-        saved_arg: 0, // meaningless for this
-    };
 
     if CPULocalStorageRW::get_core_id() == 0 {
         // Get the amount of milliseconds per interrupt
@@ -223,15 +214,11 @@ unsafe extern "C" fn tick(saved_rsp: usize) -> ! {
         // Ack interrupt
         *(0xfee000b0 as *mut u32) = 0;
 
+        // switch task if possible
         if !stay_scheduled && SWITCH_TASK.load(Ordering::Relaxed) {
-            let mut task = CPULocalStorageRW::take_current_task();
-            task.save(state);
-            queue_thread(task);
-            let task = taskmanager::get_next_task();
-            task.switch_to();
-        } else {
-            // go back
-            state.jump()
+            if let Some(t) = get_next_task() {
+                context_switch_helper(Box::into_raw(t), queue_task_callback, saved_rsp, saved_ip);
+            }
         }
     }
 }

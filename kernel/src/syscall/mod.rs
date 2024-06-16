@@ -31,7 +31,7 @@ use crate::{
     },
     scheduling::{
         process::{KernelValue, ThreadStatus},
-        taskmanager::{self, block_task, exit_thread, kill_bad_task, switch_task, yield_task},
+        taskmanager::{self, block_task, exit_task, kill_bad_task, yield_task},
     },
     socket::{create_sockets, KSocketListener, PUBLIC_SOCKETS},
     time::{pit, SLEEP_TARGET, SLEPT_PROCESSES},
@@ -170,20 +170,20 @@ unsafe extern "C" fn syscall_handler(
 ) -> usize {
     // Run syscalls without interrupts
     // This means execution should not be interrupted
+    let thread = CPULocalStorageRW::get_current_task();
+    assert!(!thread.in_syscall);
+    thread.in_syscall = true;
     use kernel_userspace::syscall::*;
     let res = match number {
         ECHO => echo_handler(arg1),
         YIELD_NOW => {
-            block_task(yield_task);
+            yield_task();
             Ok(0)
         }
         SPAWN_PROCESS => taskmanager::spawn_process(arg1, arg2, arg3, arg4),
         SPAWN_THREAD => taskmanager::spawn_thread(arg1, arg2),
         SLEEP => sleep_handler(arg1),
-        EXIT_THREAD => {
-            block_task(exit_thread);
-            unreachable!()
-        }
+        EXIT_THREAD => exit_task(),
         MMAP_PAGE => mmap_page_handler(arg1, arg2),
         MMAP_PAGE32 => mmap_page32_handler(),
         UNMMAP_PAGE => {
@@ -192,7 +192,7 @@ unsafe extern "C" fn syscall_handler(
             unmmap_page_handler(arg1, arg2)
         }
         READ_ARGS => read_args_handler(arg1),
-        GET_PID => Ok(CPULocalStorageRW::get_current_pid().0 as usize),
+        GET_PID => Ok(thread.process().pid.0 as usize),
         MESSAGE => message_handler(arg1, arg2),
         EVENT => sys_receive_event(arg1, arg2),
         EVENT_QUEUE => sys_event_queue(arg1, arg2, arg3, arg4, arg5),
@@ -204,6 +204,7 @@ unsafe extern "C" fn syscall_handler(
             Err(SyscallError::Error)
         }
     };
+    thread.in_syscall = false;
     match res {
         Ok(r) => r,
         Err(SyscallError::Error) => kill_bad_task(),
@@ -312,7 +313,7 @@ unsafe fn sys_receive_event(arg1: usize, arg2: usize) -> Result<usize, SyscallEr
         *status = ThreadStatus::Blocking;
         drop(event);
         drop(status);
-        Ok(block_task(switch_task))
+        Ok(block_task())
     };
 
     match mode {
@@ -571,7 +572,7 @@ unsafe fn sleep_handler(arg1: usize) -> Result<usize, SyscallError> {
         |val| Some(val.min(time)),
     );
 
-    block_task(switch_task);
+    block_task();
     Ok((pit::get_uptime() - start) as usize)
 }
 

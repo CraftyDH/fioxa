@@ -85,13 +85,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         // lowest context, no chance of recovery
         without_context_switch(|| {
             let mut w = WRITER.get().unwrap().lock();
-            w.write_fmt(format_args!(
-                "KERNEL PANIC: {}\n  Caused by {:?}, {:?}\n",
-                info,
-                CPULocalStorageRW::get_current_pid(),
-                CPULocalStorageRW::get_current_tid()
-            ))
-            .unwrap();
+            w.write_fmt(format_args!("KERNEL PANIC: {}\n", info))
+                .unwrap();
             // since we drop context switch manually trigger redraw
             w.redraw_if_needed();
             crate::stack_trace(&mut w);
@@ -102,16 +97,29 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         })
     } else if context == 1 {
         // see if we can recover
-        error!("KERNEL PANIC: {}", info);
+        unsafe {
+            let thread = CPULocalStorageRW::get_current_task();
+
+            error!(
+                "KERNEL PANIC: Caused by {:?} {:?}\n{}",
+                thread.process().pid,
+                thread.handle().tid(),
+                info
+            );
+        }
         kill_bad_task()
     } else {
         // it's a kernel thread so exit
-        error!(
-            "KERNEL THREAD PANIC: Caused by {:?} {:?}\n{}",
-            CPULocalStorageRW::get_current_pid(),
-            CPULocalStorageRW::get_current_tid(),
-            info
-        );
+        unsafe {
+            let thread = CPULocalStorageRW::get_current_task();
+
+            error!(
+                "KERNEL THREAD PANIC: Caused by {:?} {:?}\n{}",
+                thread.process().pid,
+                thread.handle().tid(),
+                info
+            );
+        }
         exit()
     }
 }

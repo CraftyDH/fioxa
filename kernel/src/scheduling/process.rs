@@ -25,9 +25,8 @@ use x86_64::{
 
 use crate::{
     assembly::registers::SavedTaskState,
-    cpu_localstorage::CPULocalStorageRW,
     event::{EdgeListener, EdgeTrigger, KEvent, KEventListener, KEventQueue},
-    gdt::{self, TASK_SWITCH_INDEX},
+    gdt::{self},
     message::KMessage,
     paging::{
         offset_map::get_gop_range,
@@ -236,6 +235,7 @@ impl Process {
                 ip: start_new_task as usize,
             }),
             linked_next: None,
+            in_syscall: false,
         }))
     }
 
@@ -407,10 +407,12 @@ impl Default for LinkedThreadList {
 
 pub struct Thread {
     handle: Arc<ThreadHandle>,
-    state: Option<SavedTaskState>,
-    kstack_top: VirtAddr,
+    pub state: Option<SavedTaskState>,
+    pub kstack_top: VirtAddr,
     linked_next: Option<Box<Thread>>,
     cached_event_listener: Arc<ThreadEventListener>,
+    // if true do not kill as it might hold resources
+    pub in_syscall: bool,
 }
 
 #[derive(Clone)]
@@ -532,26 +534,6 @@ impl Thread {
     pub fn save(&mut self, state: SavedTaskState) {
         assert!(self.state.is_none());
         self.state = Some(state);
-    }
-
-    pub unsafe fn switch_to(mut self: Box<Self>) -> ! {
-        let state = self.state.take().unwrap();
-
-        unsafe {
-            self.process()
-                .memory
-                .lock()
-                .page_mapper
-                .get_mapper_mut()
-                .load_into_cr3_lazy()
-        }
-        CPULocalStorageRW::get_gdt().tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize] =
-            self.kstack_top;
-        CPULocalStorageRW::set_current_pid(self.process().pid);
-        CPULocalStorageRW::set_current_tid(self.handle().tid());
-        CPULocalStorageRW::set_current_task(self);
-        CPULocalStorageRW::set_ticks_left(5);
-        state.jump()
     }
 }
 

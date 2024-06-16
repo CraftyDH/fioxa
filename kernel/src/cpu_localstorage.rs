@@ -1,7 +1,7 @@
 use core::mem::size_of;
 
 use alloc::boxed::Box;
-use kernel_userspace::ids::{ProcessID, ThreadID};
+use kernel_userspace::ids::ProcessID;
 
 use crate::{
     gdt::CPULocalGDT,
@@ -20,10 +20,7 @@ pub struct CPULocalStorage {
     stack_top: u64,
     current_context: u8,
     scratch_stack_top: u64,
-    current_pid: u64,
-    current_tid: u64,
     current_task_ptr: u64,
-    ticks_left: u32,
     // If not set the task should stay scheduled
     stay_scheduled: bool,
     core_mgmt_task_ptr: u64,
@@ -80,36 +77,6 @@ impl CPULocalStorageRW {
     #[inline]
     pub fn get_stack_top() -> u64 {
         unsafe { localstorage_read_imm!(stack_top: u64) }
-    }
-
-    #[inline]
-    pub fn get_current_pid() -> ProcessID {
-        ProcessID(unsafe { localstorage_read_imm!(current_pid: u64) })
-    }
-
-    #[inline]
-    pub fn set_current_pid(val: ProcessID) {
-        unsafe { localstorage_write!(val.0 => current_pid: u64) }
-    }
-
-    #[inline]
-    pub fn get_current_tid() -> ThreadID {
-        ThreadID(unsafe { localstorage_read_imm!(current_tid: u64) })
-    }
-
-    #[inline]
-    pub fn set_current_tid(val: ThreadID) {
-        unsafe { localstorage_write!(val.0 => current_tid: u64) }
-    }
-
-    #[inline]
-    pub fn get_ticks_left() -> u32 {
-        unsafe { localstorage_read_imm!(ticks_left: u32) }
-    }
-
-    #[inline]
-    pub fn set_ticks_left(val: u32) {
-        unsafe { localstorage_write!(val => ticks_left: u32) }
     }
 
     #[inline]
@@ -210,9 +177,6 @@ pub unsafe fn init_core(core_id: u8, func: extern "C" fn()) -> u64 {
 
     let ls = unsafe { &mut *(vaddr_base as *mut CPULocalStorage) };
     ls.core_id = core_id;
-    ls.current_pid = 0;
-    ls.current_tid = core_id as u64;
-    ls.ticks_left = 0;
     ls.stay_scheduled = true;
     ls.gdt_pointer = (vaddr_base + 0x1000) as usize;
     ls.current_context = 0;

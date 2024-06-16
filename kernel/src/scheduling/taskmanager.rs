@@ -6,8 +6,8 @@ use kernel_userspace::{ids::ProcessID, process::ProcessExit, syscall::thread_boo
 use spin::{Lazy, Mutex};
 
 use crate::{
-    assembly::registers::SavedTaskState, cpu_localstorage::CPULocalStorageRW, kassert,
-    syscall::SyscallError, time::pit::is_switching_tasks,
+    assembly::registers::SavedTaskState, cpu_localstorage::CPULocalStorageRW,
+    gdt::TASK_SWITCH_INDEX, kassert, syscall::SyscallError, time::pit::is_switching_tasks,
 };
 
 use super::{
@@ -28,8 +28,25 @@ pub fn append_task_queue(list: &mut LinkedThreadList) {
 }
 
 pub unsafe fn core_start_multitasking() -> ! {
-    let task = CPULocalStorageRW::take_coremgmt_task();
-    task.switch_to();
+    let mut target = CPULocalStorageRW::take_coremgmt_task();
+
+    let state = target.state.take().unwrap();
+
+    // switch contexts
+    unsafe {
+        target
+            .process()
+            .memory
+            .lock()
+            .page_mapper
+            .get_mapper_mut()
+            .load_into_cr3_lazy()
+    }
+    CPULocalStorageRW::get_gdt().tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize] =
+        target.kstack_top;
+    CPULocalStorageRW::set_current_task(target);
+
+    state.jump();
 }
 
 /// Used for sleeping each core after the task queue becomes empty
@@ -38,7 +55,7 @@ pub unsafe fn core_start_multitasking() -> ! {
 /// This reduces CPU load normally (doesn't thrash every core to 100%)
 /// However is does reduce performance when there are actually tasks that could use the time
 pub extern "C" fn nop_task() {
-    info!("Starting nop task");
+    info!("Starting nop task: {}", CPULocalStorageRW::get_core_id());
     unsafe {
         // enable interrupts and wait for multitasking to start
         core::arch::asm!("sti");
@@ -56,25 +73,24 @@ pub extern "C" fn nop_task() {
     }
 }
 
-pub fn get_next_task() -> Box<Thread> {
+pub fn get_next_task() -> Option<Box<Thread>> {
     // get the next available task or run core mgmt
     loop {
         // we cannot hold task queue for long,
         // because exit_thread might trigger a notification that places a task into the queue
-        let Some(task) = TASK_QUEUE.lock().pop() else {
-            return CPULocalStorageRW::take_coremgmt_task();
-        };
+        let task = TASK_QUEUE.lock().pop()?;
         let status = core::mem::take(&mut *task.handle().status.lock());
         match status {
             super::process::ThreadStatus::Ok => {
-                if task
-                    .handle()
-                    .kill_signal
-                    .load(core::sync::atomic::Ordering::Relaxed)
+                if !task.in_syscall
+                    && task
+                        .handle()
+                        .kill_signal
+                        .load(core::sync::atomic::Ordering::Relaxed)
                 {
                     exit_thread_inner(task);
                 } else {
-                    return task;
+                    return Some(task);
                 }
             }
             super::process::ThreadStatus::Blocked(_)
@@ -86,8 +102,15 @@ pub fn get_next_task() -> Box<Thread> {
     }
 }
 
+pub fn get_next_task_always() -> Box<Thread> {
+    get_next_task().unwrap_or_else(|| {
+        let thread = CPULocalStorageRW::take_coremgmt_task();
+        thread
+    })
+}
+
 pub fn queue_thread(thread: Box<Thread>) {
-    if CPULocalStorageRW::get_current_pid() == ProcessID(0) {
+    if thread.process().pid == ProcessID(0) {
         CPULocalStorageRW::set_coremgmt_task(thread);
     } else {
         TASK_QUEUE.lock().push(thread);
@@ -96,47 +119,29 @@ pub fn queue_thread(thread: Box<Thread>) {
 
 /// Kills the current task and jumps into a new one
 /// DO NOT HOLD ANYTHING BEFORE CALLING THIS
-#[naked]
-pub extern "C" fn kill_bad_task() -> ! {
-    extern "C" fn inner() -> ! {
-        let thread = {
-            let thread = CPULocalStorageRW::take_current_task();
-
-            warn!(
-                "KILLING BAD TASK: PID: {:?}, TID: {:?}, PRIV: {:?}",
-                thread.process().pid,
-                thread.handle().tid(),
-                thread.process().privilege
-            );
-
-            if thread.process().pid.0 == 0 {
-                panic!("Cannot kill process 0");
-            }
-
-            exit_thread_inner(thread);
-            get_next_task()
-        };
-
-        unsafe { thread.switch_to() }
-    }
-    // switch stack
+pub fn kill_bad_task() -> ! {
     unsafe {
-        core::arch::asm!(
-            "cli",
-            "mov rsp, gs:0xA",
-            "xor eax, eax",
-            "mov gs:0x9, al",
-            "jmp {}",
-            sym inner,
-            options(noreturn)
-        )
-    };
+        let thread = CPULocalStorageRW::get_current_task();
+
+        warn!(
+            "KILLING BAD TASK: PID: {:?}, TID: {:?}, PRIV: {:?}",
+            thread.process().pid,
+            thread.handle().tid(),
+            thread.process().privilege
+        );
+
+        if thread.process().pid.0 == 0 {
+            panic!("Cannot kill process 0");
+        }
+        exit_task();
+    }
 }
 
-pub unsafe extern "C" fn exit_thread(_: usize, _: usize) -> ! {
-    let thread = CPULocalStorageRW::take_current_task();
-    exit_thread_inner(thread);
-    get_next_task().switch_to();
+pub fn exit_task() -> ! {
+    unsafe {
+        context_switch(get_next_task_always(), exit_thread_callback);
+        unreachable!("exit thread shouldn't return")
+    }
 }
 
 pub fn exit_thread_inner(thread: Box<Thread>) {
@@ -203,30 +208,78 @@ pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Result<usize, SyscallErr
     }
 }
 
-pub unsafe fn block_task(callback: unsafe extern "C" fn(usize, usize) -> !) -> usize {
-    let res;
+pub unsafe extern "C" fn context_switch_helper(
+    target: *mut Thread,
+    save_callback: extern "C" fn(Box<Thread>),
+    return_rsp: usize,
+    return_rip: usize,
+) -> ! {
+    let mut target = Box::from_raw(target);
 
+    let mut current_task = CPULocalStorageRW::take_current_task();
+    current_task.save(SavedTaskState {
+        sp: return_rsp,
+        ip: return_rip,
+        saved_arg: 0,
+    });
+
+    let state = target.state.take().unwrap();
+
+    // switch contexts
+    unsafe {
+        target
+            .process()
+            .memory
+            .lock()
+            .page_mapper
+            .get_mapper_mut()
+            .load_into_cr3_lazy()
+    }
+    CPULocalStorageRW::get_gdt().tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize] =
+        target.kstack_top;
+    CPULocalStorageRW::set_current_task(target);
+
+    // now that everythings been switched save current task
+    save_callback(current_task);
+
+    state.jump();
+}
+
+pub extern "C" fn queue_task_callback(task: Box<Thread>) {
+    queue_thread(task)
+}
+
+pub unsafe fn context_switch(
+    target: Box<Thread>,
+    save_callback: unsafe extern "C" fn(Box<Thread>),
+) -> usize {
     assert!(
         !CPULocalStorageRW::get_stay_scheduled(),
         "Thread should not be asking to stay scheduled and block."
     );
+
+    let target = Box::into_raw(target);
+
+    let res;
 
     // save rbx, rbp, flags and make llvm save anything it cares about
     core::arch::asm!(
         "push rbx",
         "push rbp",
         "pushfq",
-        "mov gs:0x9, dil",
-        "lea rdi, [rip+2f]", // ret addr
-        "mov rsi, rsp",      // save rsp
-        "mov rsp, gs:0xA",     // load new stack
+        "mov gs:0x9, cl",
+        "lea rcx, [rip+2f]", // ret addr
+        "mov rdx, rsp",      // save rsp
+        "mov rsp, gs:0xA",   // load new stack
         "call rax",
         "2:",
         "popfq",
         "pop rbp",
         "pop rbx",
-        in("rax") callback,
-        in("dil") 0u8,
+        in("rdi") target,
+        in("rsi") save_callback,
+        in("rax") context_switch_helper,
+        in("cl") 0u8,
         lateout("rax") res,
         lateout("r15") _,
         lateout("r14") _,
@@ -245,43 +298,36 @@ pub unsafe fn block_task(callback: unsafe extern "C" fn(usize, usize) -> !) -> u
     res
 }
 
-pub unsafe extern "C" fn yield_task(saved_rip: usize, saved_rsp: usize) -> ! {
-    let mut task = CPULocalStorageRW::take_current_task();
-    task.save(SavedTaskState {
-        sp: saved_rsp,
-        ip: saved_rip,
-        saved_arg: 0,
-    });
-
-    queue_thread(task);
-    get_next_task().switch_to();
+pub fn yield_task() {
+    if let Some(t) = get_next_task() {
+        unsafe {
+            context_switch(t, queue_task_callback);
+        }
+    }
 }
 
-pub unsafe extern "C" fn switch_task(saved_rip: usize, saved_rsp: usize) -> ! {
-    let task = CPULocalStorageRW::get_current_task();
-    let mut state = SavedTaskState {
-        sp: saved_rsp,
-        ip: saved_rip,
-        saved_arg: 0,
-    };
+pub unsafe extern "C" fn exit_thread_callback(thread: Box<Thread>) {
+    exit_thread_inner(thread);
+}
 
-    let mut status = task.handle().status.lock();
+pub fn block_task() -> usize {
+    unsafe { context_switch(get_next_task_always(), block_task_callback) }
+}
+
+pub unsafe extern "C" fn block_task_callback(mut task: Box<Thread>) {
+    let handle = task.handle().clone();
+    let mut status = handle.status.lock();
 
     match &mut *status {
         // was blocking so start blocking
         super::process::ThreadStatus::Blocking => {
-            let mut task = CPULocalStorageRW::take_current_task();
-            task.save(state);
             *status = super::process::ThreadStatus::Blocked(task);
-            drop(status);
-            get_next_task().switch_to();
         }
-        // something triggered wake up so return
+        // something triggered wake up so queue task
         super::process::ThreadStatus::BlockingRet(val) => {
-            state.saved_arg = *val;
+            task.state.as_mut().unwrap().saved_arg = *val;
             *status = super::process::ThreadStatus::Ok;
-            drop(status);
-            state.jump();
+            queue_thread(task);
         }
         _ => panic!("bad state"),
     }
