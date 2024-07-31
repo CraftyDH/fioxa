@@ -1,8 +1,8 @@
 use std::{
-    env::args,
-    fs::{copy, DirBuilder},
+    env::{self, args},
+    fs::{self, copy, DirBuilder},
     io::BufReader,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
@@ -97,11 +97,40 @@ fn qemu() -> Result<()> {
     let system_code = Path::new(SYSTEM_EFI_CODE);
     let system_vars = Path::new(SYSTEM_EFI_VARS);
 
+    let ovmf_folder = Path::new("./ovmf");
+    if !ovmf_folder.exists() {
+        fs::create_dir("ovmf").context("Could not create ovmf directory");
+    }
+
     if pure_path.exists() {
         println!("Using local OVFM");
 
         qemu_args.push("-drive".to_string());
         qemu_args.push(format!("if=pflash,format=raw,file={}", PURE_EFI_PATH));
+    } else if let Ok(path) = env::var("OVMF") {
+        println!("Using env OVMF");
+
+        // QEMU will make changes to this file, so we need a local copy. We do
+        // not want to overwrite it every build
+        if !local_vars.exists() {
+            let mut path = PathBuf::from(&path);
+            path.push("OVMF_VARS.fd");
+
+            println!("{:?}", path);
+
+            copy(path, "ovmf/VARS.fd")
+                .context("Could not copy VARS.fd into local directory")?;
+        }
+
+        qemu_args.push("-drive".to_string());
+        qemu_args.push(format!(
+            "if=pflash,format=raw,readonly=on,file={}/OVMF_CODE.fd",
+            path
+        ));
+
+        qemu_args.push("-drive".to_string());
+        qemu_args.push("if=pflash,format=raw,file=ovmf/VARS.fd".to_string());
+
     } else if system_code.exists() && system_vars.exists() {
         println!("Using system OVFM");
 
