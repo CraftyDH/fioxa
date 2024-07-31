@@ -7,11 +7,9 @@
 //* Testing
 // #![feature(custom_test_frameworks)]
 // #![test_runner(test_runner)]
-#![feature(panic_info_message)]
 #![feature(const_for)]
 #![feature(new_uninit)]
 #![feature(asm_const)]
-#![feature(error_in_core)]
 #![feature(const_try)]
 
 use core::fmt::Write;

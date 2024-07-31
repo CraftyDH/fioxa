@@ -99,7 +99,7 @@ fn qemu() -> Result<()> {
 
     let ovmf_folder = Path::new("./ovmf");
     if !ovmf_folder.exists() {
-        fs::create_dir("ovmf").context("Could not create ovmf directory");
+        fs::create_dir("ovmf").context("Could not create ovmf directory")?;
     }
 
     if pure_path.exists() {
@@ -118,8 +118,7 @@ fn qemu() -> Result<()> {
 
             println!("{:?}", path);
 
-            copy(path, "ovmf/VARS.fd")
-                .context("Could not copy VARS.fd into local directory")?;
+            copy(path, "ovmf/VARS.fd").context("Could not copy VARS.fd into local directory")?;
         }
 
         qemu_args.push("-drive".to_string());
@@ -130,7 +129,6 @@ fn qemu() -> Result<()> {
 
         qemu_args.push("-drive".to_string());
         qemu_args.push("if=pflash,format=raw,file=ovmf/VARS.fd".to_string());
-
     } else if system_code.exists() && system_vars.exists() {
         println!("Using system OVFM");
 
