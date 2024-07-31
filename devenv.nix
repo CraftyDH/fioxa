@@ -2,7 +2,9 @@
 
 {
   # https://devenv.sh/packages/
-  packages = [ pkgs.git ];
+  packages = [ pkgs.git pkgs.qemu_kvm ];
+
+  env.OVMF = "${pkgs.OVMF.fd}/FV";
 
   # https://devenv.sh/languages/
   languages.rust = {
