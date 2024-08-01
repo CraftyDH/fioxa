@@ -11,7 +11,6 @@ use crate::{
     gdt::{KERNEL_CODE_SELECTOR, TASK_SWITCH_INDEX, USER_CODE_SELECTOR},
     kassert,
     syscall::{syscall_sysret_handler, SyscallError},
-    time::pit::is_switching_tasks,
 };
 
 use super::{
@@ -90,9 +89,6 @@ pub extern "C" fn nop_task() {
     unsafe {
         // enable interrupts and wait for multitasking to start
         core::arch::asm!("sti");
-        while !is_switching_tasks() {
-            core::arch::asm!("hlt");
-        }
 
         // Init complete, start executing tasks
         CPULocalStorageRW::set_stay_scheduled(false);

@@ -26,7 +26,7 @@ use x86_64::{
 use crate::{
     assembly::registers::SavedTaskState,
     event::{EdgeListener, EdgeTrigger, KEvent, KEventListener, KEventQueue},
-    gdt::{self},
+    gdt,
     message::KMessage,
     paging::{
         offset_map::get_gop_range,
@@ -36,6 +36,7 @@ use crate::{
         OFFSET_MAP, PER_CPU_MAP,
     },
     socket::{KSocketHandle, KSocketListener},
+    time::HPET,
     BOOT_INFO,
 };
 
@@ -142,6 +143,11 @@ impl Process {
             static APIC_LOCATION: Lazy<Arc<PageMapping>> =
                 Lazy::new(|| unsafe { PageMapping::new_mmap(0xfee00000, 0x1000) });
 
+            static HPET_LOCATION: Lazy<(usize, Arc<PageMapping>)> = Lazy::new(|| unsafe {
+                let val = HPET.get().unwrap().info.base_address;
+                (val, PageMapping::new_mmap(val, 0x1000))
+            });
+
             page_mapper
                 .insert_mapping_at_set(
                     0xfee00000,
@@ -149,6 +155,17 @@ impl Process {
                     MemoryMappingFlags::WRITEABLE,
                 )
                 .unwrap();
+
+            // the boot process will map it itself
+            if privilege != ProcessPrivilige::HIGHKERNEL {
+                page_mapper
+                    .insert_mapping_at_set(
+                        HPET_LOCATION.0,
+                        HPET_LOCATION.1.clone(),
+                        MemoryMappingFlags::WRITEABLE,
+                    )
+                    .unwrap();
+            }
         }
 
         Arc::new_cyclic(|this| Self {

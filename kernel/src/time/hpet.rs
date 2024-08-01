@@ -15,7 +15,7 @@ const FEMPTOSECOND: u64 = 10u64.pow(15);
 const MILLISECOND: u64 = 10u64.pow(3);
 
 pub struct HPET {
-    info: HpetInfo,
+    pub info: HpetInfo,
     capabilities: CapabilitiesIDRegister,
 }
 

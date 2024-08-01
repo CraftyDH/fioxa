@@ -50,6 +50,7 @@ use kernel::{elf, gdt, paging, BOOT_INFO};
 use bootloader::uefi::table::cfg::ACPI2_GUID;
 use bootloader::uefi::table::{Runtime, SystemTable};
 
+use kernel_userspace::backoff_sleep;
 use kernel_userspace::ids::ProcessID;
 use kernel_userspace::object::KernelReference;
 use kernel_userspace::socket::{socket_connect, SocketListenHandle, SocketRecieveResult};
@@ -187,6 +188,13 @@ extern "C" fn main() {
 
     info!("Config table: ptr{:?}", config_tables.as_ptr());
 
+    unsafe {
+        ensure_ident_map_curr_process(
+            Page::<Size4KB>::containing(config_tables.as_ptr() as u64),
+            MemoryMappingFlags::empty(),
+        );
+    }
+
     let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
         .ok_or(AcpiError::Rsdp(RsdpError::NoValidRsdp))
         .and_then(|acpi2_table| kernel::acpi::prepare_acpi(acpi2_table.address as usize))
@@ -200,8 +208,8 @@ extern "C" fn main() {
 
     unsafe {
         map_lapic(&mut init_process.memory.lock().page_mapper.get_mapper_mut());
+        enable_localapic();
     }
-    enable_localapic();
 
     unsafe { core::arch::asm!("sti") };
 
@@ -249,6 +257,13 @@ fn after_boot() {
 
     let config_tables = runtime_table.config_table();
 
+    unsafe {
+        ensure_ident_map_curr_process(
+            Page::<Size4KB>::containing(config_tables.as_ptr() as u64),
+            MemoryMappingFlags::empty(),
+        );
+    }
+
     let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
         .ok_or(AcpiError::Rsdp(RsdpError::NoValidRsdp))
         .unwrap();
@@ -272,14 +287,18 @@ fn after_boot() {
     load_elf(
         PS2_DRIVER,
         &[],
-        &[KernelReference::from_id(socket_connect("STDOUT").unwrap())],
+        &[KernelReference::from_id(backoff_sleep(|| {
+            socket_connect("STDOUT")
+        }))],
         true,
     )
     .unwrap();
     load_elf(
         TERMINAL_ELF,
         &[],
-        &[KernelReference::from_id(socket_connect("STDOUT").unwrap())],
+        &[KernelReference::from_id(backoff_sleep(|| {
+            socket_connect("STDOUT")
+        }))],
         false,
     )
     .unwrap();

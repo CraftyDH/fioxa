@@ -34,7 +34,7 @@ use crate::{
         taskmanager::{self, block_task, exit_task, kill_bad_task, yield_task},
     },
     socket::{create_sockets, KSocketListener, PUBLIC_SOCKETS},
-    time::{pit, SLEEP_TARGET, SLEPT_PROCESSES},
+    time::{uptime, SLEPT_PROCESSES},
 };
 
 pub fn set_syscall_idt(idt: &mut InterruptDescriptorTable) {
@@ -600,7 +600,7 @@ unsafe fn sys_process_handler(arg1: usize, arg2: usize) -> Result<usize, Syscall
 }
 
 unsafe fn sleep_handler(arg1: usize) -> Result<usize, SyscallError> {
-    let start = pit::get_uptime();
+    let start = uptime();
     let time = start + arg1 as u64;
     let thread = CPULocalStorageRW::get_current_task();
 
@@ -620,15 +620,8 @@ unsafe fn sleep_handler(arg1: usize) -> Result<usize, SyscallError> {
         .or_default()
         .push(Arc::downgrade(&handle));
 
-    // Ensure that the sleep waker is called if this was a shorter timeout
-    let _ = SLEEP_TARGET.fetch_update(
-        core::sync::atomic::Ordering::SeqCst,
-        core::sync::atomic::Ordering::SeqCst,
-        |val| Some(val.min(time)),
-    );
-
     block_task();
-    Ok((pit::get_uptime() - start) as usize)
+    Ok((uptime() - start) as usize)
 }
 
 unsafe fn message_handler(arg1: usize, arg2: usize) -> Result<usize, SyscallError> {

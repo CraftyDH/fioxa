@@ -19,8 +19,7 @@ pub mod exceptions;
 pub mod pic;
 
 use crate::{
-    cpu_localstorage::CPULocalStorageRW, event::KEvent, gdt::TASK_SWITCH_INDEX, syscall,
-    time::pit::tick_handler,
+    cpu_localstorage::CPULocalStorageRW, event::KEvent, gdt::TASK_SWITCH_INDEX, lapic, syscall,
 };
 
 use self::pic::disable_pic;
@@ -29,6 +28,7 @@ use self::pic::disable_pic;
 // 0..32 = Exceptions
 // 32..48 = PIC Possible spurrius interrupts
 const IRQ_OFFSET: usize = 49;
+const LAPIC_INT: usize = 60;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -106,8 +106,8 @@ pub fn init_idt() {
     });
 
     unsafe {
-        IDT.lock()[IRQ_OFFSET]
-            .set_handler_fn(tick_handler)
+        IDT.lock()[LAPIC_INT]
+            .set_handler_fn(lapic::tick_handler)
             .set_stack_index(TASK_SWITCH_INDEX);
     }
     // set_irq_handler(101, task_switch_handler);

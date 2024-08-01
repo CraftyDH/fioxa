@@ -44,7 +44,7 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
     // Timer is usually overridden to irq 2
     // TODO: Parse overides and use those
     // 0xFF all cores
-    set_redirect_entry(apic.apic_addr, 0xFF, 2, 49, true);
+    // set_redirect_entry(apic.apic_addr, 0xFF, 2, 49, true);
 
     set_irq_handler(50, keyboard_int_handler);
     set_redirect_entry(apic.apic_addr, 0, 1, 50, true);
