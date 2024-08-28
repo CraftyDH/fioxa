@@ -82,22 +82,6 @@ pub struct SavedTaskState {
     pub saved_arg: usize,
 }
 
-impl SavedTaskState {
-    pub unsafe fn jump(self) -> ! {
-        let Self { sp, ip, saved_arg } = self;
-        core::arch::asm!(
-            "mov gs:0x9, {}",
-            "mov rsp, rdi",
-            "jmp rsi",
-            in(reg_byte) 1u8,
-            in("rdi") sp,
-            in("rsi") ip,
-            in("rax") saved_arg,
-            options(noreturn)
-        )
-    }
-}
-
 /// The order is very important
 #[derive(Debug)]
 #[repr(C)]
@@ -114,31 +98,4 @@ impl SavedThreadState {
             interrupt_frame: **stack_frame,
         }
     }
-}
-
-/// This works by using first setting the stack pointer to the frame
-/// where we can then set all the registers and finally "return from interrupt"
-/// to the userspace destination
-pub unsafe fn jump_to_userspace(frame: &SavedThreadState) -> ! {
-    core::arch::asm!(
-        "mov rsp, {}",
-        "pop r15",
-        "pop r14",
-        "pop r13",
-        "pop r12",
-        "pop r11",
-        "pop r10",
-        "pop r9",
-        "pop r8",
-        "pop rdi",
-        "pop rsi",
-        "pop rdx",
-        "pop rcx",
-        "pop rbx",
-        "pop rax",
-        "pop rbp",
-        "iretq",
-        in(reg) frame,
-        options(noreturn)
-    )
 }

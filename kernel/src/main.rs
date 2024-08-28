@@ -36,7 +36,9 @@ use kernel::paging::{
 };
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::Process;
-use kernel::scheduling::taskmanager::{core_start_multitasking, nop_task, PROCESSES};
+use kernel::scheduling::taskmanager::{
+    core_start_multitasking, exit_task, push_task_queue, PROCESSES,
+};
 use kernel::scheduling::without_context_switch;
 use kernel::screen::gop;
 use kernel::screen::psf1;
@@ -113,6 +115,8 @@ pub fn main_entry(info: *const BootInfo) -> ! {
                 .lock()
                 .insert(init_process.pid, init_process.clone());
 
+            push_task_queue(init_process.new_thread(main as *const u64, 0).unwrap());
+
             let mut mem = init_process.memory.lock();
 
             // we need to set 0x8000 for the trampoline
@@ -145,7 +149,8 @@ pub fn main_entry(info: *const BootInfo) -> ! {
 
         unsafe extern "C" fn jump_to_main() {
             // this needs to be called after the jump into higher half
-            init_bsp_task(main);
+            init_bsp_task();
+            start_switching_tasks();
             core_start_multitasking();
         }
 
@@ -164,73 +169,69 @@ pub fn main_entry(info: *const BootInfo) -> ! {
 }
 
 extern "C" fn main() {
-    // read boot_info
-    let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
+    without_context_switch(|| {
+        // read boot_info
+        let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
 
-    let init_process = unsafe { CPULocalStorageRW::get_current_task().process() };
+        let init_process = unsafe { CPULocalStorageRW::get_current_task().process() };
 
-    unsafe {
-        get_uefi_active_mapper()
-            .identity_map_memory(
-                Page::<Size4KB>::containing(boot_info.uefi_runtime_table),
+        unsafe {
+            get_uefi_active_mapper()
+                .identity_map_memory(
+                    Page::<Size4KB>::containing(boot_info.uefi_runtime_table),
+                    MemoryMappingFlags::empty(),
+                )
+                .unwrap()
+                .ignore();
+        }
+        info!("Getting UEFI runtime table");
+        let runtime_table = unsafe {
+            SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void)
+        }
+        .unwrap();
+
+        info!("Loading UEFI runtime table");
+        let config_tables = runtime_table.config_table();
+
+        info!("Config table: ptr{:?}", config_tables.as_ptr());
+
+        unsafe {
+            ensure_ident_map_curr_process(
+                Page::<Size4KB>::containing(config_tables.as_ptr() as u64),
                 MemoryMappingFlags::empty(),
-            )
-            .unwrap()
-            .ignore();
-    }
-    info!("Getting UEFI runtime table");
-    let runtime_table =
-        unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
+            );
+        }
+
+        let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
+            .ok_or(AcpiError::Rsdp(RsdpError::NoValidRsdp))
+            .and_then(|acpi2_table| kernel::acpi::prepare_acpi(acpi2_table.address as usize))
             .unwrap();
 
-    info!("Loading UEFI runtime table");
-    let config_tables = runtime_table.config_table();
+        init_time(&acpi_tables);
 
-    info!("Config table: ptr{:?}", config_tables.as_ptr());
+        let madt = unsafe { acpi_tables.get_sdt::<Madt>(Signature::MADT) }
+            .unwrap()
+            .unwrap();
 
-    unsafe {
-        ensure_ident_map_curr_process(
-            Page::<Size4KB>::containing(config_tables.as_ptr() as u64),
-            MemoryMappingFlags::empty(),
-        );
-    }
+        unsafe {
+            map_lapic(&mut init_process.memory.lock().page_mapper.get_mapper_mut());
+            enable_localapic();
+        }
 
-    let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
-        .ok_or(AcpiError::Rsdp(RsdpError::NoValidRsdp))
-        .and_then(|acpi2_table| kernel::acpi::prepare_acpi(acpi2_table.address as usize))
-        .unwrap();
+        unsafe {
+            enable_apic(
+                &madt,
+                &mut init_process.memory.lock().page_mapper.get_mapper_mut(),
+            );
+        }
 
-    init_time(&acpi_tables);
+        unsafe { boot_aps(&madt) };
+        spawn_process(after_boot, &[], true);
+        spawn_process(check_interrupts, &[], true);
 
-    let madt = unsafe { acpi_tables.get_sdt::<Madt>(Signature::MADT) }
-        .unwrap()
-        .unwrap();
-
-    unsafe {
-        map_lapic(&mut init_process.memory.lock().page_mapper.get_mapper_mut());
-        enable_localapic();
-    }
-
-    unsafe { core::arch::asm!("sti") };
-
-    unsafe {
-        enable_apic(
-            &madt,
-            &mut init_process.memory.lock().page_mapper.get_mapper_mut(),
-        );
-    }
-
-    unsafe { boot_aps(&madt) };
-    spawn_process(after_boot, &[], true);
-    spawn_process(check_interrupts, &[], true);
-
-    // Disable interrupts so when we enable switching this core can finish init.
-    unsafe { core::arch::asm!("cli") };
-    start_switching_tasks();
-
-    info!("Start multi");
-
-    nop_task()
+        info!("Start multi");
+    });
+    exit_task();
 }
 
 fn after_boot() {

@@ -1,7 +1,6 @@
 use core::mem::size_of;
 
 use alloc::boxed::Box;
-use kernel_userspace::ids::ProcessID;
 
 use crate::{
     gdt::CPULocalGDT,
@@ -11,7 +10,7 @@ use crate::{
         page_table_manager::{Mapper, Page},
         virt_addr_for_phys, MemoryLoc, MemoryMappingFlags,
     },
-    scheduling::{process::Thread, taskmanager::PROCESSES},
+    scheduling::process::Thread,
 };
 
 #[repr(C, packed)]
@@ -22,9 +21,10 @@ pub struct CPULocalStorage {
     scratch_stack_top: u64,
     current_task_ptr: u64,
     current_task_kernel_stack_top: u64,
+    sched_task_sp: u64,
+    sched_task_ip: u64,
     // If not set the task should stay scheduled
     stay_scheduled: bool,
-    core_mgmt_task_ptr: u64,
     screen_redraw: u64,
     gdt_pointer: usize,
     // at 0x1000 (1 page down is GDT)
@@ -90,26 +90,6 @@ impl CPULocalStorageRW {
         unsafe { localstorage_write!(val => stay_scheduled: bool) }
     }
 
-    pub fn take_coremgmt_task() -> Box<Thread> {
-        unsafe {
-            let ptr = localstorage_read_imm!(core_mgmt_task_ptr: u64);
-            localstorage_write!(0 => core_mgmt_task_ptr: u64);
-            assert_ne!(ptr, 0);
-
-            Box::from_raw(ptr as *mut _)
-        }
-    }
-
-    pub fn set_coremgmt_task(task: Box<Thread>) {
-        unsafe {
-            let old_ptr = localstorage_read_imm!(core_mgmt_task_ptr: u64);
-            assert_eq!(old_ptr, 0);
-
-            let ptr = Box::into_raw(task);
-            localstorage_write!(ptr => core_mgmt_task_ptr: u64);
-        }
-    }
-
     /// SAFTEY: The pointer must be dropped before the next take_current_task call, and there cannot be multiple pointers at once
     pub unsafe fn get_current_task<'l>() -> &'l mut Thread {
         unsafe {
@@ -160,7 +140,7 @@ impl CPULocalStorageRW {
     }
 }
 
-pub unsafe fn init_core(core_id: u8, func: extern "C" fn()) -> u64 {
+pub unsafe fn init_core(core_id: u8) -> u64 {
     let vaddr_base = MemoryLoc::PerCpuMem as u64 + 0x100_0000 * core_id as u64;
 
     let cpu_lsize = size_of::<CPULocalStorage>() as u64;
@@ -185,14 +165,6 @@ pub unsafe fn init_core(core_id: u8, func: extern "C" fn()) -> u64 {
     ls.current_context = 0;
     ls.current_task_kernel_stack_top = 0;
 
-    let task = PROCESSES
-        .lock()
-        .get(&ProcessID(0))
-        .unwrap()
-        .new_thread(func as *const u64, 0)
-        .expect("init process shouldn't have died");
-
-    ls.core_mgmt_task_ptr = Box::into_raw(task) as u64;
     ls.current_task_ptr = 0;
 
     crate::gdt::create_gdt_for_core(unsafe { &mut *((vaddr_base + 0x1000) as *mut CPULocalGDT) });
@@ -200,8 +172,8 @@ pub unsafe fn init_core(core_id: u8, func: extern "C" fn()) -> u64 {
     vaddr_base
 }
 
-pub unsafe fn init_bsp_task(func: extern "C" fn()) {
-    let gs_base = new_cpu(0, func);
+pub unsafe fn init_bsp_task() {
+    let gs_base = new_cpu(0);
 
     // Load new core GDT
     // TODO: Remove old GDT
@@ -227,8 +199,8 @@ pub unsafe fn init_bsp_task(func: extern "C" fn()) {
 
 pub const CPU_STACK_SIZE_PAGES: u64 = 10;
 
-pub unsafe fn new_cpu(core_id: u8, func: extern "C" fn()) -> u64 {
-    let vaddr = init_core(core_id, func);
+pub unsafe fn new_cpu(core_id: u8) -> u64 {
+    let vaddr = init_core(core_id);
     let ls = unsafe { &mut *(vaddr as *mut CPULocalStorage) };
 
     let stack_base = frame_alloc_exec(|c| c.request_cont_pages(CPU_STACK_SIZE_PAGES as usize))

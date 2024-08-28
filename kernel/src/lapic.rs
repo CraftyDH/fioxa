@@ -1,6 +1,5 @@
 use core::sync::atomic::AtomicU32;
 
-use alloc::boxed::Box;
 use x86_64::{instructions::interrupts::without_interrupts, structures::idt::InterruptStackFrame};
 
 use crate::{
@@ -9,7 +8,7 @@ use crate::{
         page_table_manager::{MapMemoryError, Mapper, Page, PageLvl4, PageTable, Size4KB},
         MemoryMappingFlags,
     },
-    scheduling::taskmanager::{context_switch_helper, get_next_task, queue_task_callback},
+    scheduling::taskmanager::yield_task,
     screen::gop::WRITER,
     time::{check_sleep, HPET},
 };
@@ -74,84 +73,32 @@ pub unsafe fn enable_localapic() {
     });
 }
 
-#[naked]
 pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
     unsafe {
-        core::arch::asm!(
-            "push rbp",
-            "push rax",
-            "push rbx",
-            "push rcx",
-            "push rdx",
-            "push rsi",
-            "push rdi",
-            "push r8",
-            "push r9",
-            "push r10",
-            "push r11",
-            "push r12",
-            "push r13",
-            "push r14",
-            "push r15",
-            "lea rdi, [rip+2f]",
-            "mov rsi, rsp",
-            "mov rbx, rsi", // save the rsp in a preserved register
-            "mov rsp, gs:0xA", // load cpu stack
-            "xor eax, eax",
-            "mov gs:0x9, al", // set cpu context to 0
-            "call {}",
-            // we didn't context switch restore stack
-            "mov rsp, rbx",
-            // come back from context switch
-            "2:",
-            "mov al, 2",
-            "mov gs:0x9, al", // set cpu context
-            "pop r15",
-            "pop r14",
-            "pop r13",
-            "pop r12",
-            "pop r11",
-            "pop r10",
-            "pop r9",
-            "pop r8",
-            "pop rdi",
-            "pop rsi",
-            "pop rdx",
-            "pop rcx",
-            "pop rbx",
-            "pop rax",
-            "pop rbp",
-            "iretq",
-            sym tick,
-            options(noreturn)
-        );
-    }
-}
+        // Ack interrupt
+        *(0xfee000b0 as *mut u32) = 0;
 
-unsafe extern "C" fn tick(saved_ip: usize, saved_rsp: usize) {
-    // Ack interrupt
-    *(0xfee000b0 as *mut u32) = 0;
-
-    if CPULocalStorageRW::get_stay_scheduled() {
-        return;
-    }
-
-    if CPULocalStorageRW::get_core_id() == 0 {
-        let uptime = crate::time::uptime();
-        check_sleep(uptime);
-
-        // potentially update screen every 16ms
-        //* Very important that CPU doesn't have the stay scheduled flag (deadlock possible otherwise)
-        // TODO: Can we VSYNC this? Could stop the tearing.
-        if uptime > CPULocalStorageRW::get_screen_redraw_time() {
-            CPULocalStorageRW::set_screen_redraw_time(uptime + 16);
-            let mut w = WRITER.get().unwrap().lock();
-            w.redraw_if_needed();
+        if CPULocalStorageRW::get_stay_scheduled() {
+            return;
         }
-    }
 
-    // switch task if possible
-    if let Some(t) = get_next_task() {
-        context_switch_helper(Box::into_raw(t), queue_task_callback, saved_rsp, saved_ip);
+        if CPULocalStorageRW::get_core_id() == 0 {
+            let uptime = crate::time::uptime();
+            check_sleep(uptime);
+
+            // potentially update screen every 16ms
+            //* Very important that CPU doesn't have the stay scheduled flag (deadlock possible otherwise)
+            // TODO: Can we VSYNC this? Could stop the tearing.
+            if uptime > CPULocalStorageRW::get_screen_redraw_time() {
+                CPULocalStorageRW::set_screen_redraw_time(uptime + 16);
+                let mut w = WRITER.get().unwrap().lock();
+                w.redraw_if_needed();
+            }
+        }
+
+        // if we are not in sched yield to it
+        if CPULocalStorageRW::get_context() > 0 {
+            yield_task();
+        }
     }
 }

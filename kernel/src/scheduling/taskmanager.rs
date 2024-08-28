@@ -4,6 +4,7 @@ use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 
 use kernel_userspace::{ids::ProcessID, process::ProcessExit, syscall::thread_bootstraper};
 use spin::{mutex::SpinMutexGuard, Lazy, Mutex};
+use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::{
     assembly::{registers::SavedTaskState, wrmsr},
@@ -55,82 +56,57 @@ pub unsafe fn enable_syscall() {
     );
 }
 
-pub unsafe fn core_start_multitasking() -> ! {
+pub unsafe fn core_start_multitasking() {
     enable_syscall();
 
-    let mut target = CPULocalStorageRW::take_coremgmt_task();
+    // Init complete, start executing tasks
+    CPULocalStorageRW::set_stay_scheduled(false);
 
-    let state = target.state.take().unwrap();
-
-    // switch contexts
-    unsafe {
-        target
-            .process()
-            .memory
-            .lock()
-            .page_mapper
-            .get_mapper_mut()
-            .load_into_cr3_lazy()
-    }
-    CPULocalStorageRW::get_gdt().tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize] =
-        target.kstack_top;
-    CPULocalStorageRW::set_current_task(target);
-
-    state.jump();
+    core::arch::asm!(
+        "sti",
+        "mov rsp, gs:1",
+        "jmp {}",
+        sym scheduler,
+    )
 }
 
-/// Used for sleeping each core after the task queue becomes empty
-/// Aka the end of the round robin cycle
-/// Or when an async task (like interrupts) need to be in an actual process to dispatch (to avoid deadlocks)
-/// This reduces CPU load normally (doesn't thrash every core to 100%)
-/// However is does reduce performance when there are actually tasks that could use the time
-pub extern "C" fn nop_task() {
-    info!("Starting nop task: {}", CPULocalStorageRW::get_core_id());
-    unsafe {
-        // enable interrupts and wait for multitasking to start
-        core::arch::asm!("sti");
+unsafe extern "C" fn scheduler() {
+    let id = CPULocalStorageRW::get_core_id();
+    info!("Starting scheduler on core: {}", id);
 
-        // Init complete, start executing tasks
-        CPULocalStorageRW::set_stay_scheduled(false);
-
-        loop {
-            // nothing to do so sleep
-            core::arch::asm!("hlt");
-        }
-    }
-}
-
-pub fn get_next_task() -> Option<Box<Thread>> {
-    // get the next available task or run core mgmt
     loop {
-        // we cannot hold task queue for long,
-        // because exit_thread might trigger a notification that places a task into the queue
-        let task = TASK_QUEUE.lock().pop()?;
-        if !task.in_syscall
-            && task
-                .handle()
-                .kill_signal
-                .load(core::sync::atomic::Ordering::Relaxed)
-        {
-            exit_thread_inner(task);
-        } else {
-            return Some(task);
+        let t = without_interrupts(|| TASK_QUEUE.lock().pop());
+        match t {
+            Some(task) => without_interrupts(|| {
+                if !task.in_syscall
+                    && task
+                        .handle()
+                        .kill_signal
+                        .load(core::sync::atomic::Ordering::Relaxed)
+                {
+                    exit_thread_inner(task);
+                    return;
+                }
+                let (task, res) = sched_run_tick(task);
+
+                if res == ACTION_YIELD {
+                    TASK_QUEUE.lock().push(task);
+                } else if res == ACTION_EXIT_TASK {
+                    exit_thread_inner(task);
+                } else if res == ACTION_BLOCKING {
+                    let handle = task.handle().clone();
+                    *handle.thread.as_mut_ptr() = Some(task);
+                    handle.thread.force_unlock();
+                } else {
+                    panic!("should be a valid action")
+                }
+            }),
+            None => {
+                info!("putting core {id} to sleep");
+                // nothing can run so sleep
+                core::arch::asm!("hlt")
+            }
         }
-    }
-}
-
-pub fn get_next_task_always() -> Box<Thread> {
-    get_next_task().unwrap_or_else(|| {
-        let thread = CPULocalStorageRW::take_coremgmt_task();
-        thread
-    })
-}
-
-pub fn queue_thread(thread: Box<Thread>) {
-    if thread.process().pid == ProcessID(0) {
-        CPULocalStorageRW::set_coremgmt_task(thread);
-    } else {
-        TASK_QUEUE.lock().push(thread);
     }
 }
 
@@ -147,8 +123,8 @@ pub fn kill_bad_task() -> ! {
             thread.process().privilege
         );
 
-        if thread.process().pid.0 == 0 {
-            panic!("Cannot kill process 0");
+        if CPULocalStorageRW::get_context() == 0 {
+            panic!("Cannot kill in context 0");
         }
         exit_task();
     }
@@ -156,7 +132,7 @@ pub fn kill_bad_task() -> ! {
 
 pub fn exit_task() -> ! {
     unsafe {
-        context_switch(get_next_task_always(), exit_thread_callback);
+        enter_sched(ACTION_EXIT_TASK);
         unreachable!("exit thread shouldn't return")
     }
 }
@@ -225,78 +201,107 @@ pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Result<usize, SyscallErr
     }
 }
 
-pub unsafe extern "C" fn context_switch_helper(
-    target: *mut Thread,
-    save_callback: extern "C" fn(Box<Thread>),
-    return_rsp: usize,
-    return_rip: usize,
-) -> ! {
-    let mut target = Box::from_raw(target);
+pub const ACTION_YIELD: usize = 0;
+pub const ACTION_EXIT_TASK: usize = 1;
+pub const ACTION_BLOCKING: usize = 2;
 
-    let mut current_task = CPULocalStorageRW::take_current_task();
-    current_task.save(SavedTaskState {
-        sp: return_rsp,
-        ip: return_rip,
-        saved_arg: 0,
-    });
+unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
+    let SavedTaskState { sp, ip, saved_arg } = task.state.take().unwrap();
 
-    let state = target.state.take().unwrap();
+    let tss = &mut CPULocalStorageRW::get_gdt().tss;
+    let saved_switch = tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize];
+    tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize] = task.kstack_top;
 
-    // switch contexts
-    unsafe {
-        target
-            .process()
-            .memory
-            .lock()
-            .page_mapper
-            .get_mapper_mut()
-            .load_into_cr3_lazy()
-    }
-    CPULocalStorageRW::get_gdt().tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize] =
-        target.kstack_top;
-    CPULocalStorageRW::set_current_task(target);
+    let cr3 = task
+        .process()
+        .memory
+        .lock()
+        .page_mapper
+        .get_mapper_mut()
+        .into_page()
+        .get_address();
 
-    // now that everythings been switched save current task
-    save_callback(current_task);
+    CPULocalStorageRW::set_current_task(task);
 
-    state.jump();
-}
+    let new_sp;
+    let new_ip;
+    let action;
 
-pub extern "C" fn queue_task_callback(task: Box<Thread>) {
-    queue_thread(task)
-}
-
-pub unsafe fn context_switch(
-    target: Box<Thread>,
-    save_callback: unsafe extern "C" fn(Box<Thread>),
-) -> usize {
-    assert!(
-        !CPULocalStorageRW::get_stay_scheduled(),
-        "Thread should not be asking to stay scheduled and block."
-    );
-
-    let target = Box::into_raw(target);
-
-    let res;
-
-    // save rbx, rbp, flags and make llvm save anything it cares about
     core::arch::asm!(
         "push rbx",
         "push rbp",
         "pushfq",
+        "mov r9, cr3", // save current cr3
+        "push r9",
+        "mov cr3, r8",
         "mov gs:0x9, cl",
-        "lea rcx, [rip+2f]", // ret addr
-        "mov rdx, rsp",      // save rsp
-        "mov rsp, gs:0xA",   // load new stack
-        "call rax",
+        "lea r8, [rip+2f]",
+        "mov gs:0x22, rsp",
+        "mov gs:0x2A, r8",
+        "mov rsp, rsi",
+        "jmp rdi",
+        "2:",
+        "pop rax",
+        "mov cr3, rax",
+        "popfq",
+        "pop rbp",
+        "pop rbx",
+        in("rax") saved_arg,
+        in("cl") 1u8,
+        in("rdi") ip,
+        in("rsi") sp,
+        in("r8") cr3,
+        lateout("rax") _,
+        lateout("r15") _,
+        lateout("r14") _,
+        lateout("r13") _,
+        lateout("r12") _,
+        lateout("r11") _,
+        lateout("r10") _,
+        lateout("r9") _,
+        lateout("r8") _,
+        lateout("rdi") new_ip,
+        lateout("rsi") new_sp,
+        lateout("rdx") action,
+        lateout("rcx") _,
+    );
+    let mut task = CPULocalStorageRW::take_current_task();
+
+    tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize] = saved_switch;
+
+    task.state = Some(SavedTaskState {
+        sp: new_sp,
+        ip: new_ip,
+        saved_arg: 0,
+    });
+
+    (task, action)
+}
+
+pub unsafe fn enter_sched(action: usize) -> usize {
+    assert!(
+        !CPULocalStorageRW::get_stay_scheduled(),
+        "Thread should not be asking to stay scheduled and also enter the scheduler."
+    );
+
+    let res;
+    core::arch::asm!(
+        "push rbx",
+        "push rbp",
+        "pushfq",
+        "cli",
+        "mov gs:0x9, cl",
+        "lea rdi, [rip+2f]", // ret addr
+        "mov rsi, rsp",      // save rsp
+        "mov rsp, gs:0x22",  // load new stack
+        "mov rax, gs:0x2A",
+        "jmp rax",
         "2:",
         "popfq",
         "pop rbp",
         "pop rbx",
-        in("rdi") target,
-        in("rsi") save_callback,
-        in("rax") context_switch_helper,
         in("cl") 0u8,
+        in("rdx") action,
         lateout("rax") res,
         lateout("r15") _,
         lateout("r14") _,
@@ -310,30 +315,15 @@ pub unsafe fn context_switch(
         lateout("rsi") _,
         lateout("rdx") _,
         lateout("rcx") _,
-        options(preserves_flags),
     );
     res
 }
 
 pub fn yield_task() {
-    if let Some(t) = get_next_task() {
-        unsafe {
-            context_switch(t, queue_task_callback);
-        }
-    }
-}
-
-pub unsafe extern "C" fn exit_thread_callback(thread: Box<Thread>) {
-    exit_thread_inner(thread);
+    unsafe { enter_sched(ACTION_YIELD) };
 }
 
 pub fn block_task(handle: SpinMutexGuard<Option<Box<Thread>>>) -> usize {
     let _ = ManuallyDrop::new(handle);
-    unsafe { context_switch(get_next_task_always(), block_task_callback) }
-}
-
-pub unsafe extern "C" fn block_task_callback(task: Box<Thread>) {
-    let handle = task.handle().clone();
-    *handle.thread.as_mut_ptr() = Some(task);
-    handle.thread.force_unlock();
+    unsafe { enter_sched(ACTION_BLOCKING) }
 }
