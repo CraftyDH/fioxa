@@ -5,10 +5,7 @@ use spin::Mutex;
 
 use crate::{
     acpi::FioxaAcpiHandler,
-    scheduling::{
-        process::{ThreadHandle, ThreadStatus},
-        taskmanager::push_task_queue,
-    },
+    scheduling::{process::ThreadHandle, taskmanager::push_task_queue},
 };
 
 pub mod hpet;
@@ -47,14 +44,8 @@ pub fn check_sleep(uptime: u64) {
             .flat_map(|(_, handles)| handles)
             .filter_map(|handle| handle.upgrade())
             .for_each(|handle| {
-                let status = &mut *handle.status.lock();
-                match core::mem::take(status) {
-                    ThreadStatus::Ok | ThreadStatus::BlockingRet(_) => {
-                        panic!("bad state")
-                    }
-                    ThreadStatus::Blocking => *status = ThreadStatus::BlockingRet(0),
-                    ThreadStatus::Blocked(thread) => push_task_queue(thread),
-                }
+                let thread = handle.thread.lock().take().unwrap();
+                push_task_queue(thread);
             });
     }
 }

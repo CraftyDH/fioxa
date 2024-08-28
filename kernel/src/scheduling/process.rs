@@ -17,7 +17,10 @@ use kernel_userspace::{
     object::{KernelObjectType, KernelReferenceID},
     process::ProcessExit,
 };
-use spin::{mutex::Mutex, Lazy};
+use spin::{
+    mutex::{Mutex, SpinMutex},
+    Lazy,
+};
 use x86_64::{
     structures::{gdt::SegmentSelector, idt::InterruptStackFrameValue},
     VirtAddr,
@@ -229,7 +232,7 @@ impl Process {
         let handle = Arc::new(ThreadHandle {
             process: self.this.upgrade().unwrap(),
             tid,
-            status: Mutex::new(ThreadStatus::Ok),
+            thread: SpinMutex::new(None),
             kill_signal: AtomicBool::new(false),
         });
 
@@ -324,21 +327,8 @@ impl ProcessThreads {
 pub struct ThreadHandle {
     process: Arc<Process>,
     tid: ThreadID,
-    pub status: Mutex<ThreadStatus>,
+    pub thread: SpinMutex<Option<Box<Thread>>>,
     pub kill_signal: AtomicBool,
-}
-
-/// Only valid while running
-#[derive(Debug, Default)]
-pub enum ThreadStatus {
-    #[default]
-    Ok,
-    // Thread scheduled to block but hasn't saved yet
-    Blocking,
-    // Thread was woken before it could be saved
-    BlockingRet(usize),
-    // Thread blocked
-    Blocked(Box<Thread>),
 }
 
 impl ThreadHandle {
@@ -526,16 +516,9 @@ impl KEventListener for ThreadEventListener {
         let Some(handle) = self.thread.upgrade() else {
             return;
         };
-        let mut status = handle.status.lock();
-        match core::mem::take(&mut *status) {
-            ThreadStatus::Blocked(mut this) => {
-                drop(status);
-                this.state.as_mut().unwrap().saved_arg = direction as usize;
-                push_task_queue(this);
-            }
-            ThreadStatus::Blocking => *status = ThreadStatus::BlockingRet(direction as usize),
-            ThreadStatus::Ok | ThreadStatus::BlockingRet(_) => panic!("thread shouldn't be here"),
-        }
+        let mut thread = handle.thread.lock().take().unwrap();
+        thread.state.as_mut().unwrap().saved_arg = direction as usize;
+        push_task_queue(thread);
     }
 }
 

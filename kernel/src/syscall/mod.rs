@@ -30,7 +30,7 @@ use crate::{
         MemoryMappingFlags,
     },
     scheduling::{
-        process::{KernelValue, ThreadStatus},
+        process::KernelValue,
         taskmanager::{self, block_task, exit_task, kill_bad_task, yield_task},
     },
     socket::{create_sockets, KSocketListener, PUBLIC_SOCKETS},
@@ -358,17 +358,10 @@ unsafe fn sys_receive_event(arg1: usize, arg2: usize) -> Result<usize, SyscallEr
 
     let save_state = |mut event: MutexGuard<KEvent>, edge: EdgeTrigger| {
         let handle = thread.handle().clone();
-        let mut status = handle.status.lock();
+        let status = handle.thread.lock();
         thread.wait_on(&mut event, edge);
-        let ThreadStatus::Ok = *status else {
-            return Err(SyscallError::Info(
-                "Thread status not OK (maybe was killed?)",
-            ));
-        };
-        *status = ThreadStatus::Blocking;
         drop(event);
-        drop(status);
-        Ok(block_task())
+        Ok(block_task(status))
     };
 
     match mode {
@@ -605,14 +598,7 @@ unsafe fn sleep_handler(arg1: usize) -> Result<usize, SyscallError> {
     let thread = CPULocalStorageRW::get_current_task();
 
     let handle = thread.handle().clone();
-    let mut status: MutexGuard<ThreadStatus> = handle.status.lock();
-    let ThreadStatus::Ok = *status else {
-        return Err(SyscallError::Info(
-            "Thread status not OK (maybe was killed?)",
-        ));
-    };
-    *status = ThreadStatus::Blocking;
-    drop(status);
+    let status = handle.thread.lock();
 
     SLEPT_PROCESSES
         .lock()
@@ -620,7 +606,7 @@ unsafe fn sleep_handler(arg1: usize) -> Result<usize, SyscallError> {
         .or_default()
         .push(Arc::downgrade(&handle));
 
-    block_task();
+    block_task(status);
     Ok((uptime() - start) as usize)
 }
 

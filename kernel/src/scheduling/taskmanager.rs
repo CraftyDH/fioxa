@@ -1,9 +1,9 @@
-use core::ptr::slice_from_raw_parts;
+use core::{mem::ManuallyDrop, ptr::slice_from_raw_parts};
 
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 
 use kernel_userspace::{ids::ProcessID, process::ProcessExit, syscall::thread_bootstraper};
-use spin::{Lazy, Mutex};
+use spin::{mutex::SpinMutexGuard, Lazy, Mutex};
 
 use crate::{
     assembly::{registers::SavedTaskState, wrmsr},
@@ -106,26 +106,16 @@ pub fn get_next_task() -> Option<Box<Thread>> {
         // we cannot hold task queue for long,
         // because exit_thread might trigger a notification that places a task into the queue
         let task = TASK_QUEUE.lock().pop()?;
-        let status = core::mem::take(&mut *task.handle().status.lock());
-        match status {
-            super::process::ThreadStatus::Ok => {
-                if !task.in_syscall
-                    && task
-                        .handle()
-                        .kill_signal
-                        .load(core::sync::atomic::Ordering::Relaxed)
-                {
-                    exit_thread_inner(task);
-                } else {
-                    return Some(task);
-                }
-            }
-            super::process::ThreadStatus::Blocked(_)
-            | super::process::ThreadStatus::Blocking
-            | super::process::ThreadStatus::BlockingRet(_) => {
-                panic!("a thread in the queue should not be blocked")
-            }
-        };
+        if !task.in_syscall
+            && task
+                .handle()
+                .kill_signal
+                .load(core::sync::atomic::Ordering::Relaxed)
+        {
+            exit_thread_inner(task);
+        } else {
+            return Some(task);
+        }
     }
 }
 
@@ -337,25 +327,13 @@ pub unsafe extern "C" fn exit_thread_callback(thread: Box<Thread>) {
     exit_thread_inner(thread);
 }
 
-pub fn block_task() -> usize {
+pub fn block_task(handle: SpinMutexGuard<Option<Box<Thread>>>) -> usize {
+    let _ = ManuallyDrop::new(handle);
     unsafe { context_switch(get_next_task_always(), block_task_callback) }
 }
 
-pub unsafe extern "C" fn block_task_callback(mut task: Box<Thread>) {
+pub unsafe extern "C" fn block_task_callback(task: Box<Thread>) {
     let handle = task.handle().clone();
-    let mut status = handle.status.lock();
-
-    match &mut *status {
-        // was blocking so start blocking
-        super::process::ThreadStatus::Blocking => {
-            *status = super::process::ThreadStatus::Blocked(task);
-        }
-        // something triggered wake up so queue task
-        super::process::ThreadStatus::BlockingRet(val) => {
-            task.state.as_mut().unwrap().saved_arg = *val;
-            *status = super::process::ThreadStatus::Ok;
-            queue_thread(task);
-        }
-        _ => panic!("bad state"),
-    }
+    *handle.thread.as_mut_ptr() = Some(task);
+    handle.thread.force_unlock();
 }
