@@ -8,11 +8,8 @@
 // #![feature(custom_test_frameworks)]
 // #![test_runner(test_runner)]
 #![feature(const_for)]
-#![feature(new_uninit)]
-#![feature(asm_const)]
 #![feature(const_try)]
 #![feature(btree_extract_if)]
-#![feature(is_none_or)]
 
 use core::fmt::Write;
 
