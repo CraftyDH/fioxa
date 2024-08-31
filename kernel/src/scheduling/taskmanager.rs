@@ -9,7 +9,7 @@ use x86_64::instructions::interrupts::without_interrupts;
 use crate::{
     assembly::{registers::SavedTaskState, wrmsr},
     cpu_localstorage::CPULocalStorageRW,
-    gdt::{KERNEL_CODE_SELECTOR, TASK_SWITCH_INDEX, USER_CODE_SELECTOR},
+    gdt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR},
     kassert,
     syscall::{syscall_sysret_handler, SyscallError},
 };
@@ -102,7 +102,6 @@ unsafe extern "C" fn scheduler() {
                 }
             }),
             None => {
-                info!("putting core {id} to sleep");
                 // nothing can run so sleep
                 core::arch::asm!("hlt")
             }
@@ -209,8 +208,7 @@ unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
     let SavedTaskState { sp, ip, saved_arg } = task.state.take().unwrap();
 
     let tss = &mut CPULocalStorageRW::get_gdt().tss;
-    let saved_switch = tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize];
-    tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize] = task.kstack_top;
+    tss.privilege_stack_table[0] = task.kstack_top;
 
     let cr3 = task
         .process()
@@ -266,8 +264,6 @@ unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
         lateout("rcx") _,
     );
     let mut task = CPULocalStorageRW::take_current_task();
-
-    tss.interrupt_stack_table[TASK_SWITCH_INDEX as usize] = saved_switch;
 
     task.state = Some(SavedTaskState {
         sp: new_sp,

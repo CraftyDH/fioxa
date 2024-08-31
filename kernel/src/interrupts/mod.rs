@@ -18,9 +18,7 @@ pub mod exceptions;
 // pub mod hardware;
 pub mod pic;
 
-use crate::{
-    cpu_localstorage::CPULocalStorageRW, event::KEvent, gdt::TASK_SWITCH_INDEX, lapic, syscall,
-};
+use crate::{cpu_localstorage::CPULocalStorageRW, event::KEvent, lapic, syscall};
 
 use self::pic::disable_pic;
 
@@ -105,11 +103,7 @@ pub fn init_idt() {
         };
     });
 
-    unsafe {
-        IDT.lock()[LAPIC_INT]
-            .set_handler_fn(lapic::tick_handler)
-            .set_stack_index(TASK_SWITCH_INDEX);
-    }
+    IDT.lock()[LAPIC_INT].set_handler_fn(lapic::tick_handler);
     // set_irq_handler(101, task_switch_handler);
     set_irq_handler(100, ipi_interrupt_handler);
     set_irq_handler(0xFF, spurious_handler);

@@ -23,9 +23,7 @@ use screen::gop::WRITER;
 use terminal::Writer;
 use x86_64::instructions::interrupts::without_interrupts;
 
-use crate::{
-    cpu_localstorage::CPULocalStorageRW, paging::MemoryLoc, scheduling::without_context_switch,
-};
+use crate::{cpu_localstorage::CPULocalStorageRW, paging::MemoryLoc};
 
 #[macro_use]
 extern crate alloc;

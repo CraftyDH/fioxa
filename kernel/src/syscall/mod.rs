@@ -23,7 +23,6 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     event::{EdgeTrigger, KEvent, KEventQueue},
-    gdt::TASK_SWITCH_INDEX,
     message::KMessage,
     paging::{
         page_allocator::frame_alloc_exec, page_mapper::PageMapping, page_table_manager::Mapper,
@@ -38,12 +37,10 @@ use crate::{
 };
 
 pub fn set_syscall_idt(idt: &mut InterruptDescriptorTable) {
-    unsafe {
-        idt[SYSCALL_NUMBER]
-            .set_handler_fn(wrapped_syscall_handler)
-            .set_stack_index(TASK_SWITCH_INDEX)
-            .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
-    } // .disable_interrupts(false);
+    idt[SYSCALL_NUMBER]
+        .set_handler_fn(wrapped_syscall_handler)
+        .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+    // .disable_interrupts(false);
 }
 
 #[derive(Debug)]
