@@ -78,7 +78,7 @@ pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
         // Ack interrupt
         *(0xfee000b0 as *mut u32) = 0;
 
-        if CPULocalStorageRW::get_stay_scheduled() {
+        if CPULocalStorageRW::get_stay_scheduled() > 0 {
             return;
         }
 

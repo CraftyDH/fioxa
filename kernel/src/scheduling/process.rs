@@ -90,6 +90,7 @@ pub struct Process {
     pub privilege: ProcessPrivilige,
     pub args: Vec<u8>,
     pub memory: Mutex<ProcessMemory>,
+    pub cr3_page: u64,
     pub references: Mutex<ProcessReferences>,
     pub exit_status: Mutex<ProcessExit>,
     pub exit_signal: Arc<Mutex<KEvent>>,
@@ -176,6 +177,7 @@ impl Process {
             pid: generate_next_process_id(),
             privilege,
             args: args.to_vec(),
+            cr3_page: unsafe { page_mapper.get_mapper_mut().into_page().get_address() },
             memory: Mutex::new(ProcessMemory {
                 page_mapper,
                 owned32_pages: Default::default(),

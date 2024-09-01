@@ -60,7 +60,7 @@ pub unsafe fn core_start_multitasking() {
     enable_syscall();
 
     // Init complete, start executing tasks
-    CPULocalStorageRW::set_stay_scheduled(false);
+    CPULocalStorageRW::dec_stay_scheduled();
 
     core::arch::asm!(
         "sti",
@@ -210,14 +210,7 @@ unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
     let tss = &mut CPULocalStorageRW::get_gdt().tss;
     tss.privilege_stack_table[0] = task.kstack_top;
 
-    let cr3 = task
-        .process()
-        .memory
-        .lock()
-        .page_mapper
-        .get_mapper_mut()
-        .into_page()
-        .get_address();
+    let cr3 = task.process().cr3_page;
 
     CPULocalStorageRW::set_current_task(task);
 
@@ -275,8 +268,9 @@ unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
 }
 
 pub unsafe fn enter_sched(action: usize) -> usize {
-    assert!(
-        !CPULocalStorageRW::get_stay_scheduled(),
+    assert_eq!(
+        CPULocalStorageRW::get_stay_scheduled(),
+        0,
         "Thread should not be asking to stay scheduled and also enter the scheduler."
     );
 

@@ -144,7 +144,9 @@ pub unsafe extern "C" fn syscall_kernel_handler() {
         "mov gs:0x9, al",
         "mov r15, rsp",     // save caller rsp
         "mov rsp, gs:0x1A", // load kstack top
+        "sti",
         "call {}",
+        "cli",
         "mov cl, 2",
         "mov gs:0x9, cl", // set cpu context
         "mov rsp, r15",   // restore caller rip
@@ -164,7 +166,9 @@ pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
         core::arch::asm!(
             "mov al, 1",
             "mov gs:0x9, al", // set cpu context
+            "sti",
             "call {}",
+            "cli",
             "mov cl, 2",
             "mov gs:0x9, cl", // set cpu context
             // clear scratch registers (we don't want leaks)
@@ -194,8 +198,10 @@ pub unsafe extern "C" fn syscall_sysret_handler() {
         "mov r13, rcx", // save caller rip
         "mov rcx, r10", // move arg3 to match sysv c calling convention
         "mov rsp, gs:0x1A", // load kstack top
+        "sti",
         "call {}",
         // clear scratch registers (we don't want leaks)
+        "cli",
         "xor r10d, r10d",
         "xor r9d,  r9d",
         "xor r8d,  r8d",

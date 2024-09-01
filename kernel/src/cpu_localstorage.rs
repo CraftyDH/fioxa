@@ -23,8 +23,8 @@ pub struct CPULocalStorage {
     current_task_kernel_stack_top: u64,
     sched_task_sp: u64,
     sched_task_ip: u64,
-    // If not set the task should stay scheduled
-    stay_scheduled: bool,
+    // If non zero don't yield the task on timer interrupt
+    stay_scheduled: u64,
     screen_redraw: u64,
     gdt_pointer: usize,
     // at 0x1000 (1 page down is GDT)
@@ -81,13 +81,26 @@ impl CPULocalStorageRW {
     }
 
     #[inline]
-    pub fn get_stay_scheduled() -> bool {
-        unsafe { localstorage_read_imm!(stay_scheduled: bool) }
+    pub fn get_stay_scheduled() -> u64 {
+        unsafe { localstorage_read_imm!(stay_scheduled: u64) }
     }
 
     #[inline]
-    pub fn set_stay_scheduled(val: bool) {
-        unsafe { localstorage_write!(val => stay_scheduled: bool) }
+    pub unsafe fn inc_stay_scheduled() {
+        core::arch::asm!(
+            "inc qword ptr gs:{}",
+            const core::mem::offset_of!(CPULocalStorage, stay_scheduled),
+            options(nostack)
+        );
+    }
+
+    #[inline]
+    pub unsafe fn dec_stay_scheduled() {
+        core::arch::asm!(
+            "dec qword ptr gs:{}",
+            const core::mem::offset_of!(CPULocalStorage, stay_scheduled),
+            options(nostack)
+        );
     }
 
     /// SAFTEY: The pointer must be dropped before the next take_current_task call, and there cannot be multiple pointers at once
@@ -160,7 +173,7 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
 
     let ls = unsafe { &mut *(vaddr_base as *mut CPULocalStorage) };
     ls.core_id = core_id;
-    ls.stay_scheduled = true;
+    ls.stay_scheduled = 1; // to be decremented to 0 in `core_start_multitasking`
     ls.gdt_pointer = (vaddr_base + 0x1000) as usize;
     ls.current_context = 0;
     ls.current_task_kernel_stack_top = 0;

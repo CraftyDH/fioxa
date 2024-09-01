@@ -9,17 +9,15 @@ where
 {
     // Check if we are switching tasks
     if is_switching_tasks() {
-        // get current status
-        let initial = CPULocalStorageRW::get_stay_scheduled();
-        // prevent thread from being scheduled away
-        CPULocalStorageRW::set_stay_scheduled(true);
+        unsafe {
+            CPULocalStorageRW::inc_stay_scheduled();
 
-        let tmp = f();
+            let tmp = f();
 
-        // reset to what it was
-        CPULocalStorageRW::set_stay_scheduled(initial);
+            CPULocalStorageRW::dec_stay_scheduled();
 
-        tmp
+            tmp
+        }
     } else {
         f()
     }
