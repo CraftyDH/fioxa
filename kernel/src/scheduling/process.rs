@@ -22,6 +22,7 @@ use spin::{
     Lazy,
 };
 use x86_64::{
+    instructions::interrupts::without_interrupts,
     structures::{gdt::SegmentSelector, idt::InterruptStackFrameValue},
     VirtAddr,
 };
@@ -43,7 +44,7 @@ use crate::{
     BOOT_INFO,
 };
 
-use super::taskmanager::{push_task_queue, PROCESSES};
+use super::taskmanager::{block_task, push_task_queue, PROCESSES};
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 pub const KSTACK_ADDR: u64 = 0xffff_800_000_000_000;
@@ -230,7 +231,8 @@ impl Process {
             stack_segment: self.privilege.get_data_segment().0 as u64,
         };
 
-        unsafe { *(kstack_base_virt as *mut InterruptStackFrameValue) = interrupt_frame }
+        unsafe { *(kstack_base_virt as *mut usize) = arg };
+        unsafe { *((kstack_base_virt + 8) as *mut InterruptStackFrameValue) = interrupt_frame }
         let handle = Arc::new(ThreadHandle {
             process: self.this.upgrade().unwrap(),
             tid,
@@ -246,13 +248,9 @@ impl Process {
 
         threads.threads.insert(tid, handle.clone());
         Some(Box::new(Thread {
-            cached_event_listener: Arc::new(ThreadEventListener {
-                thread: Arc::downgrade(&handle),
-            }),
             handle,
             kstack_top: VirtAddr::from_ptr(kstack_top as *const ()),
             state: Some(SavedTaskState {
-                saved_arg: arg,
                 sp: kstack_top - 0x1000,
                 ip: start_new_task as usize,
             }),
@@ -289,8 +287,7 @@ pub extern "C" fn start_new_task(arg: usize) {
         core::arch::asm!(
             "mov cl, 2",
             "mov gs:0x9, cl", // set cpu context
-            // move the result into arg
-            "mov rdi, rax",
+            "pop rdi",
             // Zero registers (except rdi which has arg)
             "xor r15d, r15d",
             "xor r14d, r14d",
@@ -340,6 +337,10 @@ impl ThreadHandle {
 
     pub fn process(&self) -> &Arc<Process> {
         &self.process
+    }
+
+    pub fn wake_up(&self) {
+        push_task_queue(self.thread.lock().take().unwrap());
     }
 }
 
@@ -419,7 +420,6 @@ pub struct Thread {
     pub state: Option<SavedTaskState>,
     pub kstack_top: VirtAddr,
     linked_next: Option<Box<Thread>>,
-    cached_event_listener: Arc<ThreadEventListener>,
     // if true do not kill as it might hold resources
     pub in_syscall: bool,
 }
@@ -497,30 +497,54 @@ impl Into<KernelValue> for Arc<Process> {
 }
 
 #[derive(Debug)]
-pub struct ThreadEventListener {
-    thread: Weak<ThreadHandle>,
+struct ThreadEventListenerInner {
+    pub thread: Weak<ThreadHandle>,
+    pub result: Option<bool>,
 }
 
-impl Thread {
-    pub fn wait_on(&self, ev: &mut KEvent, direction: EdgeTrigger) {
-        let cached = self.cached_event_listener.clone();
+#[derive(Debug)]
+pub struct ThreadEventListener(Mutex<ThreadEventListenerInner>);
+
+impl ThreadEventListener {
+    pub fn new(ev: &mut KEvent, direction: EdgeTrigger, thread: &Thread) -> Arc<Self> {
+        let this = Arc::new(Self(Mutex::new(ThreadEventListenerInner {
+            thread: Arc::downgrade(&thread.handle),
+            result: None,
+        })));
         ev.listeners().push(EdgeListener::new(
-            cached,
+            this.clone(),
             EventCallback(NonZeroUsize::new(1).unwrap()),
             direction,
             true,
         ));
+        this
+    }
+
+    pub fn wait(&self, thread: &Thread) -> bool {
+        loop {
+            let inner = self.0.lock();
+
+            if let Some(r) = inner.result {
+                return r;
+            }
+            let status = thread.handle.thread.lock();
+            drop(inner);
+            block_task(status);
+        }
     }
 }
 
 impl KEventListener for ThreadEventListener {
     fn trigger_edge(&self, _: EventCallback, direction: bool) {
-        let Some(handle) = self.thread.upgrade() else {
+        let mut this = self.0.lock();
+        this.result = Some(direction);
+        let Some(handle) = this.thread.upgrade() else {
             return;
         };
-        let mut thread = handle.thread.lock().take().unwrap();
-        thread.state.as_mut().unwrap().saved_arg = direction as usize;
-        push_task_queue(thread);
+        without_interrupts(|| {
+            handle.wake_up();
+            drop(this);
+        });
     }
 }
 

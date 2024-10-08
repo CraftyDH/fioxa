@@ -78,8 +78,6 @@ macro_rules! wrap_function_registers {
 pub struct SavedTaskState {
     pub sp: usize,
     pub ip: usize,
-    // goes into rax
-    pub saved_arg: usize,
 }
 
 /// The order is very important

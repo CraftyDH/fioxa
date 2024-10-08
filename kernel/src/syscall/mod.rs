@@ -29,7 +29,7 @@ use crate::{
         MemoryMappingFlags,
     },
     scheduling::{
-        process::KernelValue,
+        process::{KernelValue, ThreadEventListener},
         taskmanager::{self, block_task, exit_task, kill_bad_task, yield_task},
     },
     socket::{create_sockets, KSocketListener, PUBLIC_SOCKETS},
@@ -360,11 +360,9 @@ unsafe fn sys_receive_event(arg1: usize, arg2: usize) -> Result<usize, SyscallEr
     let ev = event.lock();
 
     let save_state = |mut event: MutexGuard<KEvent>, edge: EdgeTrigger| {
-        let handle = thread.handle().clone();
-        let status = handle.thread.lock();
-        thread.wait_on(&mut event, edge);
+        let res = ThreadEventListener::new(&mut event, edge, &thread);
         drop(event);
-        Ok(block_task(status))
+        Ok(res.wait(thread) as usize)
     };
 
     match mode {

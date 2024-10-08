@@ -3,10 +3,7 @@ use alloc::{collections::BTreeMap, sync::Weak, vec::Vec};
 use conquer_once::spin::{Lazy, OnceCell};
 use spin::Mutex;
 
-use crate::{
-    acpi::FioxaAcpiHandler,
-    scheduling::{process::ThreadHandle, taskmanager::push_task_queue},
-};
+use crate::{acpi::FioxaAcpiHandler, scheduling::process::ThreadHandle};
 
 pub mod hpet;
 pub mod pit;
@@ -43,9 +40,6 @@ pub fn check_sleep(uptime: u64) {
             .extract_if(|&req_time, _| req_time <= uptime)
             .flat_map(|(_, handles)| handles)
             .filter_map(|handle| handle.upgrade())
-            .for_each(|handle| {
-                let thread = handle.thread.lock().take().unwrap();
-                push_task_queue(thread);
-            });
+            .for_each(|handle| handle.wake_up());
     }
 }

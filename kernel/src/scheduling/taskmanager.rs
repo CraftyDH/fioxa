@@ -205,7 +205,7 @@ pub const ACTION_EXIT_TASK: usize = 1;
 pub const ACTION_BLOCKING: usize = 2;
 
 unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
-    let SavedTaskState { sp, ip, saved_arg } = task.state.take().unwrap();
+    let SavedTaskState { sp, ip } = task.state.take().unwrap();
 
     let tss = &mut CPULocalStorageRW::get_gdt().tss;
     tss.privilege_stack_table[0] = task.kstack_top;
@@ -237,7 +237,6 @@ unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
         "popfq",
         "pop rbp",
         "pop rbx",
-        in("rax") saved_arg,
         in("cl") 1u8,
         in("rdi") ip,
         in("rsi") sp,
@@ -261,20 +260,18 @@ unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
     task.state = Some(SavedTaskState {
         sp: new_sp,
         ip: new_ip,
-        saved_arg: 0,
     });
 
     (task, action)
 }
 
-pub unsafe fn enter_sched(action: usize) -> usize {
+pub unsafe fn enter_sched(action: usize) {
     assert_eq!(
         CPULocalStorageRW::get_stay_scheduled(),
         0,
         "Thread should not be asking to stay scheduled and also enter the scheduler."
     );
 
-    let res;
     core::arch::asm!(
         "push rbx",
         "push rbp",
@@ -292,7 +289,7 @@ pub unsafe fn enter_sched(action: usize) -> usize {
         "pop rbx",
         in("cl") 0u8,
         in("rdx") action,
-        lateout("rax") res,
+        lateout("rax") _,
         lateout("r15") _,
         lateout("r14") _,
         lateout("r13") _,
@@ -306,14 +303,13 @@ pub unsafe fn enter_sched(action: usize) -> usize {
         lateout("rdx") _,
         lateout("rcx") _,
     );
-    res
 }
 
 pub fn yield_task() {
     unsafe { enter_sched(ACTION_YIELD) };
 }
 
-pub fn block_task(handle: SpinMutexGuard<Option<Box<Thread>>>) -> usize {
+pub fn block_task(handle: SpinMutexGuard<Option<Box<Thread>>>) {
     let _ = ManuallyDrop::new(handle);
     unsafe { enter_sched(ACTION_BLOCKING) }
 }
