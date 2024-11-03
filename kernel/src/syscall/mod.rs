@@ -135,7 +135,7 @@ macro_rules! kenum_cast {
 /// Handler for internal syscalls called by the kernel (Note: not nested).
 #[naked]
 pub unsafe extern "C" fn syscall_kernel_handler() {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         "push rbp",
         "push r15",
         "pushfq",
@@ -155,7 +155,6 @@ pub unsafe extern "C" fn syscall_kernel_handler() {
         "pop rbp",
         "ret",
         sym syscall_handler,
-        options(noreturn)
     );
 }
 
@@ -163,7 +162,7 @@ pub unsafe extern "C" fn syscall_kernel_handler() {
 #[naked]
 pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
     unsafe {
-        core::arch::asm!(
+        core::arch::naked_asm!(
             "mov al, 1",
             "mov gs:0x9, al", // set cpu context
             "sti",
@@ -182,7 +181,6 @@ pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
             "xor ecx,  ecx",
             "iretq",
             sym syscall_handler,
-            options(noreturn)
         );
     }
 }
@@ -190,7 +188,7 @@ pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
 /// Handler for syscalls via syscall
 #[naked]
 pub unsafe extern "C" fn syscall_sysret_handler() {
-    core::arch::asm!(
+    core::arch::naked_asm!(
         "mov al, 1",
         "mov gs:0x9, al",
         "mov r15, rsp", // save caller rsp
@@ -214,7 +212,6 @@ pub unsafe extern "C" fn syscall_sysret_handler() {
         "mov rsp, r15", // restore caller rsp
         "sysretq",
         sym syscall_handler,
-        options(noreturn)
     );
 }
 

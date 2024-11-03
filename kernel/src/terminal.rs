@@ -31,7 +31,7 @@ pub struct Writer<'a> {
 }
 
 impl<'a> Writer<'a> {
-    pub fn new(gop: GopInfo, font: PSF1Font<'a>) -> Writer {
+    pub fn new(gop: GopInfo, font: PSF1Font<'a>) -> Writer<'a> {
         let unicode_buffer = &font.unicode_buffer;
 
         let mut unicode_table: BTreeMap<char, usize> = BTreeMap::new();

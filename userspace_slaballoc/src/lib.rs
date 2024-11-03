@@ -1,6 +1,5 @@
 #![no_std]
 #![feature(alloc_error_handler)] // We need to be able to create the error handler
-#![feature(const_mut_refs)]
 
 use locked_mutex::Locked;
 use slab::SlabAllocator;

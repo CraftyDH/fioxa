@@ -284,7 +284,7 @@ impl Process {
 #[naked]
 pub extern "C" fn start_new_task(arg: usize) {
     unsafe {
-        core::arch::asm!(
+        core::arch::naked_asm!(
             "mov cl, 2",
             "mov gs:0x9, cl", // set cpu context
             "pop rdi",
@@ -305,7 +305,6 @@ pub extern "C" fn start_new_task(arg: usize) {
             "xor ebp,  ebp",
             // start
             "iretq",
-            options(noreturn)
         );
     }
 }

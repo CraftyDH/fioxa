@@ -1,7 +1,6 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)] // We need to be able to create the error handler
-#![feature(const_mut_refs)]
 #![feature(naked_functions)]
 #![feature(fn_traits)]
 //* Testing

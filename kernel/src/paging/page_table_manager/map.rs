@@ -1,12 +1,15 @@
+use core::ops::Add;
+
 use crate::paging::MemoryLoc;
 
 use super::*;
 
 impl PageTable<'_, PageLvl4> {
     pub unsafe fn shift_table_to_offset(&mut self) {
-        self.table = &mut *((self.table as *mut PhysPageTable as *mut u8)
+        self.table = &mut *((self.table as *mut PhysPageTable)
+            .addr()
             .add(MemoryLoc::PhysMapOffset as usize)
-            as *mut PhysPageTable)
+            as *mut PhysPageTable);
     }
 
     pub unsafe fn load_into_cr3(&self) {
