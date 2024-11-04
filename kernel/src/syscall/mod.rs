@@ -33,7 +33,7 @@ use crate::{
         taskmanager::{self, block_task, exit_task, kill_bad_task, yield_task},
     },
     socket::{create_sockets, KSocketListener, PUBLIC_SOCKETS},
-    time::{uptime, SLEPT_PROCESSES},
+    time::{uptime, SleptProcess, SLEPT_PROCESSES},
 };
 
 pub fn set_syscall_idt(idt: &mut InterruptDescriptorTable) {
@@ -600,9 +600,10 @@ unsafe fn sleep_handler(arg1: usize) -> Result<usize, SyscallError> {
 
     SLEPT_PROCESSES
         .lock()
-        .entry(time)
-        .or_default()
-        .push(Arc::downgrade(&handle));
+        .push(core::cmp::Reverse(SleptProcess {
+            wakeup: time,
+            thread: Arc::downgrade(&handle),
+        }));
 
     block_task(status);
     Ok((uptime() - start) as usize)
