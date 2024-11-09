@@ -6,13 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-uefi = { version = "0.24", features = ["logger"] }
+uefi = { version = "0.30", features = ["logger"] }
 log = "0.4"
 
-spin = "0.9"
 x86_64 = "0.14"
 modular-bitfield = { version = "0.11", default-features = false}
-
-[profile.release]
-# TODO: fix crash with optimisations
-opt-level = 0

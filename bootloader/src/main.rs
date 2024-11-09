@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 
-use core::slice;
-
 use bootloader::{
     fs, gop,
     kernel::load_kernel,
@@ -14,9 +12,6 @@ use uefi::{
     table::{boot::MemoryType, Boot, SystemTable},
     Handle, Status,
 };
-
-/// Global logger object
-static mut LOGGER: Option<uefi::logger::Logger> = None;
 
 #[macro_use]
 extern crate log;
@@ -33,14 +28,7 @@ fn _start(image_handle: Handle, system_table: SystemTable<Boot>) -> Status {
 }
 
 fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> ! {
-    // Initalize Logger
-    let logger = unsafe {
-        LOGGER = Some(uefi::logger::Logger::new(system_table.stdout()));
-        LOGGER.as_ref().unwrap()
-    };
-
-    // Will only fail if allready initialized
-    log::set_logger(logger).unwrap();
+    uefi::helpers::init(&mut system_table).unwrap();
 
     // Log everything
     log::set_max_level(log::LevelFilter::Info);
@@ -66,7 +54,7 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
         let stack = boot_services
             .allocate_pool(MemoryType::LOADER_DATA, 0x1000 * 25) // 100 KB
             .unwrap();
-        core::ptr::write_bytes(stack, 0, 0x1000 * 25);
+        core::ptr::write_bytes(stack.as_ptr(), 0, 0x1000 * 25);
         stack.add(0x1000 * 25)
     };
 
@@ -75,35 +63,22 @@ fn uefi_entry(mut image_handle: Handle, mut system_table: SystemTable<Boot>) -> 
 
     let entry_point = load_system(&boot_services, &mut image_handle, &mut boot_info);
 
-    let mmap_size = boot_services.memory_map_size();
-    boot_info.mmap_entry_size = mmap_size.entry_size;
-
-    // Add a few extra bytes of space, since this allocation will increase the mmap size
-    let size = mmap_size.map_size + 0x1000 - 1;
-    let mmap_ptr = boot_services
-        .allocate_pool(MemoryType::LOADER_DATA, size)
-        .unwrap();
-
-    boot_info.mmap_buf = mmap_ptr;
-
-    let memory_map_buffer = {
-        let buffer = unsafe { slice::from_raw_parts_mut(mmap_ptr, size) };
-        buffer
-    };
-
-    let mut mmap = boot_services.memory_map(memory_map_buffer).unwrap();
+    let (runtime_table, mut mmap) =
+        unsafe { system_table.exit_boot_services(MemoryType::LOADER_DATA) };
+    // No point printing anything since once we get the GOP buffer the UEFI sdout stops working
 
     mmap.sort();
 
-    boot_info.mmap_len = mmap.entries().len();
+    let mmap_raw = mmap.as_raw();
 
-    let (runtime_table, _mmap) = system_table.exit_boot_services();
-    // No point printing anything since once we get the GOP buffer the UEFI sdout stops working
+    boot_info.mmap_buf = mmap_raw.0.as_ptr();
+    boot_info.mmap_len = mmap_raw.1.entry_count();
+    boot_info.mmap_entry_size = mmap_raw.1.desc_size;
 
     boot_info.uefi_runtime_table = runtime_table.get_current_system_table_addr();
 
     unsafe {
-        core::arch::asm!("mov rsp, {}; push 0; jmp {}", in(reg) stack, in (reg) entry_point, in("rdi") boot_info as *const BootInfo)
+        core::arch::asm!("mov rsp, {}; push 0; jmp {}", in(reg) stack.as_ptr(), in (reg) entry_point, in("rdi") boot_info as *const BootInfo)
     }
     unreachable!()
 }

@@ -1,21 +1,8 @@
 use acpi::{
     sdt::{SdtHeader, Signature},
-    AcpiError, AcpiTable, PhysicalMapping,
+    AcpiTable,
 };
 use alloc::slice;
-
-use crate::acpi::FioxaAcpiHandler;
-
-pub fn get_mcfg(
-    acpi_tables: &acpi::AcpiTables<FioxaAcpiHandler>,
-) -> Result<PhysicalMapping<FioxaAcpiHandler, MCFG>, AcpiError> {
-    let mcfg = unsafe {
-        acpi_tables
-            .get_sdt::<MCFG>(Signature::MCFG)
-            .and_then(|table| table.ok_or(AcpiError::TableMissing(Signature::MCFG)))
-    };
-    mcfg
-}
 
 #[repr(C, packed)]
 pub struct MCFG {
@@ -23,7 +10,9 @@ pub struct MCFG {
     _reserved: u64,
 }
 
-impl AcpiTable for MCFG {
+unsafe impl AcpiTable for MCFG {
+    const SIGNATURE: Signature = Signature::MCFG;
+
     fn header(&self) -> &acpi::sdt::SdtHeader {
         &self.header
     }

@@ -22,7 +22,7 @@ pub unsafe fn get_root_fs(
         .open_protocol_exclusive::<LoadedImage>(image_handle)
         // Get a pointer to the boot device (aka what disk we are currently on)
         .and_then(|loaded_image| {
-            boot_services.open_protocol_exclusive::<DevicePath>(loaded_image.device())
+            boot_services.open_protocol_exclusive::<DevicePath>(loaded_image.device().unwrap())
         })
         // Find a pointer to the simple file system
         .and_then(|device_path| {

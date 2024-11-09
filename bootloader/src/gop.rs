@@ -33,7 +33,7 @@ pub fn initialize_gop(bt: &uefi::table::boot::BootServices) -> ScopedProtocol<Gr
 
     let mut best_mode = None;
 
-    for mode in gop.modes() {
+    for mode in gop.modes(bt) {
         let mode = mode;
         let info = mode.info();
         let (x, y) = info.resolution();

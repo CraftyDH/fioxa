@@ -5,7 +5,6 @@ use crate::{
     elf,
     fs::FSDRIVES,
     mutex::Spinlock,
-    pci::mcfg::get_mcfg,
 };
 
 use alloc::{boxed::Box, sync::Arc};
@@ -18,6 +17,7 @@ use kernel_userspace::{
     socket::{socket_connect, socket_create, SocketHandle},
     syscall::spawn_thread,
 };
+use mcfg::MCFG;
 mod express;
 mod legacy;
 mod mcfg;
@@ -136,7 +136,7 @@ pub fn enumerate_pci(acpi_tables: acpi::AcpiTables<FioxaAcpiHandler>) {
     // set_handler_and_enable_irq(11, interrupt_handler);
 
     // Get MCFG
-    let mcfg = get_mcfg(&acpi_tables);
+    let mcfg = acpi_tables.find_table::<MCFG>();
 
     // Enumerate PCI using mcfg;
     match &mcfg {

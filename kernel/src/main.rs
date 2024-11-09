@@ -13,9 +13,9 @@ extern crate log;
 
 use core::ffi::c_void;
 
-use ::acpi::{AcpiError, RsdpError};
-use acpi::sdt::Signature;
+use ::acpi::AcpiError;
 use bootloader::{entry_point, BootInfo};
+use kernel::acpi::FioxaAcpiHandler;
 use kernel::boot_aps::boot_aps;
 use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER, TERMINAL_ELF};
 use kernel::cpu_localstorage::{init_bsp_task, CPULocalStorageRW};
@@ -203,15 +203,15 @@ extern "C" fn main() {
         }
 
         let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
-            .ok_or(AcpiError::Rsdp(RsdpError::NoValidRsdp))
-            .and_then(|acpi2_table| kernel::acpi::prepare_acpi(acpi2_table.address as usize))
+            .ok_or(AcpiError::NoValidRsdp)
+            .and_then(|acpi2_table| unsafe {
+                acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, acpi2_table.address as usize)
+            })
             .unwrap();
 
         init_time(&acpi_tables);
 
-        let madt = unsafe { acpi_tables.get_sdt::<Madt>(Signature::MADT) }
-            .unwrap()
-            .unwrap();
+        let madt = acpi_tables.find_table::<Madt>().unwrap();
 
         unsafe {
             map_lapic(&mut init_process.memory.lock().page_mapper.get_mapper_mut());
@@ -266,10 +266,12 @@ fn after_boot() {
     }
 
     let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
-        .ok_or(AcpiError::Rsdp(RsdpError::NoValidRsdp))
+        .ok_or(AcpiError::NoValidRsdp)
         .unwrap();
 
-    let acpi_tables = kernel::acpi::prepare_acpi(acpi_tables.address as usize).unwrap();
+    let acpi_tables = unsafe {
+        acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, acpi_tables.address as usize).unwrap()
+    };
 
     spawn_process(elf::elf_new_process_loader, &[], true);
 

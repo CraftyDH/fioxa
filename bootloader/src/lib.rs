@@ -35,7 +35,9 @@ impl<'s, 'b> OwnedBuffer<'s, 'b> {
 impl<'s, 'b> Drop for OwnedBuffer<'s, 'b> {
     fn drop(&mut self) {
         // Calls the uefi free pool method which frees the memory of the buffer
-        self.bt.free_pool(self.buf.as_ptr() as *mut u8).unwrap();
+        unsafe {
+            self.bt.free_pool(self.buf.as_ptr() as *mut u8).unwrap();
+        }
     }
 }
 
@@ -43,14 +45,14 @@ pub unsafe fn get_buffer<'b, T>(bt: &BootServices, length: usize) -> &'b mut [T]
     let ptr = bt
         .allocate_pool(MemoryType::LOADER_DATA, size_of::<T>() * length)
         .unwrap();
-    slice::from_raw_parts_mut(ptr as *mut T, length)
+    slice::from_raw_parts_mut(ptr.as_ptr() as *mut T, length)
 }
 
 pub unsafe fn get_buffer_as_type<'b, T>(bt: &BootServices) -> &'b mut T {
     let ptr = bt
         .allocate_pool(MemoryType::LOADER_DATA, size_of::<T>())
         .unwrap();
-    &mut *(ptr as *mut T)
+    &mut *(ptr.as_ptr() as *mut T)
 }
 
 /// The struct that is passed from bootloader to the kernel

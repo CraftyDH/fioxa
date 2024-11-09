@@ -13,13 +13,13 @@ input = {path = "../input"}
 x86_64 = "0.14"
 bit_field = "0.10"
 conquer-once = {version = "0.4", default-features = false}
-acpi = "4.1"
+acpi = "5.1"
 modular-bitfield = { version = "0.11", default-features = false}
-thiserror = { version = "1.0", package = "thiserror-core", default-features = false }
+thiserror = { version = "2.0", default-features = false }
 volatile = "0.3"
 serde = { version = "1.0.*", default-features = false, features = ["derive"] }
 bitflags = { version = "2.4.1", default-features = false }
-hashbrown = { version = "0.14.3", default-features = false, features = ["ahash"] }
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
 log = { version = "0.4", default-features = false }
 lock_api = { version = "0.4.12", default-features = false }
 

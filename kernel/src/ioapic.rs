@@ -130,7 +130,9 @@ pub struct Madt {
     flags: u32,
 }
 
-impl AcpiTable for Madt {
+unsafe impl AcpiTable for Madt {
+    const SIGNATURE: acpi::sdt::Signature = acpi::sdt::Signature::MADT;
+
     fn header(&self) -> &acpi::sdt::SdtHeader {
         &self.header
     }
