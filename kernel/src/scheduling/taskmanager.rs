@@ -74,7 +74,7 @@ unsafe extern "C" fn scheduler() {
     info!("Starting scheduler on core: {}", id);
 
     loop {
-        let t = without_interrupts(|| TASK_QUEUE.lock().pop());
+        let t = TASK_QUEUE.lock().pop();
         match t {
             Some(task) => without_interrupts(|| {
                 if !task.in_syscall

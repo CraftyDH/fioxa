@@ -9,7 +9,6 @@ use crate::{
         MemoryMappingFlags,
     },
     scheduling::{taskmanager::yield_task, with_held_interrupts},
-    screen::gop::WRITER,
     time::{check_sleep, HPET},
 };
 
@@ -78,19 +77,7 @@ pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
         // Ack interrupt
         *(0xfee000b0 as *mut u32) = 0;
 
-        if CPULocalStorageRW::get_core_id() == 0 {
-            let uptime = crate::time::uptime();
-            check_sleep(uptime);
-
-            // potentially update screen every 16ms
-            //* Very important that CPU doesn't have the stay scheduled flag (deadlock possible otherwise)
-            // TODO: Can we VSYNC this? Could stop the tearing.
-            if uptime > CPULocalStorageRW::get_screen_redraw_time() {
-                CPULocalStorageRW::set_screen_redraw_time(uptime + 16);
-                let mut w = WRITER.get().unwrap().lock();
-                w.redraw_if_needed();
-            }
-        }
+        check_sleep();
 
         // if we are not in sched yield to it
         if CPULocalStorageRW::get_context() > 0 {

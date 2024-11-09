@@ -30,7 +30,6 @@ use crate::{
     message::KMessage,
     mutex::Spinlock,
     paging::{
-        offset_map::get_gop_range,
         page_allocator::Allocated32Page,
         page_mapper::{PageMapperManager, PageMapping},
         virt_addr_for_phys, MemoryLoc, MemoryMappingFlags, KERNEL_DATA_MAP, KERNEL_HEAP_MAP,
@@ -38,7 +37,6 @@ use crate::{
     },
     socket::{KSocketHandle, KSocketListener},
     time::HPET,
-    BOOT_INFO,
 };
 
 use super::{
@@ -139,11 +137,6 @@ impl Process {
             m.set_next_table(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
             m.set_next_table(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
             m.set_next_table(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
-
-            let gop = get_gop_range(&(*BOOT_INFO).gop);
-            page_mapper
-                .insert_mapping_at_set(gop.0, gop.1, MemoryMappingFlags::WRITEABLE)
-                .unwrap();
 
             static APIC_LOCATION: Lazy<Arc<PageMapping>> =
                 Lazy::new(|| unsafe { PageMapping::new_mmap(0xfee00000, 0x1000) });

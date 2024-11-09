@@ -15,7 +15,7 @@ use kernel_userspace::socket::{
     socket_accept, socket_handle_get_event, socket_listen, socket_listen_get_event, socket_recv,
     SocketEvents, SocketRecieveResult,
 };
-use kernel_userspace::syscall::spawn_thread;
+use kernel_userspace::syscall::{sleep, spawn_thread};
 
 #[derive(Clone, Copy)]
 pub struct Pos {
@@ -109,9 +109,13 @@ macro_rules! colour {
     };
 }
 
+use crate::cpu_localstorage::CPULocalStorageRW;
 use crate::mutex::Spinlock;
+use crate::paging::offset_map::get_gop_range;
+use crate::paging::MemoryMappingFlags;
 use crate::scheduling::with_held_interrupts;
 use crate::terminal::{Cell, Writer};
+use crate::BOOT_INFO;
 use core::fmt::Arguments;
 
 use super::mouse::monitor_cursor_task;
@@ -212,8 +216,29 @@ pub fn monitor_stdout_task() {
     }
 }
 
+fn redraw_screen_task() {
+    let writer = WRITER.get().unwrap();
+    // TODO: Can we VSYNC this? Could stop the tearing.
+    loop {
+        writer.lock().redraw_if_needed();
+        // rate limit redraw
+        sleep(16);
+    }
+}
+
 pub fn gop_entry() {
-    // TODO: Once isnt mapped for everyone, map it
+    // Map the GOP range
+    with_held_interrupts(|| unsafe {
+        let gop = get_gop_range(&(*BOOT_INFO).gop);
+        let proc = CPULocalStorageRW::get_current_task().process();
+        let mut mem = proc.memory.lock();
+
+        mem.page_mapper
+            .insert_mapping_at_set(gop.0, gop.1, MemoryMappingFlags::WRITEABLE)
+            .unwrap();
+    });
+
     spawn_thread(monitor_cursor_task);
+    spawn_thread(redraw_screen_task);
     monitor_stdout_task();
 }
