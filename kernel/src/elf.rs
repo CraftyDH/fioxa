@@ -7,7 +7,7 @@ use kernel_userspace::{
     socket::{SocketHandle, SocketListenHandle},
     syscall::spawn_thread,
 };
-use x86_64::{align_down, align_up, instructions::interrupts::without_interrupts};
+use x86_64::{align_down, align_up};
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
@@ -15,7 +15,7 @@ use crate::{
     scheduling::{
         process::{Process, ProcessPrivilige},
         taskmanager::{push_task_queue, PROCESSES},
-        without_context_switch,
+        with_held_interrupts,
     },
 };
 
@@ -58,7 +58,7 @@ pub fn load_elf<'a>(
     );
 
     // build initial refs
-    without_context_switch(|| unsafe {
+    with_held_interrupts(|| unsafe {
         let mut refs = process.references.lock();
         let this = CPULocalStorageRW::get_current_task();
         let mut this_refs = this.process().references.lock();
@@ -102,7 +102,7 @@ pub fn load_elf<'a>(
 
             unsafe {
                 // Map into our address space
-                let base = without_interrupts(|| {
+                let base = with_held_interrupts(|| {
                     this_mem
                         .lock()
                         .page_mapper
@@ -117,14 +117,16 @@ pub fn load_elf<'a>(
                 );
 
                 // Unmap from our address space
-                without_interrupts(|| this_mem.lock().page_mapper.free_mapping(base..base + size))
-                    .unwrap();
+                with_held_interrupts(|| {
+                    this_mem.lock().page_mapper.free_mapping(base..base + size)
+                })
+                .unwrap();
             }
         }
     }
     drop(memory);
     let thread = process.new_thread(elf_header.e_entry as *const u64, 0);
-    without_context_switch(|| {
+    with_held_interrupts(|| {
         PROCESSES.lock().insert(process.pid, process.clone());
     });
     push_task_queue(thread.expect("new process shouldn't have died"));
@@ -179,7 +181,7 @@ fn elf_loader_handler(handle: SocketHandle) -> Result<(), &'static str> {
 
     match res {
         Ok(proc) => {
-            let proc = without_context_switch(|| unsafe {
+            let proc = with_held_interrupts(|| unsafe {
                 let thread = CPULocalStorageRW::get_current_task();
                 KernelReference::from_id(thread.process().add_value(proc.into()))
             });

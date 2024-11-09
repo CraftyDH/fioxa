@@ -14,9 +14,11 @@ use kernel_userspace::{
     syscall::spawn_thread,
 };
 use modular_bitfield::{bitfield, specifiers::B48};
-use x86_64::instructions::interrupts::without_interrupts;
 
-use crate::net::arp::{ARP, ARP_TABLE};
+use crate::{
+    net::arp::{ARP, ARP_TABLE},
+    scheduling::with_held_interrupts,
+};
 
 use super::arp::ARPEth;
 
@@ -47,7 +49,7 @@ pub struct EthernetFrame<'a> {
 pub fn handle_ethernet_frame(frame: EthernetFrame) {
     trace!("{:?}", frame.header);
     if frame.header.ether_type_be() == 1544 {
-        without_interrupts(|| {
+        with_held_interrupts(|| {
             assert!(frame.data.len() >= size_of::<ARP>());
             let arp = unsafe { &*(frame.data.as_ptr() as *const ARP) };
             if arp.src_mac() != 0xFF_FF_FF && arp.src_mac() != 0 {

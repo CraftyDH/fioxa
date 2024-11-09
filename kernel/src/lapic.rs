@@ -1,6 +1,6 @@
 use core::sync::atomic::AtomicU32;
 
-use x86_64::{instructions::interrupts::without_interrupts, structures::idt::InterruptStackFrame};
+use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
@@ -8,7 +8,7 @@ use crate::{
         page_table_manager::{MapMemoryError, Mapper, Page, PageLvl4, PageTable, Size4KB},
         MemoryMappingFlags,
     },
-    scheduling::taskmanager::yield_task,
+    scheduling::{taskmanager::yield_task, with_held_interrupts},
     screen::gop::WRITER,
     time::{check_sleep, HPET},
 };
@@ -45,7 +45,7 @@ unsafe fn read_lapic(offset: u64) -> u32 {
 pub static LAPIC_TICKS_PER_MS: AtomicU32 = AtomicU32::new(0);
 
 pub unsafe fn enable_localapic() {
-    without_interrupts(|| {
+    with_held_interrupts(|| {
         // Enable + Spurious vector
         write_lapic(0xF0, 1 << 8 | 0xFF);
 
@@ -77,10 +77,6 @@ pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
     unsafe {
         // Ack interrupt
         *(0xfee000b0 as *mut u32) = 0;
-
-        if CPULocalStorageRW::get_stay_scheduled() > 0 {
-            return;
-        }
 
         if CPULocalStorageRW::get_core_id() == 0 {
             let uptime = crate::time::uptime();

@@ -22,7 +22,6 @@ use spin::{
     Lazy,
 };
 use x86_64::{
-    instructions::interrupts::without_interrupts,
     structures::{gdt::SegmentSelector, idt::InterruptStackFrameValue},
     VirtAddr,
 };
@@ -44,7 +43,10 @@ use crate::{
     BOOT_INFO,
 };
 
-use super::taskmanager::{block_task, push_task_queue, PROCESSES};
+use super::{
+    taskmanager::{block_task, push_task_queue, PROCESSES},
+    with_held_interrupts,
+};
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 pub const KSTACK_ADDR: u64 = 0xffff_800_000_000_000;
@@ -339,7 +341,9 @@ impl ThreadHandle {
     }
 
     pub fn wake_up(&self) {
-        push_task_queue(self.thread.lock().take().unwrap());
+        if let Some(thread) = self.thread.lock().take() {
+            push_task_queue(thread)
+        }
     }
 }
 
@@ -540,7 +544,7 @@ impl KEventListener for ThreadEventListener {
         let Some(handle) = this.thread.upgrade() else {
             return;
         };
-        without_interrupts(|| {
+        with_held_interrupts(|| {
             handle.wake_up();
             drop(this);
         });

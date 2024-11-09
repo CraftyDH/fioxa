@@ -1,12 +1,11 @@
 use core::ptr::NonNull;
 
 use acpi::{AcpiError, AcpiHandler, AcpiTables, PhysicalMapping};
-use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     paging::{page_mapper::PageMapping, MemoryMappingFlags},
-    scheduling::without_context_switch,
+    scheduling::with_held_interrupts,
 };
 
 pub fn prepare_acpi(rsdp: usize) -> Result<AcpiTables<FioxaAcpiHandler>, AcpiError> {
@@ -34,10 +33,10 @@ impl AcpiHandler for FioxaAcpiHandler {
         let end = (physical_address + size + 0xFFF) & !0xFFF;
         let mapped_size = end - base;
 
-        without_interrupts(|| {
+        with_held_interrupts(|| {
             let mut mem = thread.process().memory.lock();
 
-            let vaddr_base = mem.page_mapper.insert_mapping(
+            let vaddr_base = mem.page_mapper.insert_mapping_set(
                 PageMapping::new_mmap(base, mapped_size),
                 MemoryMappingFlags::WRITEABLE,
             );
@@ -57,7 +56,7 @@ impl AcpiHandler for FioxaAcpiHandler {
             let thread = CPULocalStorageRW::get_current_task();
 
             let base = (region.virtual_start().as_ptr() as usize) & !0xFFF;
-            without_context_switch(|| {
+            with_held_interrupts(|| {
                 let mut mem = thread.process().memory.lock();
 
                 mem.page_mapper

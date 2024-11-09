@@ -39,7 +39,7 @@ use kernel::scheduling::process::Process;
 use kernel::scheduling::taskmanager::{
     core_start_multitasking, exit_task, push_task_queue, PROCESSES,
 };
-use kernel::scheduling::without_context_switch;
+use kernel::scheduling::with_held_interrupts;
 use kernel::screen::gop;
 use kernel::screen::psf1;
 use kernel::syscall::syscall_kernel_handler;
@@ -87,7 +87,7 @@ pub fn main_entry(info: *const BootInfo) -> ! {
         let font = psf1::load_psf1_font(DEFAULT_FONT).expect("cannot load psf1 font");
         gop::WRITER.init_once(|| Writer::new(boot_info.gop, font).into());
         // Test screen colours
-        without_context_switch(|| {
+        with_held_interrupts(|| {
             gop::WRITER.get().unwrap().lock().reset_screen(0xFF_00_00);
             gop::WRITER.get().unwrap().lock().reset_screen(0x00_FF_00);
             gop::WRITER.get().unwrap().lock().reset_screen(0x00_00_FF);
@@ -169,7 +169,7 @@ pub fn main_entry(info: *const BootInfo) -> ! {
 }
 
 extern "C" fn main() {
-    without_context_switch(|| {
+    with_held_interrupts(|| {
         // read boot_info
         let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
 
@@ -226,11 +226,11 @@ extern "C" fn main() {
         }
 
         unsafe { boot_aps(&madt) };
-        spawn_process(after_boot, &[], true);
-        spawn_process(check_interrupts, &[], true);
-
-        info!("Start multi");
     });
+    spawn_process(after_boot, &[], true);
+    spawn_process(check_interrupts, &[], true);
+
+    info!("Start multi");
     exit_task();
 }
 
@@ -316,13 +316,13 @@ fn after_boot() {
                         match handle.blocking_recv() {
                             Ok(_) => (),
                             Err(SocketRecieveResult::EOF) => {
-                                early_println!("ACCEPTED {i}");
+                                info!("ACCEPTED {i}");
                                 return;
                             }
                             Err(e) => panic!("{e:?}"),
                         };
                         if i % 10000 == 0 {
-                            early_println!("ACCEPTER: {i}")
+                            info!("ACCEPTER: {i}")
                         }
                     }
                 });

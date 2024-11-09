@@ -6,7 +6,7 @@ use spin::mutex::Mutex;
 
 use crate::{
     memory::{MemoryMapIter, RESERVED_32BIT_MEM_PAGES},
-    scheduling::without_context_switch,
+    scheduling::with_held_interrupts,
 };
 
 use super::{
@@ -21,7 +21,7 @@ pub fn frame_alloc_exec<T, F>(closure: F) -> T
 where
     F: Fn(&mut PageFrameAllocator) -> T,
 {
-    without_context_switch(|| closure(&mut GLOBAL_FRAME_ALLOCATOR.get().unwrap().lock()))
+    with_held_interrupts(|| closure(&mut GLOBAL_FRAME_ALLOCATOR.get().unwrap().lock()))
 }
 
 pub unsafe fn init(mmap: MemoryMapIter) {

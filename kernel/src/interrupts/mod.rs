@@ -9,16 +9,16 @@ use kernel_userspace::{
     INT_KB, INT_MOUSE, INT_PCI,
 };
 use spin::Mutex;
-use x86_64::{
-    instructions::interrupts::without_interrupts,
-    structures::idt::{InterruptDescriptorTable, InterruptStackFrame},
-};
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 pub mod exceptions;
 // pub mod hardware;
 pub mod pic;
 
-use crate::{cpu_localstorage::CPULocalStorageRW, event::KEvent, lapic, syscall};
+use crate::{
+    cpu_localstorage::CPULocalStorageRW, event::KEvent, lapic, scheduling::with_held_interrupts,
+    syscall,
+};
 
 use self::pic::disable_pic;
 
@@ -95,13 +95,11 @@ pub fn set_irq_handler(irq: usize, func: extern "x86-interrupt" fn(InterruptStac
 }
 
 pub fn init_idt() {
-    without_interrupts(|| {
+    unsafe {
         let i = IDT.lock();
-        unsafe {
-            i.load_unsafe();
-            disable_pic();
-        };
-    });
+        i.load_unsafe();
+        disable_pic();
+    };
 
     IDT.lock()[LAPIC_INT].set_handler_fn(lapic::tick_handler);
     // set_irq_handler(101, task_switch_handler);
@@ -154,7 +152,7 @@ pub fn check_interrupts() {
         .try_init_once(|| [kb.clone(), mouse.clone(), pci.clone()])
         .unwrap();
 
-    let ids = Arc::new(without_interrupts(|| unsafe {
+    let ids = Arc::new(with_held_interrupts(|| unsafe {
         let thread = CPULocalStorageRW::get_current_task();
         [
             KernelReference::from_id(thread.process().add_value(kb.into())),

@@ -12,7 +12,7 @@ use kernel_userspace::{
 
 use input::mouse::MousePacket;
 
-use crate::scheduling::without_context_switch;
+use crate::scheduling::with_held_interrupts;
 
 use super::gop::{Pos, WRITER};
 
@@ -92,7 +92,7 @@ pub fn print_cursor(pos: &mut Pos, mouse: MousePacket) {
     pos.x = pos.x.saturating_add_signed(mouse.x_mov as isize);
     pos.y = pos.y.saturating_add_signed(mouse.y_mov as isize);
 
-    without_context_switch(|| {
+    with_held_interrupts(|| {
         let gop_mutex = &mut WRITER.get().unwrap().lock();
         let gop_info = &gop_mutex.screen.gop;
 

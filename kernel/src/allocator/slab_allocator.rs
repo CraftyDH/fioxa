@@ -8,7 +8,7 @@ use crate::{
         page_table_manager::{Mapper, Page, Size4KB},
         MemoryMappingFlags,
     },
-    scheduling::without_context_switch,
+    scheduling::with_held_interrupts,
 };
 
 const SLAB_SIZES: &[usize] = &[8, 16, 32, 64, 128, 256, 512, 1024, 2048];
@@ -40,7 +40,7 @@ impl SlabAllocator {
 
 unsafe impl GlobalAlloc for Locked<SlabAllocator> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        without_context_switch(|| {
+        with_held_interrupts(|| {
             let mut allocator = self.lock();
 
             let min_size = layout.size().max(layout.align());
@@ -101,7 +101,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        without_context_switch(|| {
+        with_held_interrupts(|| {
             let mut allocator = self.lock();
 
             let max_size = layout.size().max(layout.align());

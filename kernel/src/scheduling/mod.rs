@@ -3,18 +3,18 @@ use crate::{cpu_localstorage::CPULocalStorageRW, time::pit::is_switching_tasks};
 pub mod process;
 pub mod taskmanager;
 
-pub fn without_context_switch<F, R>(f: F) -> R
+pub fn with_held_interrupts<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    // Check if we are switching tasks
+    // Check if we are switching tasks and not in the scheduler
     if is_switching_tasks() {
         unsafe {
-            CPULocalStorageRW::inc_stay_scheduled();
+            CPULocalStorageRW::inc_hold_interrupts();
 
             let tmp = f();
 
-            CPULocalStorageRW::dec_stay_scheduled();
+            CPULocalStorageRW::dec_hold_interrupts();
 
             tmp
         }

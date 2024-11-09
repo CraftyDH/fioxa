@@ -2,7 +2,7 @@ use core::fmt::Write;
 
 use log::{Level, Log};
 
-use crate::{scheduling::without_context_switch, screen::gop::WRITER};
+use crate::{scheduling::with_held_interrupts, screen::gop::WRITER};
 
 pub static KERNEL_LOGGER: KernelLogger = KernelLogger;
 pub struct KernelLogger;
@@ -14,7 +14,7 @@ impl Log for KernelLogger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            without_context_switch(|| {
+            with_held_interrupts(|| {
                 let mut w = WRITER.get().unwrap().lock();
                 let color = w.tty.set_fg_colour(get_color_for_level(record.level()));
                 w.write_fmt(format_args!("{} ", record.level())).unwrap();

@@ -132,10 +132,17 @@ macro_rules! kenum_cast {
     };
 }
 
+/// Function used to ensure kernel doesn't call syscall while holding interrupts
+extern "C" fn bad_interrupts_held() {
+    panic!("Interrupts should not be held when entering syscall.")
+}
+
 /// Handler for internal syscalls called by the kernel (Note: not nested).
 #[naked]
 pub unsafe extern "C" fn syscall_kernel_handler() {
     core::arch::naked_asm!(
+        "cmp qword ptr gs:0x32, 0",
+        "jne {}",
         "push rbp",
         "push r15",
         "pushfq",
@@ -154,6 +161,7 @@ pub unsafe extern "C" fn syscall_kernel_handler() {
         "pop r15",
         "pop rbp",
         "ret",
+        sym bad_interrupts_held,
         sym syscall_handler,
     );
 }

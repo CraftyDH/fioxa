@@ -121,6 +121,14 @@ unsafe extern "x86-interrupt" fn page_fault_handler(
         );
     }
 
+    // We might deadlock on a lock that was held
+    if CPULocalStorageRW::hold_interrupts_depth() > 0 {
+        panic!(
+            "EXCEPTION: PAGE FAULT (while held interrupts): {:?}\n  Accessed Address: {:?} by {:?}",
+            error_code, addr, stack_frame.instruction_pointer
+        );
+    }
+
     // unsafe { WRITER.force_unlock() };
     // WRITER.lock().fill_screen(0xFF_00_00);
     // WRITER.lock().pos.y = 0;

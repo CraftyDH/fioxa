@@ -16,7 +16,7 @@ use crate::{
 
 use super::{
     process::{LinkedThreadList, Process, Thread},
-    without_context_switch,
+    with_held_interrupts,
 };
 
 pub type ProcessesListType = BTreeMap<ProcessID, Arc<Process>>;
@@ -24,11 +24,11 @@ pub static PROCESSES: Lazy<Mutex<ProcessesListType>> = Lazy::new(|| Mutex::new(B
 static TASK_QUEUE: Mutex<LinkedThreadList> = Mutex::new(LinkedThreadList::new());
 
 pub fn push_task_queue(val: Box<Thread>) {
-    without_context_switch(|| TASK_QUEUE.lock().push(val))
+    with_held_interrupts(|| TASK_QUEUE.lock().push(val))
 }
 
 pub fn append_task_queue(list: &mut LinkedThreadList) {
-    without_context_switch(|| TASK_QUEUE.lock().append(list))
+    with_held_interrupts(|| TASK_QUEUE.lock().append(list))
 }
 
 pub unsafe fn enable_syscall() {
@@ -60,7 +60,7 @@ pub unsafe fn core_start_multitasking() {
     enable_syscall();
 
     // Init complete, start executing tasks
-    CPULocalStorageRW::dec_stay_scheduled();
+    CPULocalStorageRW::dec_hold_interrupts();
 
     core::arch::asm!(
         "sti",
@@ -267,9 +267,9 @@ unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
 
 pub unsafe fn enter_sched(action: usize) {
     assert_eq!(
-        CPULocalStorageRW::get_stay_scheduled(),
+        CPULocalStorageRW::hold_interrupts_depth(),
         0,
-        "Thread should not be asking to stay scheduled and also enter the scheduler."
+        "Thread should not be holding interrupts while entering the scheduler."
     );
 
     core::arch::asm!(

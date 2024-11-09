@@ -109,7 +109,7 @@ macro_rules! colour {
     };
 }
 
-use crate::scheduling::without_context_switch;
+use crate::scheduling::with_held_interrupts;
 use crate::terminal::{Cell, Writer};
 use core::fmt::Arguments;
 use spin::mutex::Mutex;
@@ -121,7 +121,7 @@ use super::psf1::PSF1Font;
 pub fn _print(args: Arguments) {
     loop {
         // Prevent task from being scheduled away with mutex
-        let res = without_context_switch(|| {
+        let res = with_held_interrupts(|| {
             if let Some(mut w) = WRITER.get().unwrap().try_lock() {
                 w.write_fmt(args).unwrap();
                 return Some(());
@@ -193,7 +193,7 @@ pub fn monitor_stdout_task() {
                             let msg = MessageHandle::from_kref(KernelReference::from_id(msg));
                             let msg = msg.read_vec();
                             let s = String::from_utf8_lossy(&msg);
-                            without_context_switch(|| {
+                            with_held_interrupts(|| {
                                 let mut w = WRITER.get().unwrap().lock();
                                 w.write_str(&s).unwrap();
                             });

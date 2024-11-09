@@ -1,6 +1,7 @@
 use core::mem::size_of;
 
 use alloc::boxed::Box;
+use x86_64::instructions::interrupts;
 
 use crate::{
     gdt::CPULocalGDT,
@@ -23,8 +24,8 @@ pub struct CPULocalStorage {
     current_task_kernel_stack_top: u64,
     sched_task_sp: u64,
     sched_task_ip: u64,
-    // If non zero don't yield the task on timer interrupt
-    stay_scheduled: u64,
+    hold_interrupts_depth: u64,
+    hold_interrupts_initial: u8,
     screen_redraw: u64,
     gdt_pointer: usize,
     // at 0x1000 (1 page down is GDT)
@@ -81,26 +82,53 @@ impl CPULocalStorageRW {
     }
 
     #[inline]
-    pub fn get_stay_scheduled() -> u64 {
-        unsafe { localstorage_read_imm!(stay_scheduled: u64) }
+    pub fn hold_interrupts_depth() -> u64 {
+        unsafe { localstorage_read_imm!(hold_interrupts_depth: u64) }
     }
 
     #[inline]
-    pub unsafe fn inc_stay_scheduled() {
-        core::arch::asm!(
-            "inc qword ptr gs:{}",
-            const core::mem::offset_of!(CPULocalStorage, stay_scheduled),
-            options(nostack)
-        );
+    pub fn set_hold_interrupts_depth(val: u64) {
+        unsafe { localstorage_write!(val => hold_interrupts_depth: u64) }
     }
 
     #[inline]
-    pub unsafe fn dec_stay_scheduled() {
-        core::arch::asm!(
-            "dec qword ptr gs:{}",
-            const core::mem::offset_of!(CPULocalStorage, stay_scheduled),
-            options(nostack)
-        );
+    pub fn hold_interrupts_initial() -> bool {
+        unsafe { localstorage_read_imm!(hold_interrupts_initial: bool) }
+    }
+
+    #[inline]
+    pub fn set_hold_interrupts_initial(val: bool) {
+        unsafe { localstorage_write!(val as u8 => hold_interrupts_initial: u8) }
+    }
+
+    pub unsafe fn inc_hold_interrupts() {
+        let depth = Self::hold_interrupts_depth();
+
+        // time to disable and save interrupts state
+        if depth == 0 {
+            let enabled = interrupts::are_enabled();
+
+            if enabled {
+                interrupts::disable();
+            }
+
+            Self::set_hold_interrupts_initial(enabled);
+        }
+
+        Self::set_hold_interrupts_depth(depth + 1);
+    }
+
+    pub unsafe fn dec_hold_interrupts() {
+        let depth = Self::hold_interrupts_depth() - 1;
+        Self::set_hold_interrupts_depth(depth);
+
+        // reset interrupt state
+        if depth == 0 {
+            let enabled = Self::hold_interrupts_initial();
+            if enabled {
+                interrupts::enable();
+            }
+        }
     }
 
     /// SAFTEY: The pointer must be dropped before the next take_current_task call, and there cannot be multiple pointers at once
@@ -173,7 +201,8 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
 
     let ls = unsafe { &mut *(vaddr_base as *mut CPULocalStorage) };
     ls.core_id = core_id;
-    ls.stay_scheduled = 1; // to be decremented to 0 in `core_start_multitasking`
+    ls.hold_interrupts_depth = 1; // to be decremented to 0 in `core_start_multitasking`
+    ls.hold_interrupts_initial = 0;
     ls.gdt_pointer = (vaddr_base + 0x1000) as usize;
     ls.current_context = 0;
     ls.current_task_kernel_stack_top = 0;

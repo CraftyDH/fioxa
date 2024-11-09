@@ -242,6 +242,62 @@ impl<'a> PageMapperManager<'a> {
         base
     }
 
+    pub fn insert_mapping_set(
+        &mut self,
+        mapping: Arc<PageMapping>,
+        flags: MemoryMappingFlags,
+    ) -> usize {
+        let idx = self
+            .mappings
+            .windows(2)
+            .position(|window| {
+                if let [left, right] = window {
+                    // add some padding
+                    left.0.end + 0x1000 + mapping.size <= right.0.start
+                } else {
+                    unreachable!()
+                }
+            })
+            .expect("there should've been space somewhere");
+
+        let base = self.mappings[idx].0.end + 0x1000;
+        let end = base + mapping.size;
+
+        match &mapping.mapping {
+            PageMappingType::MMAP { base_address } => {
+                for (phys, virt) in
+                    ((*base_address..).step_by(0x1000)).zip((base..end).step_by(0x1000))
+                {
+                    self.page_mapper
+                        .map_memory(
+                            Page::<Size4KB>::containing(virt as u64),
+                            Page::<Size4KB>::new(phys as u64),
+                            flags,
+                        )
+                        .unwrap()
+                        .ignore();
+                }
+            }
+            PageMappingType::LazyMapping { pages } => {
+                for page in pages
+                    .lock()
+                    .iter()
+                    .zip((base..end).step_by(0x1000))
+                    .filter_map(|(a, i)| a.get().map(|p| (p, i)))
+                {
+                    self.page_mapper
+                        .map_memory(Page::<Size4KB>::containing(page.1 as u64), page.0, flags)
+                        .unwrap()
+                        .ignore();
+                }
+            }
+        }
+
+        self.mappings
+            .insert(idx + 1, ((base..base + mapping.size), mapping, flags));
+        base
+    }
+
     pub fn page_fault_handler(&mut self, address: usize) -> Option<()> {
         if address > MemoryLoc::EndUserMem as usize {
             return None;
