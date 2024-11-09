@@ -11,7 +11,6 @@ kernel_userspace = { path = "../kernel_userspace", features = ["kernel"] }
 input = {path = "../input"}
 
 x86_64 = "0.14"
-spin = "0.9"
 bit_field = "0.10"
 conquer-once = {version = "0.4", default-features = false}
 acpi = "4.1"
@@ -22,6 +21,7 @@ serde = { version = "1.0.*", default-features = false, features = ["derive"] }
 bitflags = { version = "2.4.1", default-features = false }
 hashbrown = { version = "0.14.3", default-features = false, features = ["ahash"] }
 log = { version = "0.4", default-features = false }
+lock_api = { version = "0.4.12", default-features = false }
 
 [profile.dev]
 # Increase speed by 1000% since there are lots of hot loops / "zero cost" abstrations that need optimising

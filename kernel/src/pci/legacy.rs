@@ -1,10 +1,11 @@
 use alloc::{boxed::Box, sync::Arc};
-use spin::Mutex;
 use x86_64::instructions::port::Port;
+
+use crate::mutex::Spinlock;
 
 use super::{PCIBus, PCIDevice, PCIHeaderCommon};
 
-pub static LEGACY_PCI_COMMAND: Mutex<LegacyPCICommand> = Mutex::new(LegacyPCICommand {
+pub static LEGACY_PCI_COMMAND: Spinlock<LegacyPCICommand> = Spinlock::new(LegacyPCICommand {
     data_port: Port::new(0xCFC),
     command_port: Port::new(0xCF8),
 });

@@ -16,17 +16,17 @@ use kernel_userspace::{
     socket::{SocketHandle, SocketListenHandle},
     syscall::spawn_thread,
 };
-use spin::Mutex;
 
 use crate::{
     driver::disk::{DiskBusDriver, DiskDevice},
     fs::mbr::read_partitions,
+    mutex::Spinlock,
 };
 
-pub static PARTITION: Lazy<Mutex<BTreeMap<PartitionId, Box<dyn FileSystemDev>>>> =
-    Lazy::new(|| Mutex::new(BTreeMap::new()));
-pub static FSDRIVES: Lazy<Mutex<FileSystemDrives>> = Lazy::new(|| {
-    Mutex::new(FileSystemDrives {
+pub static PARTITION: Lazy<Spinlock<BTreeMap<PartitionId, Box<dyn FileSystemDev>>>> =
+    Lazy::new(|| Spinlock::new(BTreeMap::new()));
+pub static FSDRIVES: Lazy<Spinlock<FileSystemDrives>> = Lazy::new(|| {
+    Spinlock::new(FileSystemDrives {
         disks_buses: Default::default(),
     })
 });
@@ -65,14 +65,14 @@ impl FileSystemDrives {
 }
 
 pub struct FSPartitionDisk {
-    backing_disk: Arc<Mutex<dyn DiskDevice>>,
+    backing_disk: Arc<Spinlock<dyn DiskDevice>>,
     partition_offset: usize,
     partition_length: usize,
 }
 
 impl FSPartitionDisk {
     pub fn new(
-        backing_disk: Arc<Mutex<dyn DiskDevice>>,
+        backing_disk: Arc<Spinlock<dyn DiskDevice>>,
         partition_offset: usize,
         partition_length: usize,
     ) -> Self {

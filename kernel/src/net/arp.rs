@@ -3,7 +3,7 @@ use conquer_once::spin::Lazy;
 use kernel_userspace::net::IPAddr;
 use modular_bitfield::{bitfield, specifiers::B48};
 
-use spin::mutex::Mutex;
+use crate::mutex::Spinlock;
 
 use super::ethernet::EthernetFrameHeader;
 
@@ -27,5 +27,5 @@ pub struct ARPEth {
     pub arp: ARP,
 }
 
-pub static ARP_TABLE: Lazy<Mutex<BTreeMap<IPAddr, u64>>> =
-    Lazy::new(|| Mutex::new(BTreeMap::new()));
+pub static ARP_TABLE: Lazy<Spinlock<BTreeMap<IPAddr, u64>>> =
+    Lazy::new(|| Spinlock::new(BTreeMap::new()));

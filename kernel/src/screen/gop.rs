@@ -89,7 +89,7 @@ impl Screen<'_> {
     }
 }
 
-pub static WRITER: OnceCell<Mutex<Writer>> = OnceCell::uninit();
+pub static WRITER: OnceCell<Spinlock<Writer>> = OnceCell::uninit();
 
 #[macro_export]
 macro_rules! early_println {
@@ -109,10 +109,10 @@ macro_rules! colour {
     };
 }
 
+use crate::mutex::Spinlock;
 use crate::scheduling::with_held_interrupts;
 use crate::terminal::{Cell, Writer};
 use core::fmt::Arguments;
-use spin::mutex::Mutex;
 
 use super::mouse::monitor_cursor_task;
 use super::psf1::PSF1Font;

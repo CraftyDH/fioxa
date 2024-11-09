@@ -4,6 +4,7 @@ use crate::{
     driver::{disk::ahci::AHCIDriver, driver::Driver},
     elf,
     fs::FSDRIVES,
+    mutex::Spinlock,
     pci::mcfg::get_mcfg,
 };
 
@@ -17,13 +18,12 @@ use kernel_userspace::{
     socket::{socket_connect, socket_create, SocketHandle},
     syscall::spawn_thread,
 };
-use spin::Mutex;
 mod express;
 mod legacy;
 mod mcfg;
 mod pci_descriptors;
 
-pub type PCIDriver = Arc<Mutex<dyn Driver + Send>>;
+pub type PCIDriver = Arc<Spinlock<dyn Driver + Send>>;
 
 pub trait PCIDevice: Send + Sync {
     unsafe fn read_u8(&self, offset: u32) -> u8;

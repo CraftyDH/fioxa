@@ -1,18 +1,18 @@
-use spin::{Mutex, MutexGuard};
+use crate::mutex::{Spinlock, SpinlockGuard};
 
 // A trait that locks an arbitrary item behind a spin mutex
 pub struct Locked<A> {
-    inner: Mutex<A>,
+    inner: Spinlock<A>,
 }
 
 impl<A> Locked<A> {
     pub const fn new(inner: A) -> Self {
         Self {
-            inner: Mutex::new(inner),
+            inner: Spinlock::new(inner),
         }
     }
 
-    pub fn lock(&self) -> MutexGuard<A> {
+    pub fn lock(&self) -> SpinlockGuard<A> {
         self.inner.lock()
     }
 }

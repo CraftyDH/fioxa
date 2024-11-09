@@ -2,8 +2,8 @@ use core::{mem::ManuallyDrop, ptr::slice_from_raw_parts};
 
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 
+use conquer_once::spin::Lazy;
 use kernel_userspace::{ids::ProcessID, process::ProcessExit, syscall::thread_bootstraper};
-use spin::{mutex::SpinMutexGuard, Lazy, Mutex};
 use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::{
@@ -11,24 +11,23 @@ use crate::{
     cpu_localstorage::CPULocalStorageRW,
     gdt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR},
     kassert,
+    mutex::{Spinlock, SpinlockGuard},
     syscall::{syscall_sysret_handler, SyscallError},
 };
 
-use super::{
-    process::{LinkedThreadList, Process, Thread},
-    with_held_interrupts,
-};
+use super::process::{LinkedThreadList, Process, Thread};
 
 pub type ProcessesListType = BTreeMap<ProcessID, Arc<Process>>;
-pub static PROCESSES: Lazy<Mutex<ProcessesListType>> = Lazy::new(|| Mutex::new(BTreeMap::new()));
-static TASK_QUEUE: Mutex<LinkedThreadList> = Mutex::new(LinkedThreadList::new());
+pub static PROCESSES: Lazy<Spinlock<ProcessesListType>> =
+    Lazy::new(|| Spinlock::new(BTreeMap::new()));
+static TASK_QUEUE: Spinlock<LinkedThreadList> = Spinlock::new(LinkedThreadList::new());
 
 pub fn push_task_queue(val: Box<Thread>) {
-    with_held_interrupts(|| TASK_QUEUE.lock().push(val))
+    TASK_QUEUE.lock().push(val)
 }
 
 pub fn append_task_queue(list: &mut LinkedThreadList) {
-    with_held_interrupts(|| TASK_QUEUE.lock().append(list))
+    TASK_QUEUE.lock().append(list)
 }
 
 pub unsafe fn enable_syscall() {
@@ -95,11 +94,17 @@ unsafe extern "C" fn scheduler() {
                     exit_thread_inner(task);
                 } else if res == ACTION_BLOCKING {
                     let handle = task.handle().clone();
-                    *handle.thread.as_mut_ptr() = Some(task);
+                    *handle.thread.data_ptr() = Some(task);
                     handle.thread.force_unlock();
                 } else {
                     panic!("should be a valid action")
                 }
+
+                assert_eq!(
+                    CPULocalStorageRW::hold_interrupts_depth(),
+                    0,
+                    "Thread should not be holding interrupts while entering the scheduler."
+                );
             }),
             None => {
                 // nothing can run so sleep
@@ -266,12 +271,6 @@ unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
 }
 
 pub unsafe fn enter_sched(action: usize) {
-    assert_eq!(
-        CPULocalStorageRW::hold_interrupts_depth(),
-        0,
-        "Thread should not be holding interrupts while entering the scheduler."
-    );
-
     core::arch::asm!(
         "push rbx",
         "push rbp",
@@ -309,7 +308,7 @@ pub fn yield_task() {
     unsafe { enter_sched(ACTION_YIELD) };
 }
 
-pub fn block_task(handle: SpinMutexGuard<Option<Box<Thread>>>) {
+pub fn block_task(handle: SpinlockGuard<Option<Box<Thread>>>) {
     let _ = ManuallyDrop::new(handle);
     unsafe { enter_sched(ACTION_BLOCKING) }
 }

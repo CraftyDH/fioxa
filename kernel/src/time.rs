@@ -3,9 +3,8 @@ use core::cmp::Reverse;
 use acpi::AcpiTables;
 use alloc::{collections::binary_heap::BinaryHeap, sync::Weak};
 use conquer_once::spin::OnceCell;
-use spin::Mutex;
 
-use crate::{acpi::FioxaAcpiHandler, scheduling::process::ThreadHandle};
+use crate::{acpi::FioxaAcpiHandler, mutex::Spinlock, scheduling::process::ThreadHandle};
 
 pub mod hpet;
 pub mod pit;
@@ -54,8 +53,8 @@ impl Ord for SleptProcess {
 }
 
 /// We want a min-heap not max-heap, so reverse the ordering
-pub static SLEPT_PROCESSES: Mutex<BinaryHeap<Reverse<SleptProcess>>> =
-    Mutex::new(BinaryHeap::new());
+pub static SLEPT_PROCESSES: Spinlock<BinaryHeap<Reverse<SleptProcess>>> =
+    Spinlock::new(BinaryHeap::new());
 
 pub fn check_sleep(uptime: u64) {
     // if over the target, try waking up processes

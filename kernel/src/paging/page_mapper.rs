@@ -1,7 +1,8 @@
 use core::{cmp::Ordering, fmt::Debug, mem::MaybeUninit, ops::Range};
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use spin::Mutex;
+
+use crate::mutex::Spinlock;
 
 use super::{
     page_allocator::{frame_alloc_exec, request_page, AllocatedPage},
@@ -51,7 +52,7 @@ pub enum PageMappingType {
         base_address: usize,
     },
     LazyMapping {
-        pages: Mutex<Box<[MaybeAllocatedPage]>>,
+        pages: Spinlock<Box<[MaybeAllocatedPage]>>,
     },
 }
 

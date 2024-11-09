@@ -1,9 +1,9 @@
 use alloc::sync::Arc;
-use spin::Mutex;
 
 use crate::{
     driver::disk::DiskDevice,
     fs::{fat::read_bios_block, FSPartitionDisk},
+    mutex::Spinlock,
 };
 
 #[repr(C, packed)]
@@ -28,7 +28,7 @@ pub struct MasterBootRecord {
 
 const MBR_SIZE: usize = 512;
 
-pub fn read_partitions(drive: Arc<Mutex<dyn DiskDevice>>) {
+pub fn read_partitions(drive: Arc<Spinlock<dyn DiskDevice>>) {
     // Round up to nearest 512 bytes
     let mbr_buf = &mut [0u8; MBR_SIZE];
     drive.lock().read(0, 1, mbr_buf);

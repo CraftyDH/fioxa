@@ -78,8 +78,6 @@ pub fn load_elf<'a>(
         // Transpose the program header as an elf header
         .map(|header| unsafe { &*(data.as_ptr().add(header as usize) as *const Elf64Phdr) });
 
-    let mut memory = process.memory.lock();
-
     let this_mem = unsafe { &CPULocalStorageRW::get_current_task().process().memory };
 
     // Iterate over each header
@@ -95,7 +93,9 @@ pub fn load_elf<'a>(
             let flags = ElfSegmentFlags::from_bits_truncate(program_header.p_flags);
 
             // Map into the new processes address space
-            memory
+            process
+                .memory
+                .lock()
                 .page_mapper
                 .insert_mapping_at(vstart as usize, mem.clone(), flags.to_mapping_flags())
                 .ok_or(LoadElfError::InternalError)?;
@@ -108,6 +108,8 @@ pub fn load_elf<'a>(
                         .page_mapper
                         .insert_mapping(mem, MemoryMappingFlags::all())
                 });
+
+                assert_eq!(CPULocalStorageRW::hold_interrupts_depth(), 0, "We will be causing page faults on the copy so ensure we aren't holding interrupts");
 
                 // Copy the contents
                 core::ptr::copy_nonoverlapping::<u8>(
@@ -124,7 +126,6 @@ pub fn load_elf<'a>(
             }
         }
     }
-    drop(memory);
     let thread = process.new_thread(elf_header.e_entry as *const u64, 0);
     with_held_interrupts(|| {
         PROCESSES.lock().insert(process.pid, process.clone());

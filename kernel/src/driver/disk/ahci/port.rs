@@ -4,10 +4,7 @@ use core::{
 };
 
 use alloc::boxed::Box;
-use kernel_userspace::{
-    disk::ata::ATADiskIdentify,
-    syscall::{sleep, yield_now},
-};
+use kernel_userspace::{disk::ata::ATADiskIdentify, syscall::sleep};
 
 use crate::{
     driver::disk::{
@@ -105,7 +102,7 @@ impl Port {
 
     pub fn start_cmd(port: &mut HBAPort) {
         while port.cmd_sts.read() & HBA_PX_CMD_CR > 0 {
-            yield_now();
+            // yield_now();
         }
 
         port.cmd_sts.update(|v| *v |= HBA_PX_CMD_FRE);
@@ -223,7 +220,7 @@ impl DiskDevice for Port {
 
         while ((self.hba_port.task_file_data.read() & (0x80 | 0x08)) > 0) && spin > 0 {
             spin -= 1;
-            yield_now();
+            // yield_now();
         }
         if spin == 0 {
             error!("Port is hung");
@@ -232,7 +229,7 @@ impl DiskDevice for Port {
 
         self.hba_port.command_issue.write(1 << slot);
         loop {
-            yield_now();
+            // yield_now();
             if self.hba_port.command_issue.read() & (1 << slot) == 0 {
                 break;
             }
@@ -297,9 +294,9 @@ impl DiskDevice for Port {
 
         self.hba_port.command_issue.write(1 << slot);
 
-        let mut i = 1000;
+        let mut i = 100_000;
         while i > 0 {
-            yield_now();
+            // yield_now();
             // println!("Reading...: {:b}", self.hba_port.command_issue.read());
             if self.hba_port.command_issue.read() & (1 << slot) == 0 {
                 break;

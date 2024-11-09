@@ -5,11 +5,11 @@ pub mod port;
 use alloc::{sync::Arc, vec::Vec};
 use bit_field::BitField;
 
-use spin::Mutex;
 use volatile::Volatile;
 
 use crate::{
     driver::{disk::DiskDevice, driver::Driver},
+    mutex::Spinlock,
     paging::{
         get_uefi_active_mapper,
         page_table_manager::{Mapper, Page, Size4KB},
@@ -41,7 +41,7 @@ pub struct AHCIDriver {
     #[allow(dead_code)]
     pci_device: PCIHeader0,
     // abar: HBAMemory,
-    ports: [Option<Arc<Mutex<Port>>>; 32],
+    ports: [Option<Arc<Spinlock<Port>>>; 32],
 }
 
 #[repr(C)]
@@ -159,7 +159,7 @@ impl Driver for AHCIDriver {
 
                     // Test read
                     if port.read(0, 1, buffer).is_some() {
-                        ahci.ports[i] = Some(Arc::new(Mutex::new(port)));
+                        ahci.ports[i] = Some(Arc::new(Spinlock::new(port)));
                     }
                 }
             }
@@ -178,16 +178,16 @@ impl Driver for AHCIDriver {
 }
 
 impl DiskBusDriver for AHCIDriver {
-    fn get_disks(&mut self) -> Vec<Arc<Mutex<dyn DiskDevice>>> {
+    fn get_disks(&mut self) -> Vec<Arc<Spinlock<dyn DiskDevice>>> {
         self.ports
             .clone()
             .into_iter()
             .flatten()
-            .map(|a| a as Arc<Mutex<dyn DiskDevice>>)
+            .map(|a| a as Arc<Spinlock<dyn DiskDevice>>)
             .collect()
     }
 
-    fn get_disk_by_id(&mut self, id: usize) -> Option<Arc<Mutex<dyn DiskDevice>>> {
+    fn get_disk_by_id(&mut self, id: usize) -> Option<Arc<Spinlock<dyn DiskDevice>>> {
         if let Some(Some(port)) = self.ports.get(id) {
             return Some(port.clone());
         }

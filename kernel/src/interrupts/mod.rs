@@ -8,7 +8,6 @@ use kernel_userspace::{
     syscall::spawn_thread,
     INT_KB, INT_MOUSE, INT_PCI,
 };
-use spin::Mutex;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 pub mod exceptions;
@@ -16,8 +15,8 @@ pub mod exceptions;
 pub mod pic;
 
 use crate::{
-    cpu_localstorage::CPULocalStorageRW, event::KEvent, lapic, scheduling::with_held_interrupts,
-    syscall,
+    cpu_localstorage::CPULocalStorageRW, event::KEvent, lapic, mutex::Spinlock,
+    scheduling::with_held_interrupts, syscall,
 };
 
 use self::pic::disable_pic;
@@ -64,7 +63,7 @@ impl From<HardwareInterruptOffset> for usize {
     }
 }
 
-pub static IDT: Lazy<Mutex<InterruptDescriptorTable>> = Lazy::new(|| {
+pub static IDT: Lazy<Spinlock<InterruptDescriptorTable>> = Lazy::new(|| {
     let mut idt = InterruptDescriptorTable::new();
     // Set idt table
     exceptions::set_exceptions_idt(&mut idt);
@@ -72,7 +71,7 @@ pub static IDT: Lazy<Mutex<InterruptDescriptorTable>> = Lazy::new(|| {
     pic::set_spurious_interrupts(&mut idt);
     syscall::set_syscall_idt(&mut idt);
 
-    Mutex::new(idt)
+    Spinlock::new(idt)
 });
 
 #[macro_export]
@@ -141,7 +140,7 @@ fn pci_interrupt_handler(_: InterruptStackFrame) {
     int_interrupt_handler(INT_PCI)
 }
 
-static INTERRUPT_SOURCES: OnceCell<[Arc<Mutex<KEvent>>; 3]> = OnceCell::uninit();
+static INTERRUPT_SOURCES: OnceCell<[Arc<Spinlock<KEvent>>; 3]> = OnceCell::uninit();
 
 /// Returns true if there were any interrupt events dispatched
 pub fn check_interrupts() {

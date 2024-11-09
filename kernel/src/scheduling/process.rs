@@ -10,16 +10,13 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
+use conquer_once::spin::Lazy;
 use hashbrown::HashMap;
 use kernel_userspace::{
     event::EventCallback,
     ids::{ProcessID, ThreadID},
     object::{KernelObjectType, KernelReferenceID},
     process::ProcessExit,
-};
-use spin::{
-    mutex::{Mutex, SpinMutex},
-    Lazy,
 };
 use x86_64::{
     structures::{gdt::SegmentSelector, idt::InterruptStackFrameValue},
@@ -31,6 +28,7 @@ use crate::{
     event::{EdgeListener, EdgeTrigger, KEvent, KEventListener, KEventQueue},
     gdt,
     message::KMessage,
+    mutex::Spinlock,
     paging::{
         offset_map::get_gop_range,
         page_allocator::Allocated32Page,
@@ -89,14 +87,14 @@ pub struct Process {
     // a reference to the process so that we can clone it for threads (it is weak to avoid a circular chain)
     this: Weak<Process>,
     pub pid: ProcessID,
-    pub threads: Mutex<ProcessThreads>,
+    pub threads: Spinlock<ProcessThreads>,
     pub privilege: ProcessPrivilige,
     pub args: Vec<u8>,
-    pub memory: Mutex<ProcessMemory>,
+    pub memory: Spinlock<ProcessMemory>,
     pub cr3_page: u64,
-    pub references: Mutex<ProcessReferences>,
-    pub exit_status: Mutex<ProcessExit>,
-    pub exit_signal: Arc<Mutex<KEvent>>,
+    pub references: Spinlock<ProcessReferences>,
+    pub exit_status: Spinlock<ProcessExit>,
+    pub exit_signal: Arc<Spinlock<KEvent>>,
 }
 
 #[derive(Default)]
@@ -181,16 +179,16 @@ impl Process {
             privilege,
             args: args.to_vec(),
             cr3_page: unsafe { page_mapper.get_mapper_mut().into_page().get_address() },
-            memory: Mutex::new(ProcessMemory {
+            memory: Spinlock::new(ProcessMemory {
                 page_mapper,
                 owned32_pages: Default::default(),
             }),
             threads: Default::default(),
-            references: Mutex::new(ProcessReferences {
+            references: Spinlock::new(ProcessReferences {
                 references: Default::default(),
                 next_id: 1,
             }),
-            exit_status: Mutex::new(ProcessExit::NotExitedYet),
+            exit_status: Spinlock::new(ProcessExit::NotExitedYet),
             exit_signal: KEvent::new(),
         })
     }
@@ -203,7 +201,9 @@ impl Process {
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0;
 
         let stack = match self.privilege {
-            ProcessPrivilige::HIGHKERNEL => PageMapping::new_lazy_filled(STACK_SIZE as usize),
+            ProcessPrivilige::HIGHKERNEL | ProcessPrivilige::KERNEL => {
+                PageMapping::new_lazy_filled(STACK_SIZE as usize)
+            }
             _ => PageMapping::new_lazy(STACK_SIZE as usize),
         };
 
@@ -215,7 +215,7 @@ impl Process {
 
         let kstack_base = KSTACK_ADDR + (KSTACK_SIZE + 0x1000) * tid.0;
         let kstack_top = (kstack_base + KSTACK_SIZE) as usize;
-        let stack = PageMapping::new_lazy(KSTACK_SIZE as usize);
+        let stack = PageMapping::new_lazy_filled(KSTACK_SIZE as usize);
         let kstack_ptr_for_start = stack.base_top_stack();
         let kstack_base_virt = virt_addr_for_phys(kstack_ptr_for_start as u64) as usize;
 
@@ -238,7 +238,7 @@ impl Process {
         let handle = Arc::new(ThreadHandle {
             process: self.this.upgrade().unwrap(),
             tid,
-            thread: SpinMutex::new(None),
+            thread: Spinlock::new(None),
             kill_signal: AtomicBool::new(false),
         });
 
@@ -327,7 +327,7 @@ impl ProcessThreads {
 pub struct ThreadHandle {
     process: Arc<Process>,
     tid: ThreadID,
-    pub thread: SpinMutex<Option<Box<Thread>>>,
+    pub thread: Spinlock<Option<Box<Thread>>>,
     pub kill_signal: AtomicBool,
 }
 
@@ -429,7 +429,7 @@ pub struct Thread {
 
 #[derive(Clone)]
 pub enum KernelValue {
-    Event(Arc<Mutex<KEvent>>),
+    Event(Arc<Spinlock<KEvent>>),
     EventQueue(Arc<KEventQueue>),
     Socket(Arc<KSocketHandle>),
     SocketListener(Arc<KSocketListener>),
@@ -463,7 +463,7 @@ impl KernelValue {
     }
 }
 
-impl Into<KernelValue> for Arc<Mutex<KEvent>> {
+impl Into<KernelValue> for Arc<Spinlock<KEvent>> {
     fn into(self) -> KernelValue {
         KernelValue::Event(self)
     }
@@ -506,11 +506,11 @@ struct ThreadEventListenerInner {
 }
 
 #[derive(Debug)]
-pub struct ThreadEventListener(Mutex<ThreadEventListenerInner>);
+pub struct ThreadEventListener(Spinlock<ThreadEventListenerInner>);
 
 impl ThreadEventListener {
     pub fn new(ev: &mut KEvent, direction: EdgeTrigger, thread: &Thread) -> Arc<Self> {
-        let this = Arc::new(Self(Mutex::new(ThreadEventListenerInner {
+        let this = Arc::new(Self(Spinlock::new(ThreadEventListenerInner {
             thread: Arc::downgrade(&thread.handle),
             result: None,
         })));

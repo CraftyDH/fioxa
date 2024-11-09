@@ -6,9 +6,8 @@ use alloc::{
 };
 use hashbrown::HashMap;
 use kernel_userspace::event::{EventCallback, EventQueueListenId, KernelEventQueueListenMode};
-use spin::Mutex;
 
-use crate::{kassert, syscall::SyscallError};
+use crate::{kassert, mutex::Spinlock, syscall::SyscallError};
 
 bitflags::bitflags! {
     pub struct EdgeTrigger: u8 {
@@ -53,16 +52,16 @@ pub enum EdgeDirection {
 }
 
 impl KEvent {
-    pub fn new() -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self {
+    pub fn new() -> Arc<Spinlock<Self>> {
+        Arc::new(Spinlock::new(Self {
             level: false,
             is_queue: false,
             listeners: Vec::new(),
         }))
     }
 
-    pub fn new_queue() -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Self {
+    pub fn new_queue() -> Arc<Spinlock<Self>> {
+        Arc::new(Spinlock::new(Self {
             level: false,
             is_queue: true,
             listeners: Vec::new(),
@@ -119,8 +118,8 @@ pub trait KEventListener: Send + Sync {
 
 pub struct KEventQueue {
     weak_self: Weak<KEventQueue>,
-    event: Arc<Mutex<KEvent>>,
-    inner: Mutex<KEventQueueInner>,
+    event: Arc<Spinlock<KEvent>>,
+    inner: Spinlock<KEventQueueInner>,
 }
 
 impl KEventQueue {
@@ -132,13 +131,13 @@ impl KEventQueue {
         })
     }
 
-    pub fn event(&self) -> Arc<Mutex<KEvent>> {
+    pub fn event(&self) -> Arc<Spinlock<KEvent>> {
         self.event.clone()
     }
 
     pub fn listen(
         &self,
-        event: Arc<Mutex<KEvent>>,
+        event: Arc<Spinlock<KEvent>>,
         callback: EventCallback,
         mode: KernelEventQueueListenMode,
     ) -> Result<EventQueueListenId, SyscallError> {
@@ -261,7 +260,7 @@ struct KEventQueueInfo {
     is_in_queue: bool,
     callback: EventCallback,
     mode: KernelEventQueueListenMode,
-    upstream: Arc<Mutex<KEvent>>,
+    upstream: Arc<Spinlock<KEvent>>,
 }
 
 impl KEventListener for KEventQueue {

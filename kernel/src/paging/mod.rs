@@ -1,8 +1,7 @@
 use conquer_once::spin::Lazy;
-use spin::Mutex;
 use x86_64::registers::control::Cr3;
 
-use crate::paging::page_allocator::request_page;
+use crate::{mutex::Spinlock, paging::page_allocator::request_page};
 
 use self::page_table_manager::{Page, PageLvl3, PageLvl4, PageTable};
 
@@ -12,20 +11,20 @@ pub mod page_directory;
 pub mod page_mapper;
 pub mod page_table_manager;
 
-pub const fn gen_lvl3_map() -> Lazy<Mutex<PageTable<'static, PageLvl3>>> {
+pub const fn gen_lvl3_map() -> Lazy<Spinlock<PageTable<'static, PageLvl3>>> {
     Lazy::new(|| {
-        Mutex::new(unsafe {
+        Spinlock::new(unsafe {
             let page = request_page().unwrap().leak();
             PageTable::from_page(page)
         })
     })
 }
 
-pub static OFFSET_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
-pub static KERNEL_DATA_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
+pub static OFFSET_MAP: Lazy<Spinlock<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
+pub static KERNEL_DATA_MAP: Lazy<Spinlock<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
 
-pub static KERNEL_HEAP_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
-pub static PER_CPU_MAP: Lazy<Mutex<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
+pub static KERNEL_HEAP_MAP: Lazy<Spinlock<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
+pub static PER_CPU_MAP: Lazy<Spinlock<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
 
 pub unsafe fn get_uefi_active_mapper() -> PageTable<'static, PageLvl4> {
     let (lv4_table, _) = Cr3::read();

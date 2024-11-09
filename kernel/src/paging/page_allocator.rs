@@ -2,11 +2,10 @@ use core::ops::{Deref, DerefMut};
 
 use bootloader::uefi::table::boot::MemoryType;
 use conquer_once::spin::OnceCell;
-use spin::mutex::Mutex;
 
 use crate::{
     memory::{MemoryMapIter, RESERVED_32BIT_MEM_PAGES},
-    scheduling::with_held_interrupts,
+    mutex::Spinlock,
 };
 
 use super::{
@@ -15,13 +14,13 @@ use super::{
     virt_addr_for_phys, virt_addr_offset_mut, MemoryLoc, KERNEL_HEAP_MAP,
 };
 
-static GLOBAL_FRAME_ALLOCATOR: OnceCell<Mutex<PageFrameAllocator>> = OnceCell::uninit();
+static GLOBAL_FRAME_ALLOCATOR: OnceCell<Spinlock<PageFrameAllocator>> = OnceCell::uninit();
 
 pub fn frame_alloc_exec<T, F>(closure: F) -> T
 where
     F: Fn(&mut PageFrameAllocator) -> T,
 {
-    with_held_interrupts(|| closure(&mut GLOBAL_FRAME_ALLOCATOR.get().unwrap().lock()))
+    closure(&mut GLOBAL_FRAME_ALLOCATOR.get().unwrap().lock())
 }
 
 pub unsafe fn init(mmap: MemoryMapIter) {

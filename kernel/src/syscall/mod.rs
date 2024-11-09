@@ -17,13 +17,13 @@ use kernel_userspace::{
     socket::{MakeSocket, SocketEvents, SocketOperation, SocketRecv},
     syscall::SYSCALL_NUMBER,
 };
-use spin::MutexGuard;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     event::{EdgeTrigger, KEvent, KEventQueue},
     message::KMessage,
+    mutex::SpinlockGuard,
     paging::{
         page_allocator::frame_alloc_exec, page_mapper::PageMapping, page_table_manager::Mapper,
         MemoryMappingFlags,
@@ -364,7 +364,7 @@ unsafe fn sys_receive_event(arg1: usize, arg2: usize) -> Result<usize, SyscallEr
 
     let ev = event.lock();
 
-    let save_state = |mut event: MutexGuard<KEvent>, edge: EdgeTrigger| {
+    let save_state = |mut event: SpinlockGuard<KEvent>, edge: EdgeTrigger| {
         let res = ThreadEventListener::new(&mut event, edge, &thread);
         drop(event);
         Ok(res.wait(thread) as usize)

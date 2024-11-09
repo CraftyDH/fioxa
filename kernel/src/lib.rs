@@ -14,9 +14,10 @@ use core::fmt::Write;
 
 use bootloader::BootInfo;
 use kernel_userspace::syscall::exit;
-use scheduling::{taskmanager::kill_bad_task, with_held_interrupts};
+use scheduling::taskmanager::kill_bad_task;
 use screen::gop::WRITER;
 use terminal::Writer;
+use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::{cpu_localstorage::CPULocalStorageRW, paging::MemoryLoc};
 
@@ -46,6 +47,7 @@ pub mod locked_mutex;
 pub mod logging;
 pub mod memory;
 pub mod message;
+pub mod mutex;
 pub mod net;
 pub mod paging;
 pub mod pci;
@@ -75,9 +77,9 @@ pub fn kernel_memory_loc() -> (u64, u64) {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     let context = CPULocalStorageRW::get_context();
-    if context == 0 {
+    if context == 0 || CPULocalStorageRW::hold_interrupts_depth() > 0 {
         // lowest context, no chance of recovery
-        with_held_interrupts(|| {
+        without_interrupts(|| {
             let mut w = WRITER.get().unwrap().lock();
             w.write_fmt(format_args!("KERNEL PANIC: {}\n", info))
                 .unwrap();

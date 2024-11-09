@@ -2,13 +2,14 @@ pub mod ahci;
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use kernel_userspace::disk::ata::ATADiskIdentify;
-use spin::Mutex;
+
+use crate::mutex::Spinlock;
 
 use super::driver::Driver;
 
 pub trait DiskBusDriver: Driver {
-    fn get_disks(&mut self) -> Vec<Arc<Mutex<dyn DiskDevice>>>;
-    fn get_disk_by_id(&mut self, id: usize) -> Option<Arc<Mutex<dyn DiskDevice>>>;
+    fn get_disks(&mut self) -> Vec<Arc<Spinlock<dyn DiskDevice>>>;
+    fn get_disk_by_id(&mut self, id: usize) -> Option<Arc<Spinlock<dyn DiskDevice>>>;
 }
 
 pub trait DiskDevice: Send + Sync {

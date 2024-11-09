@@ -3,18 +3,18 @@ use alloc::{
     string::String,
     sync::{Arc, Weak},
 };
+use conquer_once::spin::Lazy;
 use hashbrown::HashMap;
 use kernel_userspace::socket::SocketEvents;
-use spin::{Lazy, Mutex};
 
-use crate::{event::KEvent, scheduling::process::KernelValue};
+use crate::{event::KEvent, mutex::Spinlock, scheduling::process::KernelValue};
 
-pub static PUBLIC_SOCKETS: Lazy<Mutex<HashMap<String, Arc<KSocketListener>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+pub static PUBLIC_SOCKETS: Lazy<Spinlock<HashMap<String, Arc<KSocketListener>>>> =
+    Lazy::new(|| Spinlock::new(HashMap::new()));
 
 pub struct KSocketListener {
-    queue: Mutex<VecDeque<Arc<KSocketHandle>>>,
-    event: Arc<Mutex<KEvent>>,
+    queue: Spinlock<VecDeque<Arc<KSocketHandle>>>,
+    event: Arc<Spinlock<KEvent>>,
 }
 
 impl KSocketListener {
@@ -44,17 +44,17 @@ impl KSocketListener {
         v
     }
 
-    pub fn event(&self) -> Arc<Mutex<KEvent>> {
+    pub fn event(&self) -> Arc<Spinlock<KEvent>> {
         self.event.clone()
     }
 }
 
 pub struct KSocketHandle {
     other_side: Weak<KSocketHandle>,
-    send_queue_full_event: Arc<Mutex<KEvent>>,
-    recv_queue_empty_event: Arc<Mutex<KEvent>>,
-    closed_event: Arc<Mutex<KEvent>>,
-    queue: Mutex<VecDeque<KernelValue>>,
+    send_queue_full_event: Arc<Spinlock<KEvent>>,
+    recv_queue_empty_event: Arc<Spinlock<KEvent>>,
+    closed_event: Arc<Spinlock<KEvent>>,
+    queue: Spinlock<VecDeque<KernelValue>>,
     /// soft limit of how many elements can be in the queue
     capacity: usize,
 }
@@ -122,7 +122,7 @@ impl KSocketHandle {
         self.closed_event.lock().level()
     }
 
-    pub fn get_event(&self, ev: SocketEvents) -> Arc<Mutex<KEvent>> {
+    pub fn get_event(&self, ev: SocketEvents) -> Arc<Spinlock<KEvent>> {
         match ev {
             SocketEvents::RecvBufferEmpty => self.recv_queue_empty_event.clone(),
             SocketEvents::SendBufferFull => self.send_queue_full_event.clone(),
