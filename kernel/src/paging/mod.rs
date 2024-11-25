@@ -1,7 +1,11 @@
+use core::{mem::ManuallyDrop, ops::Deref, ptr};
+
 use conquer_once::spin::Lazy;
+use page_allocator::global_allocator;
+use page_table_manager::Size4KB;
 use x86_64::registers::control::Cr3;
 
-use crate::{mutex::Spinlock, paging::page_allocator::request_page};
+use crate::mutex::Spinlock;
 
 use self::page_table_manager::{Page, PageLvl3, PageLvl4, PageTable};
 
@@ -14,7 +18,7 @@ pub mod page_table_manager;
 pub const fn gen_lvl3_map() -> Lazy<Spinlock<PageTable<'static, PageLvl3>>> {
     Lazy::new(|| {
         Spinlock::new(unsafe {
-            let page = request_page().unwrap().leak();
+            let page = global_allocator().allocate_page().unwrap();
             PageTable::from_page(page)
         })
     })
@@ -80,4 +84,75 @@ pub fn virt_addr_offset_mut<T>(t: *mut T) -> *mut T {
 pub fn phys_addr_for_virt(virt: u64) -> u64 {
     virt.checked_sub(unsafe { MEM_OFFSET })
         .expect("expected virt addr")
+}
+
+pub struct AllocatedPage<A: PageAllocator> {
+    page: Page<Size4KB>,
+    alloc: A,
+}
+
+impl<A: PageAllocator> AllocatedPage<A> {
+    pub fn new(alloc: A) -> Option<Self> {
+        unsafe { alloc.allocate_page().map(|p| Self::from_raw(p, alloc)) }
+    }
+
+    pub unsafe fn from_raw(page: Page<Size4KB>, alloc: A) -> Self {
+        Self { page, alloc }
+    }
+
+    pub fn into_raw(self) -> Page<Size4KB> {
+        let mut this = ManuallyDrop::new(self);
+        unsafe { ptr::drop_in_place(&mut this.alloc) };
+        this.page
+    }
+
+    pub fn alloc(&self) -> &A {
+        &self.alloc
+    }
+}
+
+impl<A: PageAllocator> Deref for AllocatedPage<A> {
+    type Target = Page<Size4KB>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.page
+    }
+}
+
+impl<A: PageAllocator> Drop for AllocatedPage<A> {
+    fn drop(&mut self) {
+        unsafe {
+            self.alloc.free_page(self.page);
+        }
+    }
+}
+
+pub trait PageAllocator {
+    fn allocate_page(&self) -> Option<Page<Size4KB>>;
+
+    fn allocate_pages(&self, count: usize) -> Option<Page<Size4KB>>;
+
+    unsafe fn free_page(&self, page: Page<Size4KB>);
+
+    unsafe fn free_pages(&self, page: Page<Size4KB>, count: usize);
+}
+
+pub struct GlobalPageAllocator;
+
+impl PageAllocator for GlobalPageAllocator {
+    fn allocate_page(&self) -> Option<Page<Size4KB>> {
+        global_allocator().allocate_page()
+    }
+
+    fn allocate_pages(&self, count: usize) -> Option<Page<Size4KB>> {
+        global_allocator().allocate_pages(count)
+    }
+
+    unsafe fn free_page(&self, page: Page<Size4KB>) {
+        global_allocator().free_page(page);
+    }
+
+    unsafe fn free_pages(&self, page: Page<Size4KB>, count: usize) {
+        global_allocator().free_pages(page, count);
+    }
 }

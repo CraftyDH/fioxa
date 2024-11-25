@@ -30,10 +30,9 @@ use crate::{
     message::KMessage,
     mutex::Spinlock,
     paging::{
-        page_allocator::Allocated32Page,
         page_mapper::{PageMapperManager, PageMapping},
-        virt_addr_for_phys, MemoryLoc, MemoryMappingFlags, KERNEL_DATA_MAP, KERNEL_HEAP_MAP,
-        OFFSET_MAP, PER_CPU_MAP,
+        virt_addr_for_phys, AllocatedPage, GlobalPageAllocator, MemoryLoc, MemoryMappingFlags,
+        KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
     },
     socket::{KSocketHandle, KSocketListener},
     time::HPET,
@@ -103,7 +102,7 @@ pub struct ProcessThreads {
 
 pub struct ProcessMemory {
     pub page_mapper: PageMapperManager<'static>,
-    pub owned32_pages: Vec<Allocated32Page>,
+    pub owned32_pages: Vec<AllocatedPage<GlobalPageAllocator>>,
 }
 
 pub struct ProcessReferences {

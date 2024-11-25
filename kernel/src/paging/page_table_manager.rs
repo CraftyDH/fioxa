@@ -5,14 +5,11 @@ use core::{marker::PhantomData, num::NonZeroU64};
 
 use thiserror::Error;
 
-use crate::{
-    cpu_localstorage::CPULocalStorageRW, paging::page_allocator::free_page_early,
-    scheduling::with_held_interrupts,
-};
+use crate::{cpu_localstorage::CPULocalStorageRW, scheduling::with_held_interrupts};
 
 use super::{
-    page_allocator::request_page, page_directory::PageDirectoryEntry, phys_addr_for_virt,
-    virt_addr_for_phys, MemoryMappingFlags,
+    page_allocator::global_allocator, page_directory::PageDirectoryEntry, phys_addr_for_virt,
+    virt_addr_for_phys, MemoryMappingFlags, PageAllocator,
 };
 
 #[derive(Error, Debug)]
@@ -192,7 +189,7 @@ impl PhysPageTable {
         if entry.present() {
             addr = virt_addr_for_phys(entry.get_address()) as *mut PhysPageTable;
         } else {
-            let new_page = unsafe { request_page().unwrap().leak() };
+            let new_page = global_allocator().allocate_page().unwrap();
             addr = virt_addr_for_phys(new_page.get_address()) as *mut PhysPageTable;
 
             entry.set_address(new_page.get_address());
@@ -208,7 +205,7 @@ impl PhysPageTable {
         let entry = &mut self.entries[idx];
         assert!(entry.present());
         let phys = Page::<Size4KB>::new(entry.get_address());
-        free_page_early(phys);
+        global_allocator().free_page(phys);
         entry.set_present(false);
         entry.set_address(0);
     }

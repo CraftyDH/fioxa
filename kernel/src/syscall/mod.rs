@@ -26,7 +26,7 @@ use crate::{
     mutex::SpinlockGuard,
     paging::{
         page_allocator::frame_alloc_exec, page_mapper::PageMapping, page_table_manager::Mapper,
-        MemoryMappingFlags,
+        AllocatedPage, GlobalPageAllocator, MemoryMappingFlags,
     },
     scheduling::{
         process::{KernelValue, ThreadEventListener},
@@ -322,7 +322,7 @@ unsafe fn mmap_page_handler(arg1: usize, arg2: usize) -> Result<usize, SyscallEr
 unsafe fn mmap_page32_handler() -> Result<usize, SyscallError> {
     let task = CPULocalStorageRW::get_current_task();
 
-    let page = kunwrap!(frame_alloc_exec(|m| m.request_32bit_reserved_page()));
+    let page = kunwrap!(frame_alloc_exec(|a| a.allocate_page_32bit()));
 
     let r = page.get_address() as usize;
 
@@ -331,10 +331,12 @@ unsafe fn mmap_page32_handler() -> Result<usize, SyscallError> {
         let map = kunwrap!(memory
             .page_mapper
             .get_mapper_mut()
-            .identity_map_memory(*page, MemoryMappingFlags::all()));
+            .identity_map_memory(page, MemoryMappingFlags::all()));
         map.flush();
     }
-    memory.owned32_pages.push(page);
+    memory
+        .owned32_pages
+        .push(AllocatedPage::from_raw(page, GlobalPageAllocator));
     Ok(r)
 }
 

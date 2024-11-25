@@ -7,9 +7,9 @@ use crate::{
     gdt::CPULocalGDT,
     paging::{
         get_uefi_active_mapper,
-        page_allocator::{frame_alloc_exec, request_page},
+        page_allocator::global_allocator,
         page_table_manager::{Mapper, Page},
-        virt_addr_for_phys, MemoryLoc, MemoryMappingFlags,
+        virt_addr_for_phys, MemoryLoc, MemoryMappingFlags, PageAllocator,
     },
     scheduling::process::Thread,
 };
@@ -182,8 +182,9 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
 
     let mut map = get_uefi_active_mapper();
 
+    let alloc = global_allocator();
     for page in (vaddr_base..vaddr_base + gdt_size + 0xfff).step_by(0x1000) {
-        let phys = request_page().unwrap().leak();
+        let phys = alloc.allocate_page().unwrap();
         map.map_memory(Page::new(page), phys, MemoryMappingFlags::WRITEABLE)
             .unwrap()
             .flush();
@@ -229,28 +230,24 @@ pub unsafe fn init_bsp_task() {
     }
 }
 
-pub const CPU_STACK_SIZE_PAGES: u64 = 10;
+pub const CPU_STACK_SIZE_PAGES: usize = 10;
 
 pub unsafe fn new_cpu(core_id: u8) -> u64 {
     let vaddr = init_core(core_id);
     let ls = unsafe { &mut *(vaddr as *mut CPULocalStorage) };
 
-    let stack_base = frame_alloc_exec(|c| c.request_cont_pages(CPU_STACK_SIZE_PAGES as usize))
+    let stack_base = global_allocator()
+        .allocate_pages(CPU_STACK_SIZE_PAGES)
         .unwrap()
-        .next()
-        .unwrap()
-        .leak()
         .get_address();
 
-    ls.stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE_PAGES * 0x1000;
+    ls.stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE_PAGES as u64 * 0x1000;
 
-    let stack_base = frame_alloc_exec(|c| c.request_cont_pages(CPU_STACK_SIZE_PAGES as usize))
+    let stack_base = global_allocator()
+        .allocate_pages(CPU_STACK_SIZE_PAGES)
         .unwrap()
-        .next()
-        .unwrap()
-        .leak()
         .get_address();
 
-    ls.scratch_stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE_PAGES * 0x1000;
+    ls.scratch_stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE_PAGES as u64 * 0x1000;
     vaddr
 }

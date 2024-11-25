@@ -1,13 +1,13 @@
-use core::{cmp::Ordering, fmt::Debug, mem::MaybeUninit, ops::Range};
+use core::{cmp::Ordering, fmt::Debug, ops::Range};
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use crate::mutex::Spinlock;
 
 use super::{
-    page_allocator::{frame_alloc_exec, request_page, AllocatedPage},
+    page_allocator::{frame_alloc_exec, global_allocator},
     page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB, UnMapMemoryError},
-    MemoryLoc, MemoryMappingFlags,
+    AllocatedPage, GlobalPageAllocator, MemoryLoc, MemoryMappingFlags, PageAllocator,
 };
 
 pub struct PageMapperManager<'a> {
@@ -33,14 +33,16 @@ impl PageMapping {
             PageMappingType::LazyMapping { pages } => {
                 let mut pages = pages.lock();
                 let page = pages.last_mut().unwrap();
-                page.0
-                    .unwrap_or_else(|| {
-                        let apage = request_page().unwrap();
-                        let p = *apage;
-                        page.set(apage);
+                let p = match page {
+                    Some(p) => p.get_address(),
+                    None => {
+                        let apage = AllocatedPage::new(GlobalPageAllocator).unwrap();
+                        let p = apage.get_address();
+                        *page = Some(apage);
                         p
-                    })
-                    .get_address() as usize
+                    }
+                };
+                p as usize
             }
             _ => panic!(),
         }
@@ -52,7 +54,7 @@ pub enum PageMappingType {
         base_address: usize,
     },
     LazyMapping {
-        pages: Spinlock<Box<[MaybeAllocatedPage]>>,
+        pages: Spinlock<Box<[Option<AllocatedPage<GlobalPageAllocator>>]>>,
     },
 }
 
@@ -67,11 +69,7 @@ impl Debug for PageMappingType {
 
 impl PageMapping {
     pub fn new_lazy(size: usize) -> Arc<PageMapping> {
-        let b = unsafe {
-            let mut b = Box::new_uninit_slice((size + 0xFFF) / 0x1000);
-            b.fill_with(|| MaybeUninit::new(MaybeAllocatedPage::new()));
-            b.assume_init()
-        };
+        let b: Box<_> = (0..(size + 0xFFF) / 0x1000).map(|_| None).collect();
         Arc::new(PageMapping {
             size,
             mapping: PageMappingType::LazyMapping { pages: b.into() },
@@ -79,18 +77,18 @@ impl PageMapping {
     }
 
     pub fn new_lazy_filled(size: usize) -> Arc<PageMapping> {
-        let b = unsafe {
-            let mut b = Box::new_uninit_slice((size + 0xFFF) / 0x1000);
-            b.fill_with(|| MaybeUninit::new(request_page().unwrap().into()));
-            b.assume_init()
-        };
+        let b: Box<_> = (0..(size + 0xFFF) / 0x1000)
+            .map(|_| AllocatedPage::new(GlobalPageAllocator))
+            .collect();
         Arc::new(PageMapping {
             size,
             mapping: PageMappingType::LazyMapping { pages: b.into() },
         })
     }
 
-    pub fn new_lazy_prealloc(pages: Box<[MaybeAllocatedPage]>) -> Arc<Self> {
+    pub fn new_lazy_prealloc(
+        pages: Box<[Option<AllocatedPage<GlobalPageAllocator>>]>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             size: pages.len() * 0x1000,
             mapping: PageMappingType::LazyMapping {
@@ -111,7 +109,7 @@ impl PageMapping {
 
 impl<'a> PageMapperManager<'a> {
     pub fn new() -> Self {
-        let pml4 = unsafe { request_page().unwrap().leak() };
+        let pml4 = global_allocator().allocate_page().unwrap();
         let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(pml4) };
         Self {
             page_mapper,
@@ -121,9 +119,7 @@ impl<'a> PageMapperManager<'a> {
 
     /// Unsafe as this can't be dropped as we shim the alloc32page into allocpage
     pub unsafe fn new_32() -> Self {
-        let pml4 = frame_alloc_exec(|a| a.request_32bit_reserved_page())
-            .unwrap()
-            .leak();
+        let pml4 = frame_alloc_exec(|a| a.allocate_page_32bit()).unwrap();
         let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(pml4) };
         Self {
             page_mapper,
@@ -201,7 +197,7 @@ impl<'a> PageMapperManager<'a> {
                     .lock()
                     .iter()
                     .zip((base..end).step_by(0x1000))
-                    .filter_map(|(a, i)| a.get().map(|p| (p, i)))
+                    .filter_map(|(a, i)| a.as_ref().map(|p| (p.page, i)))
                 {
                     self.page_mapper
                         .map_memory(Page::<Size4KB>::containing(page.1 as u64), page.0, flags)
@@ -284,7 +280,7 @@ impl<'a> PageMapperManager<'a> {
                     .lock()
                     .iter()
                     .zip((base..end).step_by(0x1000))
-                    .filter_map(|(a, i)| a.get().map(|p| (p, i)))
+                    .filter_map(|(a, i)| a.as_ref().map(|p| (p.page, i)))
                 {
                     self.page_mapper
                         .map_memory(Page::<Size4KB>::containing(page.1 as u64), page.0, flags)
@@ -325,12 +321,15 @@ impl<'a> PageMapperManager<'a> {
             PageMappingType::LazyMapping { pages } => {
                 let idx = offset / 0x1000;
                 let page = &mut pages.lock()[idx];
-                page.0.unwrap_or_else(|| {
-                    let apage = request_page().unwrap();
-                    let p = *apage;
-                    page.set(apage);
-                    p
-                })
+                match page {
+                    Some(p) => p.page,
+                    None => {
+                        let alloc = AllocatedPage::new(GlobalPageAllocator).unwrap();
+                        let p = alloc.page;
+                        *page = Some(alloc);
+                        p
+                    }
+                }
             }
         };
         // Make the mapping
@@ -365,38 +364,5 @@ impl<'a> PageMapperManager<'a> {
             // TODO: Send IPI to flush on other threads
         }
         Ok(())
-    }
-}
-
-// If None, the page should be mapped to the ZERO page
-pub struct MaybeAllocatedPage(Option<Page<Size4KB>>);
-
-impl MaybeAllocatedPage {
-    pub const fn new() -> Self {
-        Self(None)
-    }
-
-    pub fn set(&mut self, page: AllocatedPage) -> Option<AllocatedPage> {
-        let p = unsafe { page.leak() };
-        let old = core::mem::replace(&mut self.0, Some(p))?;
-        unsafe { Some(AllocatedPage::new(old)) }
-    }
-
-    pub fn get(&self) -> Option<Page<Size4KB>> {
-        self.0
-    }
-}
-
-impl From<AllocatedPage> for MaybeAllocatedPage {
-    fn from(value: AllocatedPage) -> Self {
-        Self(Some(unsafe { value.leak() }))
-    }
-}
-
-impl Drop for MaybeAllocatedPage {
-    fn drop(&mut self) {
-        if let Some(p) = self.0 {
-            unsafe { frame_alloc_exec(|a| a.free_page(p)) }
-        }
     }
 }

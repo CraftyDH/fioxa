@@ -4,9 +4,9 @@ use crate::{
     locked_mutex::Locked,
     paging::{
         get_uefi_active_mapper,
-        page_allocator::{free_page_early, request_page},
+        page_allocator::global_allocator,
         page_table_manager::{Mapper, Page, Size4KB},
-        MemoryMappingFlags,
+        MemoryMappingFlags, PageAllocator,
     },
     scheduling::with_held_interrupts,
 };
@@ -55,7 +55,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                         // No block exists in list => allocate new block
                         let block_size = SLAB_SIZES[index];
                         // Only works if all blocks are powers of 2
-                        let frame = request_page().unwrap().leak();
+                        let frame = global_allocator().allocate_page().unwrap();
 
                         let base = allocator.base_address;
                         allocator.base_address += 0x1000;
@@ -86,8 +86,9 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     allocator.base_address += length;
 
                     let mut mapper = get_uefi_active_mapper();
+                    let alloc = global_allocator();
                     for page in (base..(base + length)).step_by(0x1000) {
-                        let frame = request_page().unwrap().leak();
+                        let frame = alloc.allocate_page().unwrap();
 
                         mapper
                             .map_memory(Page::new(page), frame, MemoryMappingFlags::WRITEABLE)
@@ -122,6 +123,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     let length = ((max_size + 0xFFF) & !0xFFF) as u64;
 
                     let mut mapper = get_uefi_active_mapper();
+                    let alloc = global_allocator();
                     // We assume that we allocted cont pages
                     for page in (base..(base + length)).step_by(0x1000) {
                         let phys_page =
@@ -130,7 +132,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                             .unmap_memory(Page::<Size4KB>::new(page))
                             .unwrap()
                             .flush();
-                        free_page_early(phys_page);
+                        alloc.free_page(phys_page);
                     }
                 }
             }

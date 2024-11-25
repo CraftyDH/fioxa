@@ -1,5 +1,3 @@
-use core::ops::{Deref, DerefMut};
-
 use bootloader::uefi::table::boot::MemoryType;
 use conquer_once::spin::OnceCell;
 
@@ -10,8 +8,8 @@ use crate::{
 
 use super::{
     get_uefi_active_mapper,
-    page_table_manager::{Page, PageRange, Size4KB},
-    virt_addr_for_phys, virt_addr_offset_mut, MemoryLoc, KERNEL_HEAP_MAP,
+    page_table_manager::{Page, Size4KB},
+    virt_addr_for_phys, virt_addr_offset_mut, MemoryLoc, PageAllocator, KERNEL_HEAP_MAP,
 };
 
 static GLOBAL_FRAME_ALLOCATOR: OnceCell<Spinlock<PageFrameAllocator>> = OnceCell::uninit();
@@ -23,6 +21,10 @@ where
     closure(&mut GLOBAL_FRAME_ALLOCATOR.get().unwrap().lock())
 }
 
+pub fn global_allocator() -> &'static impl PageAllocator {
+    GLOBAL_FRAME_ALLOCATOR.get().unwrap()
+}
+
 pub unsafe fn init(mmap: MemoryMapIter) {
     let alloc = unsafe { PageFrameAllocator::new(mmap).into() };
     GLOBAL_FRAME_ALLOCATOR.init_once(|| alloc);
@@ -30,119 +32,6 @@ pub unsafe fn init(mmap: MemoryMapIter) {
     // ensure that allocations that happen during init carry over
     let mut uefi = get_uefi_active_mapper();
     uefi.set_next_table(MemoryLoc::KernelHeap as u64, &mut KERNEL_HEAP_MAP.lock());
-}
-
-pub fn request_page() -> Option<AllocatedPage> {
-    frame_alloc_exec(|mutex| mutex.request_page())
-}
-
-pub unsafe fn free_page_early(page: Page<Size4KB>) {
-    frame_alloc_exec(|mutex| mutex.free_page(page))
-}
-
-pub struct AllocatedPage(Option<Page<Size4KB>>);
-
-impl AllocatedPage {
-    pub unsafe fn new(page: Page<Size4KB>) -> Self {
-        Self(Some(page))
-    }
-
-    pub unsafe fn leak(mut self) -> Page<Size4KB> {
-        self.0.take().expect("should always be some")
-    }
-}
-
-impl Deref for AllocatedPage {
-    type Target = Page<Size4KB>;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().expect("should always be some")
-    }
-}
-
-impl DerefMut for AllocatedPage {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut().expect("should always be some")
-    }
-}
-
-impl Drop for AllocatedPage {
-    fn drop(&mut self) {
-        if let Some(p) = self.0 {
-            unsafe { frame_alloc_exec(|a| a.free_page(p)) }
-        }
-    }
-}
-
-#[derive(Debug)]
-pub struct AllocatedPageRangeIter(PageRange<Size4KB>);
-
-impl Iterator for AllocatedPageRangeIter {
-    type Item = AllocatedPage;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0
-            .next()
-            .map(|page| unsafe { AllocatedPage::new(page) })
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.0.size_hint()
-    }
-}
-
-impl ExactSizeIterator for AllocatedPageRangeIter {
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-}
-
-impl Drop for AllocatedPageRangeIter {
-    fn drop(&mut self) {
-        while let Some(_) = self.0.next() {}
-    }
-}
-
-pub struct Allocated32Page(Option<Page<Size4KB>>);
-
-impl Allocated32Page {
-    pub unsafe fn new(page: Page<Size4KB>) -> Self {
-        Self(Some(page))
-    }
-
-    pub unsafe fn leak(mut self) -> Page<Size4KB> {
-        self.0.take().expect("should always be some")
-    }
-
-    pub fn get_address(&self) -> u32 {
-        self.0
-            .expect("should always be some")
-            .get_address()
-            .try_into()
-            .expect("should always be able to fit")
-    }
-}
-
-impl Deref for Allocated32Page {
-    type Target = Page<Size4KB>;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().expect("should always be some")
-    }
-}
-
-impl DerefMut for Allocated32Page {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut().expect("should always be some")
-    }
-}
-
-impl Drop for Allocated32Page {
-    fn drop(&mut self) {
-        if let Some(p) = self.0 {
-            unsafe { frame_alloc_exec(|a| a.free_32bit_reserved_page(p.get_address() as usize)) }
-        }
-    }
 }
 
 pub struct AllocatedPageOrder {
@@ -318,14 +207,6 @@ impl PageFrameAllocator {
         Some(AllocatedPageOrder { order, base })
     }
 
-    pub fn request_page(&mut self) -> Option<AllocatedPage> {
-        let base = self.request_page_of_order(0)?.base as u64;
-
-        unsafe { core::ptr::write_bytes(virt_addr_for_phys(base) as *mut u8, 0, 0x1000) };
-
-        Some(AllocatedPage(Some(Page::new(base))))
-    }
-
     pub unsafe fn free_32bit_reserved_page(&mut self, page: usize) {
         let meta = &mut *virt_addr_offset_mut(page as *mut PageMetadata32);
 
@@ -337,15 +218,6 @@ impl PageFrameAllocator {
         }
     }
 
-    pub fn request_32bit_reserved_page(&mut self) -> Option<Allocated32Page> {
-        let block = self.reserved_32bit?;
-        let b = unsafe { &mut *virt_addr_offset_mut(block) };
-        let base = block as *const _ as u64;
-        self.reserved_32bit = b.next_node;
-        unsafe { core::ptr::write_bytes(virt_addr_for_phys(base) as *mut u8, 0, 0x1000) };
-        Some(Allocated32Page(Some(Page::new(base))))
-    }
-
     pub fn free_page_of_order(&mut self, pages: AllocatedPageOrder) {
         unsafe { self.insert_free_of_order(pages.base, pages.order) }
     }
@@ -354,7 +226,24 @@ impl PageFrameAllocator {
         unsafe { self.insert_free_of_order(page.get_address() as usize, 0) }
     }
 
-    pub fn request_cont_pages(&mut self, count: usize) -> Option<AllocatedPageRangeIter> {
+    pub fn allocate_page(&mut self) -> Option<Page<Size4KB>> {
+        let base = self.request_page_of_order(0)?.base as u64;
+
+        unsafe { core::ptr::write_bytes(virt_addr_for_phys(base) as *mut u8, 0, 0x1000) };
+
+        Some(Page::new(base))
+    }
+
+    pub fn allocate_page_32bit(&mut self) -> Option<Page<Size4KB>> {
+        let block = self.reserved_32bit?;
+        let b = unsafe { &mut *virt_addr_offset_mut(block) };
+        let base = block as *const _ as u64;
+        self.reserved_32bit = b.next_node;
+        unsafe { core::ptr::write_bytes(virt_addr_for_phys(base) as *mut u8, 0, 0x1000) };
+        Some(Page::new(base))
+    }
+
+    pub fn allocate_pages(&mut self, count: usize) -> Option<Page<Size4KB>> {
         // Returns the log 2 rounded down
         let order = count.ilog2() as usize;
 
@@ -382,6 +271,27 @@ impl PageFrameAllocator {
             )
         };
 
-        Some(AllocatedPageRangeIter(PageRange::new(base as u64, count)))
+        Some(Page::new(base as u64))
+    }
+}
+
+impl PageAllocator for Spinlock<PageFrameAllocator> {
+    fn allocate_page(&self) -> Option<Page<Size4KB>> {
+        self.lock().allocate_page()
+    }
+
+    fn allocate_pages(&self, count: usize) -> Option<Page<Size4KB>> {
+        self.lock().allocate_pages(count)
+    }
+
+    unsafe fn free_page(&self, page: Page<Size4KB>) {
+        self.lock().free_page(page);
+    }
+
+    unsafe fn free_pages(&self, page: Page<Size4KB>, count: usize) {
+        let mut this = self.lock();
+        for p in 0..count {
+            this.free_page(Page::new(page.get_address() + p as u64 * 0x1000));
+        }
     }
 }
