@@ -7,9 +7,8 @@ use crate::{
 };
 
 use super::{
-    get_uefi_active_mapper,
-    page_table_manager::{Page, Size4KB},
-    virt_addr_for_phys, virt_addr_offset_mut, MemoryLoc, PageAllocator, KERNEL_HEAP_MAP,
+    page::{Page, Size4KB},
+    virt_addr_for_phys, virt_addr_offset_mut, PageAllocator,
 };
 
 static GLOBAL_FRAME_ALLOCATOR: OnceCell<Spinlock<PageFrameAllocator>> = OnceCell::uninit();
@@ -26,12 +25,8 @@ pub fn global_allocator() -> &'static impl PageAllocator {
 }
 
 pub unsafe fn init(mmap: MemoryMapIter) {
-    let alloc = unsafe { PageFrameAllocator::new(mmap).into() };
-    GLOBAL_FRAME_ALLOCATOR.init_once(|| alloc);
-
-    // ensure that allocations that happen during init carry over
-    let mut uefi = get_uefi_active_mapper();
-    uefi.set_next_table(MemoryLoc::KernelHeap as u64, &mut KERNEL_HEAP_MAP.lock());
+    let alloc = unsafe { PageFrameAllocator::new(mmap.clone()).into() };
+    GLOBAL_FRAME_ALLOCATOR.init_once(|| alloc)
 }
 
 pub struct AllocatedPageOrder {

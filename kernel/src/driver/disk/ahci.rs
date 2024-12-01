@@ -11,8 +11,10 @@ use crate::{
     driver::{disk::DiskDevice, driver::Driver},
     mutex::Spinlock,
     paging::{
-        get_uefi_active_mapper,
-        page_table_manager::{Mapper, Page, Size4KB},
+        get_task_mapper,
+        page::{Page, Size4KB},
+        page_allocator::global_allocator,
+        page_table::Mapper,
         MemoryMappingFlags,
     },
     pci::{PCIHeader0, PCIHeaderCommon},
@@ -127,15 +129,21 @@ impl Driver for AHCIDriver {
         let pci_device = device;
         trace!("AHCI: {}", pci_device.get_device_id());
         let header0 = unsafe { pci_device.get_as_header0() };
-        let mut mapper = unsafe { get_uefi_active_mapper() };
 
         trace!("BAR5: {}", header0.get_bar(5));
         let abar = header0.get_bar(5);
 
-        mapper
-            .identity_map_memory(Page::<Size4KB>::new(abar as u64), MemoryMappingFlags::all())
+        unsafe {
+            get_task_mapper(|m| {
+                m.identity_map(
+                    global_allocator(),
+                    Page::<Size4KB>::new(abar as u64),
+                    MemoryMappingFlags::all(),
+                )
+            })
             .unwrap()
             .flush();
+        }
 
         let abar = unsafe { &mut *(header0.get_bar(5) as *mut HBAMemory) };
 

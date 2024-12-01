@@ -92,17 +92,6 @@ impl Screen<'_> {
 pub static WRITER: OnceCell<Spinlock<Writer>> = OnceCell::uninit();
 
 #[macro_export]
-macro_rules! early_println {
-    () => (print!("\n"));
-    ($($arg:tt)*) => (early_print!("{}\n", format_args!($($arg)*)));
-}
-
-#[macro_export]
-macro_rules! early_print {
-    ($($arg:tt)*) => ($crate::screen::gop::_print(format_args!($($arg)*)));
-}
-
-#[macro_export]
 macro_rules! colour {
     ($colour:expr) => {
         $crate::gop::WRITER.lock().set_colour($colour)
@@ -116,27 +105,9 @@ use crate::paging::MemoryMappingFlags;
 use crate::scheduling::with_held_interrupts;
 use crate::terminal::{Cell, Writer};
 use crate::BOOT_INFO;
-use core::fmt::Arguments;
 
 use super::mouse::monitor_cursor_task;
 use super::psf1::PSF1Font;
-
-#[doc(hidden)]
-pub fn _print(args: Arguments) {
-    loop {
-        // Prevent task from being scheduled away with mutex
-        let res = with_held_interrupts(|| {
-            if let Some(mut w) = WRITER.get().unwrap().try_lock() {
-                w.write_fmt(args).unwrap();
-                return Some(());
-            }
-            None
-        });
-        if let Some(()) = res {
-            return;
-        }
-    }
-}
 
 struct GopMonitorInfo {
     queued: EventQueueListenId,

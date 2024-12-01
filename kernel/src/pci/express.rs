@@ -1,7 +1,8 @@
 use alloc::{boxed::Box, sync::Arc};
 
 use crate::paging::{
-    page_table_manager::{ensure_ident_map_curr_process, Page, Size4KB},
+    ensure_ident_map_curr_process,
+    page::{Page, Size4KB},
     MemoryMappingFlags,
 };
 

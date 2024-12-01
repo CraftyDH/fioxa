@@ -1,4 +1,4 @@
-use crate::{cpu_localstorage::CPULocalStorageRW, time::pit::is_switching_tasks};
+use crate::cpu_localstorage::{is_ls_enabled, CPULocalStorageRW};
 
 pub mod process;
 pub mod taskmanager;
@@ -8,7 +8,7 @@ where
     F: FnOnce() -> R,
 {
     // Check if we are switching tasks and not in the scheduler
-    if is_switching_tasks() {
+    if is_ls_enabled() {
         unsafe {
             CPULocalStorageRW::inc_hold_interrupts();
 

@@ -2,16 +2,17 @@ use core::{cmp::Ordering, fmt::Debug, ops::Range};
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-use crate::mutex::Spinlock;
+use crate::{mutex::Spinlock, paging::page_table::Mapper};
 
 use super::{
-    page_allocator::{frame_alloc_exec, global_allocator},
-    page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB, UnMapMemoryError},
+    page::{Page, Size4KB},
+    page_allocator::global_allocator,
+    page_table::{PageTable, TableLevel4, UnMapMemoryError},
     AllocatedPage, GlobalPageAllocator, MemoryLoc, MemoryMappingFlags, PageAllocator,
 };
 
-pub struct PageMapperManager<'a> {
-    page_mapper: PageTable<'a, PageLvl4>,
+pub struct PageMapperManager {
+    page_mapper: PageTable<TableLevel4>,
     // start offset, end offset, mapping
     // this should always be ordered
     mappings: Vec<(Range<usize>, Arc<PageMapping>, MemoryMappingFlags)>,
@@ -107,27 +108,15 @@ impl PageMapping {
     }
 }
 
-impl<'a> PageMapperManager<'a> {
-    pub fn new() -> Self {
-        let pml4 = global_allocator().allocate_page().unwrap();
-        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(pml4) };
+impl PageMapperManager {
+    pub fn new(alloc: &impl PageAllocator) -> Self {
         Self {
-            page_mapper,
+            page_mapper: PageTable::new_with_global(alloc),
             mappings: Vec::new(),
         }
     }
 
-    /// Unsafe as this can't be dropped as we shim the alloc32page into allocpage
-    pub unsafe fn new_32() -> Self {
-        let pml4 = frame_alloc_exec(|a| a.allocate_page_32bit()).unwrap();
-        let page_mapper = unsafe { PageTable::<PageLvl4>::from_page(pml4) };
-        Self {
-            page_mapper,
-            mappings: Vec::new(),
-        }
-    }
-
-    pub unsafe fn get_mapper_mut(&mut self) -> &mut PageTable<'a, PageLvl4> {
+    pub unsafe fn get_mapper_mut(&mut self) -> &mut PageTable<TableLevel4> {
         &mut self.page_mapper
     }
 
@@ -177,13 +166,16 @@ impl<'a> PageMapperManager<'a> {
             .binary_search_by(|(r, ..)| r.start.cmp(&base))
             .unwrap_err();
 
+        let alloc = global_allocator();
+
         match &mapping.mapping {
             PageMappingType::MMAP { base_address } => {
                 for (phys, virt) in
                     ((*base_address..).step_by(0x1000)).zip((base..end).step_by(0x1000))
                 {
                     self.page_mapper
-                        .map_memory(
+                        .map(
+                            alloc,
                             Page::<Size4KB>::containing(virt as u64),
                             Page::<Size4KB>::new(phys as u64),
                             flags,
@@ -200,7 +192,12 @@ impl<'a> PageMapperManager<'a> {
                     .filter_map(|(a, i)| a.as_ref().map(|p| (p.page, i)))
                 {
                     self.page_mapper
-                        .map_memory(Page::<Size4KB>::containing(page.1 as u64), page.0, flags)
+                        .map(
+                            alloc,
+                            Page::<Size4KB>::containing(page.1 as u64),
+                            page.0,
+                            flags,
+                        )
                         .unwrap()
                         .ignore();
                 }
@@ -260,13 +257,15 @@ impl<'a> PageMapperManager<'a> {
         let base = self.mappings[idx].0.end + 0x1000;
         let end = base + mapping.size;
 
+        let alloc = global_allocator();
         match &mapping.mapping {
             PageMappingType::MMAP { base_address } => {
                 for (phys, virt) in
                     ((*base_address..).step_by(0x1000)).zip((base..end).step_by(0x1000))
                 {
                     self.page_mapper
-                        .map_memory(
+                        .map(
+                            alloc,
                             Page::<Size4KB>::containing(virt as u64),
                             Page::<Size4KB>::new(phys as u64),
                             flags,
@@ -283,7 +282,12 @@ impl<'a> PageMapperManager<'a> {
                     .filter_map(|(a, i)| a.as_ref().map(|p| (p.page, i)))
                 {
                     self.page_mapper
-                        .map_memory(Page::<Size4KB>::containing(page.1 as u64), page.0, flags)
+                        .map(
+                            alloc,
+                            Page::<Size4KB>::containing(page.1 as u64),
+                            page.0,
+                            flags,
+                        )
                         .unwrap()
                         .ignore();
                 }
@@ -333,10 +337,12 @@ impl<'a> PageMapperManager<'a> {
             }
         };
         // Make the mapping
-        match self
-            .page_mapper
-            .map_memory(Page::<Size4KB>::containing(address as u64), phys, map.2)
-        {
+        match self.page_mapper.map(
+            global_allocator(),
+            Page::<Size4KB>::containing(address as u64),
+            phys,
+            map.2,
+        ) {
             Ok(f) => f.flush(),
             Err(_) => (), // Already mapped ??
         }
@@ -351,10 +357,11 @@ impl<'a> PageMapperManager<'a> {
             .map_err(|_| UnMapMemoryError::MemNotMapped(range.start as u64))?;
 
         let m = self.mappings.remove(idx);
+        let alloc = global_allocator();
         for page in m.0.step_by(0x1000) {
             match self
                 .page_mapper
-                .unmap_memory(Page::<Size4KB>::new(page as u64))
+                .unmap(alloc, Page::<Size4KB>::new(page as u64))
             {
                 Ok(f) => f.flush(),
                 Err(UnMapMemoryError::MemNotMapped(_)) => (),

@@ -9,23 +9,26 @@ use bit_field::BitField;
 use conquer_once::noblock::OnceCell;
 
 use crate::{
+    cpu_localstorage::CPULocalStorageRW,
     interrupts::{keyboard_int_handler, mouse_int_handler, pci_int_handler, set_irq_handler},
     paging::{
-        get_uefi_active_mapper,
-        page_table_manager::{Mapper, Page, PageLvl4, PageTable, Size4KB},
+        page::{Page, Size4KB},
+        page_allocator::global_allocator,
+        page_table::{Mapper, PageTable, TableLevel4},
         MemoryMappingFlags,
     },
 };
 
 static IOAPIC: OnceCell<IOApic> = OnceCell::uninit();
 
-pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<PageLvl4>) {
+pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<TableLevel4>) {
     let (_, _, io_apics, apic_ints) = madt.find_ioapic();
 
     for apic in &io_apics {
         debug!("APIC: {:?}", apic);
         mapper
-            .identity_map_memory(
+            .identity_map(
+                global_allocator(),
                 Page::<Size4KB>::new(apic.apic_addr.into()),
                 MemoryMappingFlags::WRITEABLE,
             )
@@ -91,14 +94,16 @@ fn set_redirect_entry(apic_base: u32, processor: u32, irq: u8, vector: u8, enabl
 }
 
 pub fn mask_entry(irq: u8, enable: bool) {
-    let mut mapper = unsafe { get_uefi_active_mapper() };
+    let thread = unsafe { CPULocalStorageRW::get_current_task() };
+    let mut mapper = thread.process().memory.lock();
+    let mapper = unsafe { mapper.page_mapper.get_mapper_mut() };
 
     let apic_base = unsafe { IOAPIC.get_unchecked().apic_addr };
 
     let page = Page::<Size4KB>::new(apic_base as u64);
 
     mapper
-        .identity_map_memory(page, MemoryMappingFlags::WRITEABLE)
+        .identity_map(global_allocator(), page, MemoryMappingFlags::WRITEABLE)
         .unwrap()
         .flush();
     let mut low = read_ioapic_register(apic_base, 0x10 + 2 * irq);
@@ -106,7 +111,7 @@ pub fn mask_entry(irq: u8, enable: bool) {
     low.set_bit(16, !enable);
 
     write_ioapic_register(apic_base, 0x10 + 2 * irq, low);
-    mapper.unmap_memory(page).unwrap().flush();
+    mapper.unmap(global_allocator(), page).unwrap().flush();
 }
 
 fn write_ioapic_register(apic_base: u32, offset: u8, val: u32) {

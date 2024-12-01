@@ -6,9 +6,6 @@
 extern crate alloc;
 
 #[macro_use]
-extern crate kernel;
-
-#[macro_use]
 extern crate log;
 
 use core::ffi::c_void;
@@ -18,7 +15,7 @@ use bootloader::{entry_point, BootInfo};
 use kernel::acpi::FioxaAcpiHandler;
 use kernel::boot_aps::boot_aps;
 use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER, TERMINAL_ELF};
-use kernel::cpu_localstorage::{init_bsp_task, CPULocalStorageRW};
+use kernel::cpu_localstorage::{init_bsp_localstorage, CPULocalStorageRW};
 use kernel::elf::load_elf;
 use kernel::fs::{self, FSDRIVES};
 use kernel::interrupts::{self, check_interrupts};
@@ -28,24 +25,23 @@ use kernel::lapic::{enable_localapic, map_lapic};
 use kernel::logging::KERNEL_LOGGER;
 use kernel::memory::MemoryMapIter;
 use kernel::net::ethernet::userspace_networking_main;
-use kernel::paging::offset_map::{create_kernel_map, create_offset_map};
-use kernel::paging::page_mapper::PageMapping;
-use kernel::paging::page_table_manager::{ensure_ident_map_curr_process, Mapper, Page, Size4KB};
+use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
+use kernel::paging::page::{Page, Size4KB};
+use kernel::paging::page_allocator::global_allocator;
+use kernel::paging::page_table::Mapper;
 use kernel::paging::{
-    get_uefi_active_mapper, set_mem_offset, virt_addr_offset, MemoryLoc, MemoryMappingFlags,
+    ensure_ident_map_curr_process, set_mem_offset, virt_addr_offset, MemoryLoc, MemoryMappingFlags,
+    KERNEL_DATA_MAP, KERNEL_LVL4, OFFSET_MAP,
 };
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::Process;
-use kernel::scheduling::taskmanager::{
-    core_start_multitasking, exit_task, push_task_queue, PROCESSES,
-};
+use kernel::scheduling::taskmanager::{core_start_multitasking, push_task_queue, PROCESSES};
 use kernel::scheduling::with_held_interrupts;
 use kernel::screen::gop;
 use kernel::screen::psf1;
 use kernel::syscall::syscall_kernel_handler;
 use kernel::terminal::Writer;
 use kernel::time::init_time;
-use kernel::time::pit::start_switching_tasks;
 use kernel::uefi::get_config_table;
 use kernel::{elf, gdt, paging, BOOT_INFO};
 
@@ -59,10 +55,10 @@ use kernel_userspace::socket::{socket_connect, SocketListenHandle, SocketRecieve
 use kernel_userspace::syscall::{exit, set_syscall_fn, spawn_process, spawn_thread};
 
 // #[no_mangle]
-entry_point!(main_entry);
+entry_point!(main_stage1);
 
-pub fn main_entry(info: *const BootInfo) -> ! {
-    let mmap = unsafe {
+pub fn main_stage1(info: *const BootInfo) -> ! {
+    unsafe {
         x86_64::instructions::interrupts::disable();
 
         // init gdt & idt
@@ -71,7 +67,6 @@ pub fn main_entry(info: *const BootInfo) -> ! {
 
         set_syscall_fn(syscall_kernel_handler as u64);
 
-        BOOT_INFO = info;
         let boot_info = info.read();
         // get memory map
         let mmap = MemoryMapIter::new(
@@ -83,76 +78,31 @@ pub fn main_entry(info: *const BootInfo) -> ! {
         // Initialize page allocator
         paging::page_allocator::init(mmap.clone());
 
-        // Initalize GOP stdout
-        let font = psf1::load_psf1_font(DEFAULT_FONT).expect("cannot load psf1 font");
-        gop::WRITER.init_once(|| Writer::new(boot_info.gop, font).into());
-        // Test screen colours
-        with_held_interrupts(|| {
-            gop::WRITER.get().unwrap().lock().reset_screen(0xFF_00_00);
-            gop::WRITER.get().unwrap().lock().reset_screen(0x00_FF_00);
-            gop::WRITER.get().unwrap().lock().reset_screen(0x00_00_FF);
-            gop::WRITER.get().unwrap().lock().reset_screen(0xFF_FF_FF);
-            gop::WRITER.get().unwrap().lock().reset_screen(0x00_00_00);
-        });
-        mmap
-    };
+        let alloc = global_allocator();
 
-    log::set_logger(&KERNEL_LOGGER).unwrap();
-    log::set_max_level(log::LevelFilter::Debug);
+        // Initialize global page maps
+        create_offset_map(alloc, &mut OFFSET_MAP.lock(), mmap);
+        create_kernel_map(alloc, &mut KERNEL_DATA_MAP.lock(), &boot_info);
 
-    early_println!("Welcome to Fioxa...");
+        // Initialize scheduler / global table
+        let cr3 = {
+            let mut table = KERNEL_LVL4.lock();
+            map_gop(global_allocator(), &mut table, &boot_info.gop);
 
-    // remap and jump kernel to correct location
-    unsafe {
-        let map_addr = {
-            let init_process = Process::new(
-                kernel::scheduling::process::ProcessPrivilige::HIGHKERNEL,
-                &[],
-            );
-            assert!(init_process.pid == ProcessID(0));
+            table
+                .identity_map(
+                    alloc,
+                    Page::<Size4KB>::new(0xfee00000),
+                    MemoryMappingFlags::WRITEABLE,
+                )
+                .unwrap()
+                .ignore();
 
-            PROCESSES
-                .lock()
-                .insert(init_process.pid, init_process.clone());
-
-            push_task_queue(init_process.new_thread(main as *const u64, 0).unwrap());
-
-            let mut mem = init_process.memory.lock();
-
-            // we need to set 0x8000 for the trampoline
-            mem.page_mapper.insert_mapping_at_set(
-                0x8000,
-                PageMapping::new_mmap(0x8000, 0x1000),
-                MemoryMappingFlags::WRITEABLE,
-            );
-
-            let map = mem.page_mapper.get_mapper_mut();
-
-            create_offset_map(
-                &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::PhysMapOffset as u64)),
-                mmap,
-            );
-            // get boot_info
-            let boot_info = &*info;
-
-            create_kernel_map(
-                &mut map.get_next_table(Page::<Size4KB>::new(MemoryLoc::KernelStart as u64)),
-                boot_info,
-            );
-
-            debug!("Remapping to higher half");
-            map.shift_table_to_offset();
-            set_mem_offset(MemoryLoc::PhysMapOffset as u64);
-            BOOT_INFO = virt_addr_offset(info);
-            map.into_page().get_address()
+            table.get_physical_address()
         };
 
-        unsafe extern "C" fn jump_to_main() {
-            // this needs to be called after the jump into higher half
-            init_bsp_task();
-            start_switching_tasks();
-            core_start_multitasking();
-        }
+        set_mem_offset(MemoryLoc::PhysMapOffset as u64);
+        BOOT_INFO = virt_addr_offset(info);
 
         // load and jump stack
         core::arch::asm!(
@@ -161,14 +111,46 @@ pub fn main_entry(info: *const BootInfo) -> ! {
             "mov cr3, {}",
             "jmp {}",
             in(reg) MemoryLoc::PhysMapOffset as u64,
-            in(reg) map_addr,
-            in(reg) jump_to_main,
+            in(reg) cr3,
+            in(reg) main_stage2,
             options(noreturn)
         );
-    }
+    };
 }
 
-extern "C" fn main() {
+/// Interrupts should be disabled before calling
+unsafe extern "C" fn main_stage2() {
+    let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
+
+    // Initalize GOP stdout
+    let font = psf1::load_psf1_font(DEFAULT_FONT).expect("cannot load psf1 font");
+    gop::WRITER.init_once(|| Writer::new(boot_info.gop, font).into());
+    // Test screen colours
+    gop::WRITER.get().unwrap().lock().reset_screen(0xFF_00_00);
+    gop::WRITER.get().unwrap().lock().reset_screen(0x00_FF_00);
+    gop::WRITER.get().unwrap().lock().reset_screen(0x00_00_FF);
+    gop::WRITER.get().unwrap().lock().reset_screen(0xFF_FF_FF);
+    gop::WRITER.get().unwrap().lock().reset_screen(0x00_00_00);
+
+    log::set_logger(&KERNEL_LOGGER).unwrap();
+    log::set_max_level(log::LevelFilter::Debug);
+    info!("Welcome to Fioxa...");
+
+    init_bsp_localstorage();
+
+    let init_process = Process::new(kernel::scheduling::process::ProcessPrivilige::KERNEL, &[]);
+    assert!(init_process.pid == ProcessID(0));
+
+    PROCESSES
+        .lock()
+        .insert(init_process.pid, init_process.clone());
+
+    push_task_queue(init_process.new_thread(init as *const u64, 0).unwrap());
+
+    core_start_multitasking();
+}
+
+extern "C" fn init() {
     with_held_interrupts(|| {
         // read boot_info
         let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
@@ -176,13 +158,10 @@ extern "C" fn main() {
         let init_process = unsafe { CPULocalStorageRW::get_current_task().process() };
 
         unsafe {
-            get_uefi_active_mapper()
-                .identity_map_memory(
-                    Page::<Size4KB>::containing(boot_info.uefi_runtime_table),
-                    MemoryMappingFlags::empty(),
-                )
-                .unwrap()
-                .ignore();
+            ensure_ident_map_curr_process(
+                Page::<Size4KB>::containing(boot_info.uefi_runtime_table),
+                MemoryMappingFlags::empty(),
+            );
         }
         info!("Getting UEFI runtime table");
         let runtime_table = unsafe {
@@ -227,15 +206,6 @@ extern "C" fn main() {
 
         unsafe { boot_aps(&madt) };
     });
-    spawn_process(after_boot, &[], true);
-    spawn_process(check_interrupts, &[], true);
-
-    info!("Start multi");
-    exit_task();
-}
-
-fn after_boot() {
-    info!("After boot");
 
     // TODO: Reclaim memory, but first need to drop any references to the memory region
     // unsafe {
@@ -243,6 +213,61 @@ fn after_boot() {
     //     println!("RECLAIMED MEMORY: {}Mb", reclaim * 0x1000 / 1024 / 1024);
     // }
 
+    spawn_process(check_interrupts, &[], true);
+    spawn_process(elf::elf_new_process_loader, &[], true);
+    spawn_process(gop::gop_entry, &[], true);
+    spawn_process(userspace_networking_main, &[], true);
+    spawn_process(testing_proc, &[], true);
+    spawn_process(after_boot_pci, &[], true);
+
+    // TODO: Use IO permissions instead of kernel
+    load_elf(
+        PS2_DRIVER,
+        &[],
+        &[KernelReference::from_id(backoff_sleep(|| {
+            socket_connect("STDOUT")
+        }))],
+        true,
+    )
+    .unwrap();
+    load_elf(
+        TERMINAL_ELF,
+        &[],
+        &[KernelReference::from_id(backoff_sleep(|| {
+            socket_connect("STDOUT")
+        }))],
+        false,
+    )
+    .unwrap();
+
+    exit();
+}
+
+/// For testing, accepts all inputs
+fn testing_proc() {
+    let sid = SocketListenHandle::listen("ACCEPTER").unwrap();
+
+    loop {
+        let handle = sid.blocking_accept();
+        spawn_thread(move || {
+            for i in 0usize.. {
+                match handle.blocking_recv() {
+                    Ok(_) => (),
+                    Err(SocketRecieveResult::EOF) => {
+                        info!("ACCEPTED {i}");
+                        return;
+                    }
+                    Err(e) => panic!("{e:?}"),
+                };
+                if i % 10000 == 0 {
+                    info!("ACCEPTER: {i}")
+                }
+            }
+        });
+    }
+}
+
+fn after_boot_pci() {
     let boot_info = unsafe { &*BOOT_INFO };
 
     unsafe {
@@ -273,75 +298,12 @@ fn after_boot() {
         acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, acpi_tables.address as usize).unwrap()
     };
 
-    spawn_process(elf::elf_new_process_loader, &[], true);
-
-    spawn_process(gop::gop_entry, &[], true);
-    spawn_thread(fs::file_handler);
-
     info!("Enumnerating PCI...");
 
     enumerate_pci(acpi_tables);
 
-    spawn_process(userspace_networking_main, &[], true);
-
-    spawn_thread(|| FSDRIVES.lock().identify());
-
-    // TODO: Use IO permissions instead of kernel
-    load_elf(
-        PS2_DRIVER,
-        &[],
-        &[KernelReference::from_id(backoff_sleep(|| {
-            socket_connect("STDOUT")
-        }))],
-        true,
-    )
-    .unwrap();
-    load_elf(
-        TERMINAL_ELF,
-        &[],
-        &[KernelReference::from_id(backoff_sleep(|| {
-            socket_connect("STDOUT")
-        }))],
-        false,
-    )
-    .unwrap();
-
-    // For testing, accepts all inputs
-    spawn_process(
-        || {
-            let sid = SocketListenHandle::listen("ACCEPTER").unwrap();
-
-            loop {
-                let handle = sid.blocking_accept();
-                spawn_thread(move || {
-                    for i in 0usize.. {
-                        match handle.blocking_recv() {
-                            Ok(_) => (),
-                            Err(SocketRecieveResult::EOF) => {
-                                info!("ACCEPTED {i}");
-                                return;
-                            }
-                            Err(e) => panic!("{e:?}"),
-                        };
-                        if i % 10000 == 0 {
-                            info!("ACCEPTER: {i}")
-                        }
-                    }
-                });
-            }
-        },
-        &[],
-        true,
-    );
-
-    // spawn_thread(|| {
-    //     for i in 0.. {
-    //         request_page();
-    //         if i % 10000 == 0 {
-    //             println!("PAGE: {i} {}mb", i * 0x1000 / 1024 / 1024)
-    //         }
-    //     }
-    // });
+    spawn_thread(fs::file_handler);
+    FSDRIVES.lock().identify();
 
     exit();
 }

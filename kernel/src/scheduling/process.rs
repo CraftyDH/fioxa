@@ -30,9 +30,9 @@ use crate::{
     message::KMessage,
     mutex::Spinlock,
     paging::{
+        page_allocator::global_allocator,
         page_mapper::{PageMapperManager, PageMapping},
-        virt_addr_for_phys, AllocatedPage, GlobalPageAllocator, MemoryLoc, MemoryMappingFlags,
-        KERNEL_DATA_MAP, KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
+        virt_addr_for_phys, AllocatedPage, GlobalPageAllocator, MemoryMappingFlags,
     },
     socket::{KSocketHandle, KSocketListener},
     time::HPET,
@@ -46,7 +46,7 @@ use super::{
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 pub const KSTACK_ADDR: u64 = 0xffff_800_000_000_000;
 
-pub const STACK_SIZE: u64 = 0x10000;
+pub const STACK_SIZE: u64 = 0x20000;
 pub const KSTACK_SIZE: u64 = 0x10000;
 
 pub const THREAD_TEMP_COUNT: usize = 8;
@@ -58,8 +58,6 @@ fn generate_next_process_id() -> ProcessID {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ProcessPrivilige {
-    // Always should have pages mapped in
-    HIGHKERNEL,
     KERNEL,
     USER,
 }
@@ -67,14 +65,14 @@ pub enum ProcessPrivilige {
 impl ProcessPrivilige {
     pub fn get_code_segment(&self) -> SegmentSelector {
         match self {
-            ProcessPrivilige::HIGHKERNEL | ProcessPrivilige::KERNEL => gdt::KERNEL_CODE_SELECTOR,
+            ProcessPrivilige::KERNEL => gdt::KERNEL_CODE_SELECTOR,
             ProcessPrivilige::USER => gdt::USER_CODE_SELECTOR,
         }
     }
 
     pub fn get_data_segment(&self) -> SegmentSelector {
         match self {
-            ProcessPrivilige::HIGHKERNEL | ProcessPrivilige::KERNEL => gdt::KERNEL_DATA_SELECTOR,
+            ProcessPrivilige::KERNEL => gdt::KERNEL_DATA_SELECTOR,
             ProcessPrivilige::USER => gdt::USER_DATA_SELECTOR,
         }
     }
@@ -101,7 +99,7 @@ pub struct ProcessThreads {
 }
 
 pub struct ProcessMemory {
-    pub page_mapper: PageMapperManager<'static>,
+    pub page_mapper: PageMapperManager,
     pub owned32_pages: Vec<AllocatedPage<GlobalPageAllocator>>,
 }
 
@@ -125,44 +123,33 @@ impl ProcessReferences {
 
 impl Process {
     pub fn new(privilege: ProcessPrivilige, args: &[u8]) -> Arc<Self> {
-        let mut page_mapper = if privilege == ProcessPrivilige::HIGHKERNEL {
-            unsafe { PageMapperManager::new_32() }
-        } else {
-            PageMapperManager::new()
-        };
-        unsafe {
-            let m = page_mapper.get_mapper_mut();
-            m.set_next_table(MemoryLoc::PhysMapOffset as u64, &mut *OFFSET_MAP.lock());
-            m.set_next_table(MemoryLoc::KernelStart as u64, &mut *KERNEL_DATA_MAP.lock());
-            m.set_next_table(MemoryLoc::KernelHeap as u64, &mut *KERNEL_HEAP_MAP.lock());
-            m.set_next_table(MemoryLoc::PerCpuMem as u64, &mut *PER_CPU_MAP.lock());
+        let mut page_mapper = PageMapperManager::new(global_allocator());
 
-            static APIC_LOCATION: Lazy<Arc<PageMapping>> =
-                Lazy::new(|| unsafe { PageMapping::new_mmap(0xfee00000, 0x1000) });
+        static APIC_LOCATION: Lazy<Arc<PageMapping>> =
+            Lazy::new(|| unsafe { PageMapping::new_mmap(0xfee00000, 0x1000) });
 
-            static HPET_LOCATION: Lazy<(usize, Arc<PageMapping>)> = Lazy::new(|| unsafe {
-                let val = HPET.get().unwrap().info.base_address;
-                (val, PageMapping::new_mmap(val, 0x1000))
-            });
+        static HPET_LOCATION: Lazy<(usize, Arc<PageMapping>)> = Lazy::new(|| unsafe {
+            let val = HPET.get().unwrap().info.base_address;
+            (val, PageMapping::new_mmap(val, 0x1000))
+        });
 
+        page_mapper
+            .insert_mapping_at_set(
+                0xfee00000,
+                APIC_LOCATION.clone(),
+                MemoryMappingFlags::WRITEABLE,
+            )
+            .unwrap();
+
+        // Slightly scary, but only init will not and it should map it itself
+        if HPET.is_initialized() {
             page_mapper
                 .insert_mapping_at_set(
-                    0xfee00000,
-                    APIC_LOCATION.clone(),
+                    HPET_LOCATION.0,
+                    HPET_LOCATION.1.clone(),
                     MemoryMappingFlags::WRITEABLE,
                 )
                 .unwrap();
-
-            // the boot process will map it itself
-            if privilege != ProcessPrivilige::HIGHKERNEL {
-                page_mapper
-                    .insert_mapping_at_set(
-                        HPET_LOCATION.0,
-                        HPET_LOCATION.1.clone(),
-                        MemoryMappingFlags::WRITEABLE,
-                    )
-                    .unwrap();
-            }
         }
 
         Arc::new_cyclic(|this| Self {
@@ -170,7 +157,7 @@ impl Process {
             pid: generate_next_process_id(),
             privilege,
             args: args.to_vec(),
-            cr3_page: unsafe { page_mapper.get_mapper_mut().into_page().get_address() },
+            cr3_page: unsafe { page_mapper.get_mapper_mut().get_physical_address() as u64 },
             memory: Spinlock::new(ProcessMemory {
                 page_mapper,
                 owned32_pages: Default::default(),
@@ -193,9 +180,7 @@ impl Process {
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0;
 
         let stack = match self.privilege {
-            ProcessPrivilige::HIGHKERNEL | ProcessPrivilige::KERNEL => {
-                PageMapping::new_lazy_filled(STACK_SIZE as usize)
-            }
+            ProcessPrivilige::KERNEL => PageMapping::new_lazy_filled(STACK_SIZE as usize),
             _ => PageMapping::new_lazy(STACK_SIZE as usize),
         };
 

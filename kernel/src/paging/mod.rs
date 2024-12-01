@@ -1,42 +1,34 @@
 use core::{mem::ManuallyDrop, ops::Deref, ptr};
 
 use conquer_once::spin::Lazy;
+use page::{PageSize, Size4KB};
 use page_allocator::global_allocator;
-use page_table_manager::Size4KB;
-use x86_64::registers::control::Cr3;
+use page_table::{MapMemoryError, Mapper, PageTable, TableLevel3, TableLevel4};
 
-use crate::mutex::Spinlock;
+use crate::{cpu_localstorage::CPULocalStorageRW, mutex::Spinlock};
 
-use self::page_table_manager::{Page, PageLvl3, PageLvl4, PageTable};
+use self::page::Page;
 
 pub mod offset_map;
+pub mod page;
 pub mod page_allocator;
 pub mod page_directory;
 pub mod page_mapper;
-pub mod page_table_manager;
+pub mod page_table;
 
-pub const fn gen_lvl3_map() -> Lazy<Spinlock<PageTable<'static, PageLvl3>>> {
-    Lazy::new(|| {
-        Spinlock::new(unsafe {
-            let page = global_allocator().allocate_page().unwrap();
-            PageTable::from_page(page)
-        })
-    })
-}
+/// KERNEL map for context 0 / scheduler
+pub static KERNEL_LVL4: Lazy<Spinlock<PageTable<TableLevel4>>> =
+    Lazy::new(|| Spinlock::new(PageTable::new_with_global(global_allocator())));
 
-pub static OFFSET_MAP: Lazy<Spinlock<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
-pub static KERNEL_DATA_MAP: Lazy<Spinlock<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
+pub static OFFSET_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
+    Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
+pub static KERNEL_DATA_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
+    Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
 
-pub static KERNEL_HEAP_MAP: Lazy<Spinlock<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
-pub static PER_CPU_MAP: Lazy<Spinlock<PageTable<'static, PageLvl3>>> = gen_lvl3_map();
-
-pub unsafe fn get_uefi_active_mapper() -> PageTable<'static, PageLvl4> {
-    let (lv4_table, _) = Cr3::read();
-
-    let phys = lv4_table.start_address();
-
-    PageTable::from_page(Page::new(phys.as_u64()))
-}
+pub static KERNEL_HEAP_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
+    Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
+pub static PER_CPU_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
+    Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
 
 pub type MemoryLoc = MemoryLoc64bit48bits;
 
@@ -154,5 +146,23 @@ impl PageAllocator for GlobalPageAllocator {
 
     unsafe fn free_pages(&self, page: Page<Size4KB>, count: usize) {
         global_allocator().free_pages(page, count);
+    }
+}
+
+pub unsafe fn get_task_mapper<T>(f: impl FnOnce(&mut PageTable<TableLevel4>) -> T) -> T {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let mut mem = thread.process().memory.lock();
+    f(mem.page_mapper.get_mapper_mut())
+}
+
+pub unsafe fn ensure_ident_map_curr_process<S: PageSize>(page: Page<S>, flags: MemoryMappingFlags)
+where
+    PageTable<TableLevel4>: Mapper<S>,
+{
+    match get_task_mapper(|m| m.identity_map(global_allocator(), page, flags)) {
+        Ok(f) => f.flush(),
+        Err(MapMemoryError::MemAlreadyMapped { to, current, .. }) if to == current => (),
+        Err(e) => panic!("Faield to ident map: {e}"),
     }
 }

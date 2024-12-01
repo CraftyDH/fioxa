@@ -1,4 +1,7 @@
-use core::mem::size_of;
+use core::{
+    mem::size_of,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use alloc::boxed::Box;
 use x86_64::instructions::interrupts;
@@ -6,13 +9,22 @@ use x86_64::instructions::interrupts;
 use crate::{
     gdt::CPULocalGDT,
     paging::{
-        get_uefi_active_mapper,
-        page_allocator::global_allocator,
-        page_table_manager::{Mapper, Page},
-        virt_addr_for_phys, MemoryLoc, MemoryMappingFlags, PageAllocator,
+        page::Page, page_allocator::global_allocator, page_table::Mapper, virt_addr_for_phys,
+        MemoryLoc, MemoryMappingFlags, PageAllocator, PER_CPU_MAP,
     },
     scheduling::process::Thread,
 };
+
+// Do we probe the task manager for a new task?
+pub static LS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+pub fn set_ls_enabled() {
+    LS_ENABLED.store(true, Ordering::Relaxed)
+}
+
+pub fn is_ls_enabled() -> bool {
+    LS_ENABLED.load(Ordering::Relaxed)
+}
 
 #[repr(C, packed)]
 pub struct CPULocalStorage {
@@ -180,12 +192,12 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     // Amount of cpu storage we have
     assert!(gdt_size + 0x1000 <= 0x10_0000);
 
-    let mut map = get_uefi_active_mapper();
-
     let alloc = global_allocator();
     for page in (vaddr_base..vaddr_base + gdt_size + 0xfff).step_by(0x1000) {
         let phys = alloc.allocate_page().unwrap();
-        map.map_memory(Page::new(page), phys, MemoryMappingFlags::WRITEABLE)
+        PER_CPU_MAP
+            .lock()
+            .map(alloc, Page::new(page), phys, MemoryMappingFlags::WRITEABLE)
             .unwrap()
             .flush();
     }
@@ -205,7 +217,7 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     vaddr_base
 }
 
-pub unsafe fn init_bsp_task() {
+pub unsafe fn init_bsp_localstorage() {
     let gs_base = new_cpu(0);
 
     // Load new core GDT
@@ -228,6 +240,8 @@ pub unsafe fn init_bsp_task() {
             ", in(reg) 0, in("edx") gs_upper, in("eax") gs_lower, lateout("edx") _,  lateout("ecx") _
         )
     }
+
+    set_ls_enabled();
 }
 
 pub const CPU_STACK_SIZE_PAGES: usize = 10;

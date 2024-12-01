@@ -7,7 +7,6 @@ use conquer_once::spin::OnceCell;
 use crate::{acpi::FioxaAcpiHandler, mutex::Spinlock, scheduling::process::ThreadHandle};
 
 pub mod hpet;
-pub mod pit;
 
 pub static HPET: OnceCell<hpet::HPET> = OnceCell::uninit();
 

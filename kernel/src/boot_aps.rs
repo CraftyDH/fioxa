@@ -11,7 +11,13 @@ use crate::{
     interrupts::IDT,
     ioapic::Madt,
     lapic::{enable_localapic, LAPIC_ADDR},
-    paging::{page_allocator::frame_alloc_exec, MemoryLoc},
+    paging::{
+        page::{Page, Size4KB},
+        page_allocator::{frame_alloc_exec, global_allocator},
+        page_mapper::PageMapping,
+        page_table::Mapper,
+        MemoryLoc, MemoryMappingFlags, KERNEL_LVL4,
+    },
     scheduling::taskmanager::core_start_multitasking,
     time::spin_sleep_ms,
 };
@@ -28,6 +34,31 @@ pub unsafe fn boot_aps(madt: &Madt) {
 
     let task = CPULocalStorageRW::get_current_task();
 
+    let cr3_addr = {
+        let mut mem = task.process().memory.lock();
+        let mut kernel_mem = KERNEL_LVL4.lock();
+
+        // we need to set 0x8000 for the trampoline
+        mem.page_mapper.insert_mapping_at_set(
+            0x8000,
+            PageMapping::new_mmap(0x8000, 0x1000),
+            MemoryMappingFlags::WRITEABLE,
+        );
+        kernel_mem
+            .identity_map(
+                global_allocator(),
+                Page::<Size4KB>::new(0x8000),
+                MemoryMappingFlags::WRITEABLE,
+            )
+            .unwrap()
+            .ignore();
+
+        kernel_mem
+            .get_physical_address()
+            .try_into()
+            .expect("KERNEL MAP SHOULD BE 32bits for AP BOOT")
+    };
+
     let bspdone;
     let aprunning;
     let core_local_storage;
@@ -40,16 +71,7 @@ pub unsafe fn boot_aps(madt: &Madt) {
         let end = 0x8000 + AP_TRAMPOLINE.len();
         bspdone = (end) as *mut u32;
         aprunning = &mut *((end + 4) as *mut AtomicU32);
-        *((end + 8) as *mut u32) = task
-            .process()
-            .memory
-            .lock()
-            .page_mapper
-            .get_mapper_mut()
-            .into_page()
-            .get_address()
-            .try_into()
-            .expect("KERNEL MAP SHOULD BE 32bits for AP BOOT");
+        *((end + 8) as *mut u32) = cr3_addr;
         *((end + 16) as *mut u64) = ap_startup_f as u64;
         core_local_storage = (end + 24) as *mut u64;
     }

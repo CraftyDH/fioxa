@@ -1,7 +1,7 @@
 use bootloader::uefi::table::boot::MemoryDescriptor;
 
 use crate::paging::{
-    page_table_manager::{Page, Size4KB},
+    page::{Page, Size4KB},
     virt_addr_offset,
 };
 

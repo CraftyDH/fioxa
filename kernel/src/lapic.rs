@@ -5,7 +5,9 @@ use x86_64::structures::idt::InterruptStackFrame;
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     paging::{
-        page_table_manager::{MapMemoryError, Mapper, Page, PageLvl4, PageTable, Size4KB},
+        page::{Page, Size4KB},
+        page_allocator::global_allocator,
+        page_table::{MapMemoryError, Mapper, PageTable, TableLevel4},
         MemoryMappingFlags,
     },
     scheduling::{taskmanager::yield_task, with_held_interrupts},
@@ -16,8 +18,9 @@ use crate::{
 /// Do not use before this has been initialized in enable_apic
 pub const LAPIC_ADDR: u64 = 0xfee00000;
 
-pub fn map_lapic(mapper: &mut PageTable<PageLvl4>) {
-    match mapper.identity_map_memory(
+pub fn map_lapic(mapper: &mut PageTable<TableLevel4>) {
+    match mapper.identity_map(
+        global_allocator(),
         Page::<Size4KB>::new(0xfee00000),
         MemoryMappingFlags::WRITEABLE,
     ) {

@@ -25,7 +25,9 @@ use crate::{
     message::KMessage,
     mutex::SpinlockGuard,
     paging::{
-        page_allocator::frame_alloc_exec, page_mapper::PageMapping, page_table_manager::Mapper,
+        page_allocator::{frame_alloc_exec, global_allocator},
+        page_mapper::PageMapping,
+        page_table::Mapper,
         AllocatedPage, GlobalPageAllocator, MemoryMappingFlags,
     },
     scheduling::{
@@ -328,11 +330,12 @@ unsafe fn mmap_page32_handler() -> Result<usize, SyscallError> {
 
     let mut memory = task.process().memory.lock();
     unsafe {
-        let map = kunwrap!(memory
+        memory
             .page_mapper
             .get_mapper_mut()
-            .identity_map_memory(page, MemoryMappingFlags::all()));
-        map.flush();
+            .identity_map(global_allocator(), page, MemoryMappingFlags::all())
+            .unwrap()
+            .flush();
     }
     memory
         .owned32_pages

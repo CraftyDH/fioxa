@@ -15,8 +15,9 @@ use crate::{
         DiskDevice,
     },
     paging::{
-        get_uefi_active_mapper,
-        page_table_manager::{Mapper, Page, Size4KB},
+        get_task_mapper,
+        page::{Page, Size4KB},
+        page_table::Mapper,
     },
 };
 
@@ -46,45 +47,47 @@ pub struct Port {
 
 impl Port {
     pub fn new(port: &'static mut HBAPort) -> Self {
-        Self::stop_cmd(port);
+        unsafe {
+            Self::stop_cmd(port);
 
-        let mut map = unsafe { get_uefi_active_mapper() };
-        let received_fis: Pin<Box<ReceivedFis>> =
-            unsafe { Box::into_pin(Box::new_uninit().assume_init()) };
-        let rfis_addr = map
-            .get_phys_addr_from_vaddr(&*received_fis.as_ref() as *const ReceivedFis as u64)
+            let received_fis: Pin<Box<ReceivedFis>> =
+                Box::into_pin(Box::new_uninit().assume_init());
+            let rfis_addr = get_task_mapper(|map| {
+                map.get_phys_addr_from_vaddr(&*received_fis.as_ref() as *const ReceivedFis as u64)
+            })
             .unwrap();
 
-        let mut cmd_list: Pin<Box<[HBACommandHeader; 32]>> =
-            unsafe { Box::into_pin(Box::new_uninit().assume_init()) };
-        let cmd_list_addr = map
-            .get_phys_addr_from_vaddr(cmd_list.as_ptr() as u64)
-            .unwrap();
+            let mut cmd_list: Pin<Box<[HBACommandHeader; 32]>> =
+                Box::into_pin(Box::new_uninit().assume_init());
+            let cmd_list_addr =
+                get_task_mapper(|map| map.get_phys_addr_from_vaddr(cmd_list.as_ptr() as u64))
+                    .unwrap();
 
-        port.command_list_base.write(cmd_list_addr);
-        port.fis_base_address.write(rfis_addr);
+            port.command_list_base.write(cmd_list_addr);
+            port.fis_base_address.write(rfis_addr);
 
-        let cmd_tables: Pin<Box<[HBACommandTable<PRDT_LENGTH>; 32]>> =
-            unsafe { Box::into_pin(Box::new_uninit().assume_init()) };
-        let cmd_tables_addr: u64 = map
-            .get_phys_addr_from_vaddr(cmd_tables.as_ptr() as u64)
-            .unwrap();
+            let cmd_tables: Pin<Box<[HBACommandTable<PRDT_LENGTH>; 32]>> =
+                Box::into_pin(Box::new_uninit().assume_init());
+            let cmd_tables_addr: u64 =
+                get_task_mapper(|map| map.get_phys_addr_from_vaddr(cmd_tables.as_ptr() as u64))
+                    .unwrap();
 
-        for i in 0..32 {
-            cmd_list[i].set_prdt_length(0);
-            cmd_list[i].set_command_table_base_address(
-                cmd_tables_addr + i as u64 * size_of::<HBACommandTable<PRDT_LENGTH>>() as u64,
-            );
-        }
+            for i in 0..32 {
+                cmd_list[i].set_prdt_length(0);
+                cmd_list[i].set_command_table_base_address(
+                    cmd_tables_addr + i as u64 * size_of::<HBACommandTable<PRDT_LENGTH>>() as u64,
+                );
+            }
 
-        // port.sata_active.write(u32::MAX);
+            // port.sata_active.write(u32::MAX);
 
-        Self::start_cmd(port);
-        Self {
-            hba_port: port,
-            received_fis,
-            cmd_list,
-            cmd_tables,
+            Self::start_cmd(port);
+            Self {
+                hba_port: port,
+                received_fis,
+                cmd_list,
+                cmd_tables,
+            }
         }
     }
 
@@ -144,8 +147,6 @@ impl DiskDevice for Port {
 
         let cmd_table = &mut self.cmd_tables[slot];
 
-        let mut mapper = unsafe { get_uefi_active_mapper() };
-
         let mut prdt_length = 0;
 
         let mut ptr_addr = buffer.as_ptr() as u64;
@@ -157,9 +158,12 @@ impl DiskDevice for Port {
             // Align ptr on prev boundary
             ptr_addr &= !0xFFF;
 
-            let phys_addr = mapper
-                .get_phys_addr(Page::<Size4KB>::new(ptr_addr))
-                .unwrap();
+            let phys_addr = unsafe {
+                get_task_mapper(|m| m.address_of(Page::<Size4KB>::new(ptr_addr)))
+                    .unwrap()
+                    .get_address()
+            };
+
             // Set the offset back on, since page offsets arn't supper pain yet (Only 4kb pages)
             cmd_table.prdt_entry[0].set_data_base_address(phys_addr + left_align_size as u64);
 
@@ -172,9 +176,11 @@ impl DiskDevice for Port {
         }
 
         while bytes_to_read > 0x1000 {
-            let phys_addr = mapper
-                .get_phys_addr(Page::<Size4KB>::new(ptr_addr))
-                .unwrap();
+            let phys_addr = unsafe {
+                get_task_mapper(|m| m.address_of(Page::<Size4KB>::new(ptr_addr)))
+                    .unwrap()
+                    .get_address()
+            };
             cmd_table.prdt_entry[prdt_length].set_data_base_address(phys_addr);
             // Read read of bytes
             cmd_table.prdt_entry[prdt_length].set_byte_count(0xFFF);
@@ -184,9 +190,11 @@ impl DiskDevice for Port {
         }
 
         if bytes_to_read > 0 {
-            let phys_addr = mapper
-                .get_phys_addr(Page::<Size4KB>::new(ptr_addr))
-                .unwrap();
+            let phys_addr = unsafe {
+                get_task_mapper(|m| m.address_of(Page::<Size4KB>::new(ptr_addr)))
+                    .unwrap()
+                    .get_address()
+            };
             cmd_table.prdt_entry[prdt_length].set_data_base_address(phys_addr);
             // Read read of bytes
             cmd_table.prdt_entry[prdt_length].set_byte_count(bytes_to_read - 1);
@@ -264,11 +272,9 @@ impl DiskDevice for Port {
         let identify: Box<MaybeUninit<ATADiskIdentify>> = Box::new_uninit();
 
         // TODO: Will probably break if buffer ever spans two non continuous pages
-        let mut mapper = unsafe { get_uefi_active_mapper() };
-
-        let phys_addr = mapper
-            .get_phys_addr_from_vaddr(identify.as_ptr() as u64)
-            .unwrap();
+        let phys_addr = unsafe {
+            get_task_mapper(|m| m.get_phys_addr_from_vaddr(identify.as_ptr() as u64)).unwrap()
+        };
 
         cmd_table.prdt_entry[0].set_data_base_address(phys_addr);
         cmd_table.prdt_entry[0].set_byte_count(size_of::<ATADiskIdentify>() as u32 - 1);
