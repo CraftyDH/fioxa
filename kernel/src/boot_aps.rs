@@ -53,10 +53,11 @@ pub unsafe fn boot_aps(madt: &Madt) {
             .unwrap()
             .ignore();
 
-        kernel_mem
-            .get_physical_address()
-            .try_into()
-            .expect("KERNEL MAP SHOULD BE 32bits for AP BOOT")
+        let Ok(addr) = kernel_mem.get_physical_address().try_into() else {
+            error!("KERNEL MAP SHOULD BE 32bits for AP BOOT");
+            return;
+        };
+        addr
     };
 
     let bspdone;

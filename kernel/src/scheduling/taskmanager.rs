@@ -81,36 +81,61 @@ unsafe extern "C" fn scheduler() {
     loop {
         let t = TASK_QUEUE.lock().pop();
         match t {
-            Some(task) => without_interrupts(|| {
-                if !task.in_syscall
-                    && task
-                        .handle()
-                        .kill_signal
-                        .load(core::sync::atomic::Ordering::Relaxed)
-                {
-                    exit_thread_inner(task);
-                    return;
-                }
-                let (task, res) = sched_run_tick(task);
+            Some(task) => {
+                without_interrupts(|| {
+                    if !task.in_syscall
+                        && task
+                            .handle()
+                            .kill_signal
+                            .load(core::sync::atomic::Ordering::Relaxed)
+                    {
+                        exit_thread_inner(task);
+                        return;
+                    }
+                    let (task, res) = sched_run_tick(task);
 
-                if res == ACTION_YIELD {
-                    TASK_QUEUE.lock().push(task);
-                } else if res == ACTION_EXIT_TASK {
-                    exit_thread_inner(task);
-                } else if res == ACTION_BLOCKING {
-                    let handle = task.handle().clone();
-                    *handle.thread.data_ptr() = Some(task);
-                    handle.thread.force_unlock();
-                } else {
-                    panic!("should be a valid action")
-                }
+                    // If the state is bad attempt to continue
+                    let after = || {
+                        let depth = CPULocalStorageRW::hold_interrupts_depth();
+                        if res == ACTION_YIELD {
+                            if depth > 0 {
+                                error!("Thread shouldn't be holding interrupts when yielding");
+                                return Err(task);
+                            }
+                            TASK_QUEUE.lock().push(task);
+                        } else if res == ACTION_EXIT_TASK {
+                            if depth > 0 {
+                                error!("Thread shouldn't be holding interrupts when exiting (was there a panic?)");
+                                return Err(task);
+                            }
 
-                assert_eq!(
-                    CPULocalStorageRW::hold_interrupts_depth(),
-                    0,
-                    "Thread should not be holding interrupts while entering the scheduler."
-                );
-            }),
+                            exit_thread_inner(task);
+                        } else if res == ACTION_BLOCKING {
+                            let handle = task.handle().clone();
+                            if depth == 0 {
+                                error!("Thread should be holding it's handle when blocking");
+                                return Err(task);
+                            } else if depth == 1 {
+                                *handle.thread.data_ptr() = Some(task);
+                                handle.thread.force_unlock();
+                            } else {
+                                error!("Thread should not be holding more than it's handle when blocking");
+                                handle.thread.force_unlock();
+                                return Err(task);
+                            }
+                        } else {
+                            error!("should be a valid action");
+                            return Err(task);
+                        }
+                        Ok(())
+                    };
+
+                    if let Err(task) = after() {
+                        exit_thread_inner(task);
+                        CPULocalStorageRW::set_hold_interrupts_depth(0);
+                    }
+                })
+            }
             None => {
                 // nothing can run so sleep
                 core::arch::asm!("hlt")

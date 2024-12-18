@@ -14,7 +14,6 @@
 use core::fmt::Write;
 
 use bootloader::BootInfo;
-use kernel_userspace::syscall::exit;
 use scheduling::taskmanager::kill_bad_task;
 use screen::gop::WRITER;
 use terminal::Writer;
@@ -79,7 +78,8 @@ pub fn kernel_memory_loc() -> (u64, u64) {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     let context = CPULocalStorageRW::get_context();
-    if context == 0 || CPULocalStorageRW::hold_interrupts_depth() > 0 {
+
+    if context == 0 {
         // lowest context, no chance of recovery
         without_interrupts(|| {
             let mut w = WRITER.get().unwrap().lock();
@@ -93,7 +93,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
                 unsafe { core::arch::asm!("hlt") }
             }
         })
-    } else if context == 1 {
+    } else {
         // see if we can recover
         unsafe {
             let thread = CPULocalStorageRW::get_current_task();
@@ -106,19 +106,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
             );
         }
         kill_bad_task()
-    } else {
-        // it's a kernel thread so exit
-        unsafe {
-            let thread = CPULocalStorageRW::get_current_task();
-
-            error!(
-                "KERNEL THREAD PANIC: Caused by {:?} {:?}\n{}",
-                thread.process().pid,
-                thread.handle().tid(),
-                info
-            );
-        }
-        exit()
     }
 }
 
