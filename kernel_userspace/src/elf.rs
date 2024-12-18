@@ -3,11 +3,12 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    backoff_sleep,
+    channel::{channel_read_rs, channel_write_rs},
     message::MessageHandle,
-    object::{KernelObjectType, KernelReferenceID},
-    process::ProcessHandle,
-    service::{deserialize, make_message},
-    socket::SocketHandle,
+    object::{KernelReference, KernelReferenceID},
+    process::{get_handle, ProcessHandle},
+    service::deserialize,
 };
 
 #[repr(C, packed)]
@@ -94,32 +95,25 @@ pub struct SpawnElfProcess<'a> {
 pub fn spawn_elf_process<'a>(
     elf: MessageHandle,
     args: &[u8],
-    initial_refs: &[KernelReferenceID],
+    initial_ref: KernelReferenceID,
     buffer: &'a mut Vec<u8>,
 ) -> Result<ProcessHandle, LoadElfError<'a>> {
-    let msg = make_message(
-        &SpawnElfProcess {
-            args,
-            init_references_count: initial_refs.len(),
-        },
-        buffer,
-    );
+    let channel = KernelReference::from_id(backoff_sleep(|| get_handle("ELF_LOADER")));
 
-    let socket = SocketHandle::connect("ELF_LOADER").unwrap();
-    socket.blocking_send(msg.kref()).unwrap();
-    socket.blocking_send(elf.kref()).unwrap();
-    for r in initial_refs {
-        socket.blocking_send_raw(*r).unwrap();
-    }
-    let (resp, resp_ty) = socket.blocking_recv().unwrap();
+    channel_write_rs(channel.id(), args, &[elf.kref().id(), initial_ref]);
 
-    match resp_ty {
-        KernelObjectType::Process => Ok(ProcessHandle::from_kref(resp)),
-        KernelObjectType::Message => {
-            let resp = MessageHandle::from_kref(resp);
-            resp.read_into_vec(buffer);
-            Err(deserialize(buffer).unwrap())
-        }
-        _ => panic!("bad response"),
+    let mut handles = Vec::with_capacity(1);
+
+    match channel_read_rs(channel.id(), buffer, &mut handles) {
+        crate::channel::ChannelReadResult::Ok => (),
+        _ => panic!(),
+    };
+
+    if handles.is_empty() {
+        Err(deserialize(buffer).unwrap())
+    } else {
+        Ok(ProcessHandle::from_kref(KernelReference::from_id(
+            handles[0],
+        )))
     }
 }

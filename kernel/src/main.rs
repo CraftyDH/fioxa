@@ -9,8 +9,10 @@ extern crate alloc;
 extern crate log;
 
 use core::ffi::c_void;
+use core::ops::ControlFlow;
 
 use ::acpi::AcpiError;
+use alloc::vec::Vec;
 use bootloader::{entry_point, BootInfo};
 use kernel::acpi::FioxaAcpiHandler;
 use kernel::boot_aps::boot_aps;
@@ -25,6 +27,7 @@ use kernel::lapic::{enable_localapic, map_lapic};
 use kernel::logging::KERNEL_LOGGER;
 use kernel::memory::MemoryMapIter;
 use kernel::net::ethernet::userspace_networking_main;
+use kernel::object::init_handle_new_proc;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
 use kernel::paging::page::{Page, Size4KB};
 use kernel::paging::page_allocator::global_allocator;
@@ -35,7 +38,9 @@ use kernel::paging::{
 };
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::Process;
-use kernel::scheduling::taskmanager::{core_start_multitasking, push_task_queue, PROCESSES};
+use kernel::scheduling::taskmanager::{
+    core_start_multitasking, push_task_queue, spawn_process, PROCESSES,
+};
 use kernel::scheduling::with_held_interrupts;
 use kernel::screen::gop;
 use kernel::screen::psf1;
@@ -48,11 +53,10 @@ use kernel::{elf, gdt, paging, BOOT_INFO};
 use bootloader::uefi::table::cfg::ACPI2_GUID;
 use bootloader::uefi::table::{Runtime, SystemTable};
 
-use kernel_userspace::backoff_sleep;
+use kernel_userspace::channel::{channel_create_rs, channel_read_rs, channel_write_rs};
 use kernel_userspace::ids::ProcessID;
-use kernel_userspace::object::KernelReference;
-use kernel_userspace::socket::{socket_connect, SocketListenHandle, SocketRecieveResult};
-use kernel_userspace::syscall::{exit, set_syscall_fn, spawn_process, spawn_thread};
+use kernel_userspace::service::Service;
+use kernel_userspace::syscall::{exit, set_syscall_fn, spawn_thread};
 
 // #[no_mangle]
 entry_point!(main_stage1);
@@ -213,58 +217,52 @@ extern "C" fn init() {
     //     println!("RECLAIMED MEMORY: {}Mb", reclaim * 0x1000 / 1024 / 1024);
     // }
 
-    spawn_process(check_interrupts, &[], true);
-    spawn_process(elf::elf_new_process_loader, &[], true);
-    spawn_process(gop::gop_entry, &[], true);
-    spawn_process(userspace_networking_main, &[], true);
-    spawn_process(testing_proc, &[], true);
-    spawn_process(after_boot_pci, &[], true);
+    let mut init_handles = Vec::new();
+
+    let mut get_init = || {
+        let (l, r) = channel_create_rs();
+        init_handles.push(l);
+        r
+    };
+
+    spawn_process(check_interrupts, &[], &[get_init()], true);
+    spawn_process(elf::elf_new_process_loader, &[], &[get_init()], true);
+    spawn_process(gop::gop_entry, &[], &[get_init()], true);
+    spawn_process(userspace_networking_main, &[], &[get_init()], true);
+    spawn_process(testing_proc, &[], &[get_init()], true);
+    spawn_process(after_boot_pci, &[], &[get_init()], true);
 
     // TODO: Use IO permissions instead of kernel
-    load_elf(
-        PS2_DRIVER,
-        &[],
-        &[KernelReference::from_id(backoff_sleep(|| {
-            socket_connect("STDOUT")
-        }))],
-        true,
-    )
-    .unwrap();
-    load_elf(
-        TERMINAL_ELF,
-        &[],
-        &[KernelReference::from_id(backoff_sleep(|| {
-            socket_connect("STDOUT")
-        }))],
-        false,
-    )
-    .unwrap();
+    load_elf(PS2_DRIVER, &[], &[get_init()], true).unwrap();
+    load_elf(TERMINAL_ELF, &[], &[get_init()], false).unwrap();
 
-    exit();
+    init_handle_new_proc(init_handles);
 }
 
 /// For testing, accepts all inputs
 fn testing_proc() {
-    let sid = SocketListenHandle::listen("ACCEPTER").unwrap();
-
-    loop {
-        let handle = sid.blocking_accept();
-        spawn_thread(move || {
-            for i in 0usize.. {
-                match handle.blocking_recv() {
-                    Ok(_) => (),
-                    Err(SocketRecieveResult::EOF) => {
-                        info!("ACCEPTED {i}");
-                        return;
+    let mut buf = Vec::with_capacity(100);
+    let mut handles = Vec::new();
+    Service::new(
+        "ACCEPTER",
+        || 0usize,
+        |handle, i| loop {
+            match channel_read_rs(handle.id(), &mut buf, &mut handles) {
+                kernel_userspace::channel::ChannelReadResult::Ok => {
+                    *i += 1;
+                    if *i % 10000 == 0 {
+                        info!("ACCEPTER: {i}")
                     }
-                    Err(e) => panic!("{e:?}"),
-                };
-                if i % 10000 == 0 {
-                    info!("ACCEPTER: {i}")
+                    channel_write_rs(handle.id(), &buf, &[]);
                 }
+                kernel_userspace::channel::ChannelReadResult::Empty => {
+                    return ControlFlow::Continue(())
+                }
+                _ => return ControlFlow::Break(()),
             }
-        });
-    }
+        },
+    )
+    .run();
 }
 
 fn after_boot_pci() {

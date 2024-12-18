@@ -17,25 +17,37 @@ impl KernelReferenceID {
     }
 }
 
-pub const REFERENCE_STDOUT: KernelReferenceID =
+pub const REFERENCE_FIRST: KernelReferenceID =
     unsafe { KernelReferenceID(NonZeroUsize::new_unchecked(1)) };
+
+bitflags::bitflags! {
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct ObjectSignal: u64 {
+        const READABLE = 1 << 1;
+
+        const CHANNEL_CLOSED = 1 << 20;
+
+        const PROCESS_EXITED = 1 << 20;
+    }
+}
 
 #[derive(FromPrimitive, ToPrimitive)]
 pub enum ReferenceOperation {
     Clone,
     Delete,
     GetType,
+    Wait,
+    WaitPort,
 }
 
 #[derive(Debug, FromPrimitive, ToPrimitive, Clone, Copy, PartialEq, Eq)]
 pub enum KernelObjectType {
     None,
-    Event,
-    EventQueue,
-    Socket,
-    SocketListener,
     Message,
     Process,
+    Channel,
+    Port,
+    Interrupt,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -87,4 +99,46 @@ pub fn get_type(kref: KernelReferenceID) -> KernelObjectType {
         make_syscall!(crate::syscall::OBJECT, ReferenceOperation::GetType as usize, kref.0.get() => id);
         KernelObjectType::from_usize(id).unwrap()
     }
+}
+
+/// Returns the current set whenever any bit from mask is set
+pub fn object_wait(kref: KernelReferenceID, mask: ObjectSignal) -> ObjectSignal {
+    unsafe {
+        let val: u64;
+        make_syscall!(crate::syscall::OBJECT, ReferenceOperation::Wait as usize, kref.0.get(), mask.bits() => val);
+        ObjectSignal::from_bits_retain(val)
+    }
+}
+
+#[repr(C)]
+pub struct WaitPort {
+    pub port_handle: KernelReferenceID,
+    pub mask: u64,
+    pub key: u64,
+}
+
+/// Returns the current set whenever any bit from mask is set
+pub fn object_wait_port(kref: KernelReferenceID, port: &WaitPort) {
+    unsafe {
+        make_syscall!(
+            crate::syscall::OBJECT,
+            ReferenceOperation::WaitPort as usize,
+            kref.0.get(),
+            port
+        );
+    }
+}
+
+pub fn object_wait_port_rs(
+    kref: KernelReferenceID,
+    port: KernelReferenceID,
+    mask: ObjectSignal,
+    key: u64,
+) {
+    let wait = WaitPort {
+        port_handle: port,
+        mask: mask.bits(),
+        key,
+    };
+    object_wait_port(kref, &wait);
 }

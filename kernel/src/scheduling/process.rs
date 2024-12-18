@@ -13,9 +13,8 @@ use alloc::{
 use conquer_once::spin::Lazy;
 use hashbrown::HashMap;
 use kernel_userspace::{
-    event::EventCallback,
     ids::{ProcessID, ThreadID},
-    object::{KernelObjectType, KernelReferenceID},
+    object::{KernelObjectType, KernelReferenceID, ObjectSignal},
     process::ProcessExit,
 };
 use x86_64::{
@@ -25,23 +24,22 @@ use x86_64::{
 
 use crate::{
     assembly::registers::SavedTaskState,
-    event::{EdgeListener, EdgeTrigger, KEvent, KEventListener, KEventQueue},
+    channel::KChannelHandle,
     gdt,
+    interrupts::KInterruptHandle,
     message::KMessage,
     mutex::Spinlock,
+    object::{KObject, KObjectSignal},
     paging::{
         page_allocator::global_allocator,
         page_mapper::{PageMapperManager, PageMapping},
         virt_addr_for_phys, AllocatedPage, GlobalPageAllocator, MemoryMappingFlags,
     },
-    socket::{KSocketHandle, KSocketListener},
+    port::KPort,
     time::HPET,
 };
 
-use super::{
-    taskmanager::{block_task, push_task_queue, PROCESSES},
-    with_held_interrupts,
-};
+use super::taskmanager::{push_task_queue, PROCESSES};
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 pub const KSTACK_ADDR: u64 = 0xffff_800_000_000_000;
@@ -89,7 +87,7 @@ pub struct Process {
     pub cr3_page: u64,
     pub references: Spinlock<ProcessReferences>,
     pub exit_status: Spinlock<ProcessExit>,
-    pub exit_signal: Arc<Spinlock<KEvent>>,
+    pub signals: Spinlock<KObjectSignal>,
 }
 
 #[derive(Default)]
@@ -168,7 +166,7 @@ impl Process {
                 next_id: 1,
             }),
             exit_status: Spinlock::new(ProcessExit::NotExitedYet),
-            exit_signal: KEvent::new(),
+            signals: Default::default(),
         })
     }
 
@@ -254,9 +252,17 @@ impl Process {
         if threads.threads.is_empty() {
             drop(threads);
             *self.exit_status.lock() = ProcessExit::Exited;
-            self.exit_signal.lock().set_level(true);
+            self.signals
+                .lock()
+                .set_signal(ObjectSignal::PROCESS_EXITED, true);
             PROCESSES.lock().remove(&self.pid);
         }
+    }
+}
+
+impl KObject for Process {
+    fn signals<T>(&self, f: impl FnOnce(&mut KObjectSignal) -> T) -> T {
+        f(&mut self.signals.lock())
     }
 }
 
@@ -406,23 +412,21 @@ pub struct Thread {
 
 #[derive(Clone)]
 pub enum KernelValue {
-    Event(Arc<Spinlock<KEvent>>),
-    EventQueue(Arc<KEventQueue>),
-    Socket(Arc<KSocketHandle>),
-    SocketListener(Arc<KSocketListener>),
     Message(Arc<KMessage>),
     Process(Arc<Process>),
+    Channel(Arc<KChannelHandle>),
+    Port(Arc<KPort>),
+    Interrupt(Arc<KInterruptHandle>),
 }
 
 impl Debug for KernelValue {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Event(_) => f.debug_tuple("KernelValue::Event").finish(),
-            Self::EventQueue(_) => f.debug_tuple("KernelValue::EventQueue").finish(),
-            Self::Socket(_) => f.debug_tuple("KernelValue::Socket").finish(),
-            Self::SocketListener(_) => f.debug_tuple("KernelValue::SocketListener").finish(),
             Self::Message(_) => f.debug_tuple("KernelValue::Message").finish(),
             Self::Process(_) => f.debug_tuple("KernelValue::Process").finish(),
+            Self::Channel(_) => f.debug_tuple("KernelValue::Channel").finish(),
+            Self::Port(_) => f.debug_tuple("KernelValue::Port").finish(),
+            Self::Interrupt(_) => f.debug_tuple("KernelValue::Interrupt").finish(),
         }
     }
 }
@@ -430,37 +434,12 @@ impl Debug for KernelValue {
 impl KernelValue {
     pub const fn object_type(&self) -> KernelObjectType {
         match self {
-            KernelValue::Event(_) => KernelObjectType::Event,
-            KernelValue::EventQueue(_) => KernelObjectType::EventQueue,
-            KernelValue::Socket(_) => KernelObjectType::Socket,
-            KernelValue::SocketListener(_) => KernelObjectType::SocketListener,
             KernelValue::Message(_) => KernelObjectType::Message,
             KernelValue::Process(_) => KernelObjectType::Process,
+            KernelValue::Channel(_) => KernelObjectType::Channel,
+            KernelValue::Port(_) => KernelObjectType::Port,
+            KernelValue::Interrupt(_) => KernelObjectType::Interrupt,
         }
-    }
-}
-
-impl Into<KernelValue> for Arc<Spinlock<KEvent>> {
-    fn into(self) -> KernelValue {
-        KernelValue::Event(self)
-    }
-}
-
-impl Into<KernelValue> for Arc<KEventQueue> {
-    fn into(self) -> KernelValue {
-        KernelValue::EventQueue(self)
-    }
-}
-
-impl Into<KernelValue> for Arc<KSocketHandle> {
-    fn into(self) -> KernelValue {
-        KernelValue::Socket(self)
-    }
-}
-
-impl Into<KernelValue> for Arc<KSocketListener> {
-    fn into(self) -> KernelValue {
-        KernelValue::SocketListener(self)
     }
 }
 
@@ -476,55 +455,21 @@ impl Into<KernelValue> for Arc<Process> {
     }
 }
 
-#[derive(Debug)]
-struct ThreadEventListenerInner {
-    pub thread: Weak<ThreadHandle>,
-    pub result: Option<bool>,
-}
-
-#[derive(Debug)]
-pub struct ThreadEventListener(Spinlock<ThreadEventListenerInner>);
-
-impl ThreadEventListener {
-    pub fn new(ev: &mut KEvent, direction: EdgeTrigger, thread: &Thread) -> Arc<Self> {
-        let this = Arc::new(Self(Spinlock::new(ThreadEventListenerInner {
-            thread: Arc::downgrade(&thread.handle),
-            result: None,
-        })));
-        ev.listeners().push(EdgeListener::new(
-            this.clone(),
-            EventCallback(NonZeroUsize::new(1).unwrap()),
-            direction,
-            true,
-        ));
-        this
-    }
-
-    pub fn wait(&self, thread: &Thread) -> bool {
-        loop {
-            let inner = self.0.lock();
-
-            if let Some(r) = inner.result {
-                return r;
-            }
-            let status = thread.handle.thread.lock();
-            drop(inner);
-            block_task(status);
-        }
+impl Into<KernelValue> for Arc<KChannelHandle> {
+    fn into(self) -> KernelValue {
+        KernelValue::Channel(self)
     }
 }
 
-impl KEventListener for ThreadEventListener {
-    fn trigger_edge(&self, _: EventCallback, direction: bool) {
-        let mut this = self.0.lock();
-        this.result = Some(direction);
-        let Some(handle) = this.thread.upgrade() else {
-            return;
-        };
-        with_held_interrupts(|| {
-            handle.wake_up();
-            drop(this);
-        });
+impl Into<KernelValue> for Arc<KPort> {
+    fn into(self) -> KernelValue {
+        KernelValue::Port(self)
+    }
+}
+
+impl Into<KernelValue> for Arc<KInterruptHandle> {
+    fn into(self) -> KernelValue {
+        KernelValue::Interrupt(self)
     }
 }
 

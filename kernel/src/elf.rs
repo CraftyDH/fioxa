@@ -1,10 +1,11 @@
 use alloc::{sync::Arc, vec::Vec};
 use kernel_userspace::{
-    elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, SpawnElfProcess, PT_LOAD},
+    channel::{channel_create_rs, channel_read_rs, channel_write_rs, ChannelReadResult},
+    elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
     message::MessageHandle,
-    object::{KernelObjectType, KernelReference},
-    service::{deserialize, make_message_new},
-    socket::{SocketHandle, SocketListenHandle},
+    object::KernelReference,
+    process::publish_handle,
+    service::serialize,
     syscall::spawn_thread,
 };
 use x86_64::{align_down, align_up};
@@ -135,66 +136,51 @@ pub fn load_elf<'a>(
 }
 
 pub fn elf_new_process_loader() {
-    let service = SocketListenHandle::listen("ELF_LOADER").unwrap();
+    let (service, sright) = channel_create_rs();
+    publish_handle("ELF_LOADER", sright.id());
+
+    let mut data = Vec::with_capacity(100);
+    let mut handles = Vec::with_capacity(1);
     loop {
-        let job = service.blocking_accept();
-        spawn_thread(|| match elf_loader_handler(job) {
-            Ok(()) => (),
-            Err(e) => error!("Error handling elf load: {e}"),
+        match channel_read_rs(service.id(), &mut data, &mut handles) {
+            ChannelReadResult::Ok => (),
+            _ => todo!(),
+        };
+        let handle = KernelReference::from_id(handles[0]);
+        spawn_thread({
+            move || {
+                let mut data = Vec::with_capacity(100);
+                let mut handles = Vec::with_capacity(2);
+                match channel_read_rs(handle.id(), &mut data, &mut handles) {
+                    ChannelReadResult::Ok => (),
+                    ChannelReadResult::Closed => return,
+                    e => {
+                        warn!("{e:?}");
+                        return;
+                    }
+                };
+                if handles.len() != 2 {
+                    warn!("wrong args");
+                    return;
+                }
+
+                let elf = MessageHandle::from_kref(KernelReference::from_id(handles[0])).read_vec();
+                let res = load_elf(&elf, &data, &[KernelReference::from_id(handles[1])], false);
+
+                match res {
+                    Ok(proc) => {
+                        let proc = with_held_interrupts(|| unsafe {
+                            let thread = CPULocalStorageRW::get_current_task();
+                            KernelReference::from_id(thread.process().add_value(proc.into()))
+                        });
+                        channel_write_rs(handle.id(), &[], &[proc.id()]);
+                    }
+                    Err(err) => {
+                        let msg = serialize(&err, &mut data);
+                        channel_write_rs(handle.id(), msg, &[]);
+                    }
+                }
+            }
         });
     }
-}
-
-fn elf_loader_handler(handle: SocketHandle) -> Result<(), &'static str> {
-    let (descriptor, desc_type) = handle
-        .blocking_recv()
-        .map_err(|_| "Couldn't get descriptor")?;
-
-    if desc_type != KernelObjectType::Message {
-        return Err("Desc type not message");
-    }
-
-    let descriptor = MessageHandle::from_kref(descriptor);
-
-    let descriptor_vec = descriptor.read_vec();
-
-    let spawn: SpawnElfProcess = deserialize(&descriptor_vec).map_err(|_| "error deserializing")?;
-
-    let (elf, elf_type) = handle.blocking_recv().map_err(|_| "couldn't get elf")?;
-
-    if elf_type != KernelObjectType::Message {
-        return Err("Elf type not message");
-    }
-
-    let elf = MessageHandle::from_kref(elf);
-    let elf_data = elf.read_vec();
-
-    let mut refs = Vec::with_capacity(spawn.init_references_count);
-
-    for _ in 0..spawn.init_references_count {
-        let (desc, _) = handle
-            .blocking_recv()
-            .map_err(|_| "couldn't get user descriptor")?;
-        refs.push(desc);
-    }
-
-    let res = load_elf(&elf_data, spawn.args, &refs, false);
-
-    match res {
-        Ok(proc) => {
-            let proc = with_held_interrupts(|| unsafe {
-                let thread = CPULocalStorageRW::get_current_task();
-                KernelReference::from_id(thread.process().add_value(proc.into()))
-            });
-            handle.blocking_send(&proc).map_err(|_| "sock closed")?;
-        }
-        Err(err) => {
-            let msg = make_message_new(&err);
-            handle
-                .blocking_send(msg.kref())
-                .map_err(|_| "sock closed")?;
-        }
-    }
-
-    Ok(())
 }

@@ -1,40 +1,35 @@
-use core::{fmt::Debug, num::NonZeroUsize, ptr::slice_from_raw_parts_mut, slice};
+use core::ptr::slice_from_raw_parts_mut;
 
-use alloc::{
-    boxed::Box,
-    string::{String, ToString},
-    sync::Arc,
-};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use kernel_userspace::{
-    event::{
-        EventCallback, EventQueueListenId, KernelEventQueueListenMode, KernelEventQueueOperation,
-        ReceiveMode,
-    },
+    channel::{ChannelCreate, ChannelRead, ChannelReadResult, ChannelSyscall, ChannelWrite},
+    interrupt::InterruptSyscall,
     message::{MessageCreate, MessageGetSize, MessageRead, SyscallMessageAction},
     num_traits::FromPrimitive,
-    object::{KernelReferenceID, ReferenceOperation},
+    object::{KernelReferenceID, ObjectSignal, ReferenceOperation, WaitPort},
+    port::{PortNotification, PortSyscall},
     process::KernelProcessOperation,
-    socket::{MakeSocket, SocketEvents, SocketOperation, SocketRecv},
     syscall::SYSCALL_NUMBER,
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
+    channel::{channel_create, ChannelMessage, ReadError},
     cpu_localstorage::CPULocalStorageRW,
-    event::{EdgeTrigger, KEvent, KEventQueue},
+    interrupts::KInterruptHandle,
     message::KMessage,
-    mutex::SpinlockGuard,
+    object::{KObject, KObjectSignal, SignalWaiter},
     paging::{
         page_allocator::{frame_alloc_exec, global_allocator},
         page_mapper::PageMapping,
         page_table::Mapper,
         AllocatedPage, GlobalPageAllocator, MemoryMappingFlags,
     },
+    port::KPort,
     scheduling::{
-        process::{KernelValue, ThreadEventListener},
+        process::KernelValue,
         taskmanager::{self, block_task, exit_task, kill_bad_task, yield_task},
     },
-    socket::{create_sockets, KSocketListener, PUBLIC_SOCKETS},
     time::{uptime, SleptProcess, SLEPT_PROCESSES},
 };
 
@@ -75,8 +70,10 @@ impl<T, U> Unwraper<T> for Result<T, U> {
 #[macro_export]
 macro_rules! kpanic {
     ($($arg:tt)*) => {
-        error!("Panicked in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
-        return Err(SyscallError::Error);
+        {
+            error!("Panicked in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
+            return Err(SyscallError::Error);
+        }
     };
 }
 
@@ -231,7 +228,7 @@ unsafe extern "C" fn syscall_handler(
     arg2: usize,
     arg3: usize,
     arg4: usize,
-    arg5: usize,
+    _arg5: usize,
 ) -> usize {
     // Run syscalls without interrupts
     // This means execution should not be interrupted
@@ -245,7 +242,6 @@ unsafe extern "C" fn syscall_handler(
             yield_task();
             Ok(0)
         }
-        SPAWN_PROCESS => taskmanager::spawn_process(arg1, arg2, arg3, arg4),
         SPAWN_THREAD => taskmanager::spawn_thread(arg1, arg2),
         SLEEP => sleep_handler(arg1),
         EXIT_THREAD => exit_task(),
@@ -259,11 +255,11 @@ unsafe extern "C" fn syscall_handler(
         READ_ARGS => read_args_handler(arg1),
         GET_PID => Ok(thread.process().pid.0 as usize),
         MESSAGE => message_handler(arg1, arg2),
-        EVENT => sys_receive_event(arg1, arg2),
-        EVENT_QUEUE => sys_event_queue(arg1, arg2, arg3, arg4, arg5),
-        SOCKET => sys_socket_handler(arg1, arg2, arg3),
-        OBJECT => sys_reference_handler(arg1, arg2),
+        OBJECT => sys_reference_handler(arg1, arg2, arg3),
         PROCESS => sys_process_handler(arg1, arg2),
+        CHANNEL => sys_channel_handler(arg1, arg2),
+        PORT => sys_port_handler(arg1, arg2, arg3),
+        INTERRUPT => sys_interrupt_handler(arg1, arg2, arg3, arg4),
         _ => {
             error!("Unknown syscall class: {}", number);
             Err(SyscallError::Error)
@@ -358,206 +354,11 @@ unsafe fn unmmap_page_handler(arg1: usize, arg2: usize) -> Result<usize, Syscall
     }
 }
 
-unsafe fn sys_receive_event(arg1: usize, arg2: usize) -> Result<usize, SyscallError> {
-    let event = kunwrap!(KernelReferenceID::from_usize(arg1));
-    let thread = CPULocalStorageRW::get_current_task();
-
-    let mode: ReceiveMode = kunwrap!(FromPrimitive::from_usize(arg2));
-
-    let event = kunwrap!(thread.process().references.lock().references().get(&event)).clone();
-    let event = kenum_cast!(event, KernelValue::Event);
-
-    let ev = event.lock();
-
-    let save_state = |mut event: SpinlockGuard<KEvent>, edge: EdgeTrigger| {
-        let res = ThreadEventListener::new(&mut event, edge, &thread);
-        drop(event);
-        Ok(res.wait(thread) as usize)
-    };
-
-    match mode {
-        ReceiveMode::GetLevel => Ok(ev.level() as usize),
-        ReceiveMode::LevelHigh => {
-            if ev.level() {
-                Ok(1)
-            } else {
-                save_state(ev, EdgeTrigger::RISING_EDGE)
-            }
-        }
-        ReceiveMode::LevelLow => {
-            if !ev.level() {
-                Ok(0)
-            } else {
-                save_state(ev, EdgeTrigger::FALLING_EDGE)
-            }
-        }
-        ReceiveMode::Edge => save_state(ev, EdgeTrigger::RISING_EDGE | EdgeTrigger::FALLING_EDGE),
-        ReceiveMode::EdgeHigh => save_state(ev, EdgeTrigger::RISING_EDGE),
-        ReceiveMode::EdgeLow => save_state(ev, EdgeTrigger::FALLING_EDGE),
-    }
-}
-
-unsafe fn sys_event_queue(
+unsafe fn sys_reference_handler(
     arg1: usize,
     arg2: usize,
     arg3: usize,
-    arg4: usize,
-    arg5: usize,
 ) -> Result<usize, SyscallError> {
-    let thread = CPULocalStorageRW::get_current_task();
-
-    let operation: KernelEventQueueOperation = kunwrap!(FromPrimitive::from_usize(arg1));
-
-    let get_event = || {
-        let id = kunwrap!(KernelReferenceID::from_usize(arg2));
-        let event = kunwrap!(thread.process().get_value(id));
-        let event = kenum_cast!(event, KernelValue::EventQueue);
-        Ok(event)
-    };
-
-    match operation {
-        KernelEventQueueOperation::Create => {
-            let new = KEventQueue::new();
-            let id = thread.process().add_value(new.into());
-            Ok(id.0.get())
-        }
-        KernelEventQueueOperation::GetEvent => {
-            let ev = get_event()?;
-            let event = ev.event();
-            let id = thread.process().add_value(event.into());
-            Ok(id.0.get())
-        }
-        KernelEventQueueOperation::PopQueue => {
-            let ev = get_event()?;
-            match ev.try_pop_event() {
-                Some(e) => Ok(e.0.get()),
-                None => Ok(0),
-            }
-        }
-        KernelEventQueueOperation::Listen => {
-            let ev = get_event()?;
-
-            let listen_id = kunwrap!(KernelReferenceID::from_usize(arg3));
-            let callback = kunwrap!(NonZeroUsize::new(arg4).map(EventCallback));
-
-            let listen_event = kunwrap!(thread.process().get_value(listen_id));
-            let listen_event = kenum_cast!(listen_event, KernelValue::Event);
-            let mode: KernelEventQueueListenMode = kunwrap!(FromPrimitive::from_usize(arg5));
-
-            Ok(ev.listen(listen_event, callback, mode)?.0.get())
-        }
-        KernelEventQueueOperation::Unlisten => {
-            let ev = get_event()?;
-            let listen_id = EventQueueListenId(kunwrap!(NonZeroUsize::new(arg3)));
-            kunwrap!(ev.unlisten(listen_id));
-            Ok(0)
-        }
-    }
-}
-
-unsafe fn sys_socket_handler(arg1: usize, arg2: usize, arg3: usize) -> Result<usize, SyscallError> {
-    let thread = CPULocalStorageRW::get_current_task();
-
-    let operation: SocketOperation = kunwrap!(FromPrimitive::from_usize(arg1));
-
-    match operation {
-        SocketOperation::Listen => {
-            let name = slice::from_raw_parts(arg2 as *const u8, arg3);
-            let name = String::from_utf8_lossy(name).to_string();
-            match PUBLIC_SOCKETS.lock().entry(name) {
-                hashbrown::hash_map::Entry::Occupied(_) => Ok(0),
-                hashbrown::hash_map::Entry::Vacant(place) => {
-                    let handle = KSocketListener::new();
-                    place.insert(handle.clone());
-                    Ok(thread.process().add_value(handle.into()).0.get())
-                }
-            }
-        }
-        SocketOperation::Connect => {
-            let name = slice::from_raw_parts(arg2 as *const u8, arg3);
-            let name = kunwrap!(core::str::from_utf8(name));
-            match PUBLIC_SOCKETS.lock().get(name) {
-                Some(listener) => Ok(thread
-                    .process()
-                    .add_value(listener.connect().into())
-                    .0
-                    .get()),
-                None => Ok(0),
-            }
-        }
-        SocketOperation::Accept => {
-            let id = kunwrap!(KernelReferenceID::from_usize(arg2));
-
-            let sock = kunwrap!(thread.process().get_value(id));
-            let sock = kenum_cast!(sock, KernelValue::SocketListener);
-
-            match sock.pop() {
-                Some(val) => Ok(thread.process().add_value(val.into()).0.get()),
-                None => Ok(0),
-            }
-        }
-        SocketOperation::GetSocketListenEvent => {
-            let id = kunwrap!(KernelReferenceID::from_usize(arg2));
-
-            let sock = kunwrap!(thread.process().get_value(id));
-            let sock = kenum_cast!(sock, KernelValue::SocketListener);
-
-            Ok(thread.process().add_value(sock.event().into()).0.get())
-        }
-        SocketOperation::Create => {
-            let info = &mut *(arg2 as *mut MakeSocket);
-            let sockets = create_sockets(info.ltr_capacity, info.rtl_capacity);
-            let refs = &mut thread.process().references.lock();
-            info.left.write(refs.add_value(sockets.0.into()));
-            info.right.write(refs.add_value(sockets.1.into()));
-            Ok(0)
-        }
-        SocketOperation::GetSocketEvent => {
-            let id = kunwrap!(KernelReferenceID::from_usize(arg2));
-            let ev: SocketEvents = kunwrap!(FromPrimitive::from_usize(arg3));
-
-            let sock = kunwrap!(thread.process().get_value(id));
-            let sock = kenum_cast!(sock, KernelValue::Socket);
-
-            let event = sock.get_event(ev);
-
-            let id = thread.process().add_value(event.into());
-            Ok(id.0.get())
-        }
-        SocketOperation::Send => {
-            let id = kunwrap!(KernelReferenceID::from_usize(arg2));
-            let msgid = kunwrap!(KernelReferenceID::from_usize(arg3));
-
-            let sock = kunwrap!(thread.process().get_value(id));
-            let message = kunwrap!(thread.process().get_value(msgid));
-
-            let sock = kenum_cast!(sock, KernelValue::Socket);
-            Ok(match sock.send_message(message) {
-                Some(()) => 0,
-                None if sock.is_eof() => 2,
-                None => 1,
-            })
-        }
-        SocketOperation::Recv => unsafe {
-            let recv = &mut *(arg2 as *mut SocketRecv);
-
-            let sock = kunwrap!(thread.process().get_value(recv.socket));
-
-            let sock = kenum_cast!(sock, KernelValue::Socket);
-
-            match sock.recv_message() {
-                Some(message) => {
-                    recv.result_type.write(message.object_type());
-                    recv.result = Some(thread.process().add_value(message));
-                }
-                None => recv.eof = sock.is_eof(),
-            }
-            Ok(0)
-        },
-    }
-}
-
-unsafe fn sys_reference_handler(arg1: usize, arg2: usize) -> Result<usize, SyscallError> {
     let thread = CPULocalStorageRW::get_current_task();
 
     let operation: ReferenceOperation = kunwrap!(FromPrimitive::from_usize(arg1));
@@ -577,6 +378,82 @@ unsafe fn sys_reference_handler(arg1: usize, arg2: usize) -> Result<usize, Sysca
             Some(r) => r.object_type(),
             None => kernel_userspace::object::KernelObjectType::None,
         } as usize),
+        ReferenceOperation::Wait => {
+            let val = kunwrap!(refs.references().get(&id)).clone();
+
+            let handle = thread.handle().clone();
+            let mask = ObjectSignal::from_bits_truncate(arg3 as u64);
+
+            let waiter = |signals: &mut KObjectSignal| {
+                if signals.signal_status().intersects(mask) {
+                    Ok(signals.signal_status())
+                } else {
+                    let status = handle.thread.lock();
+                    signals.wait(SignalWaiter {
+                        ty: crate::object::SignalWaiterType::One(handle.clone()),
+                        mask,
+                    });
+                    Err(status)
+                }
+            };
+
+            let res = match &val {
+                KernelValue::Channel(v) => v.signals(waiter),
+                KernelValue::Process(v) => v.signals(waiter),
+                _ => kpanic!("object not signalable"),
+            };
+
+            match res {
+                Ok(val) => Ok(val.bits() as usize),
+                Err(status) => {
+                    drop(refs);
+                    block_task(status);
+                    Ok(match val {
+                        KernelValue::Channel(v) => v.signals(|w| w.signal_status().bits() as usize),
+                        KernelValue::Process(v) => v.signals(|w| w.signal_status().bits() as usize),
+                        _ => kpanic!("object not signalable"),
+                    })
+                }
+            }
+        }
+        ReferenceOperation::WaitPort => {
+            let val = kunwrap!(refs.references().get(&id)).clone();
+
+            let wait = &*(arg3 as *const WaitPort);
+
+            let port = kunwrap!(refs.references().get(&wait.port_handle)).clone();
+            let port = kenum_cast!(port, KernelValue::Port);
+
+            let mask = ObjectSignal::from_bits_truncate(wait.mask);
+
+            let waiter = |signals: &mut KObjectSignal| {
+                if signals.signal_status().intersects(mask) {
+                    port.notify(PortNotification {
+                        key: wait.key,
+                        ty: kernel_userspace::port::PortNotificationType::SignalOne {
+                            trigger: mask,
+                            signals: signals.signal_status(),
+                        },
+                    });
+                } else {
+                    signals.wait(SignalWaiter {
+                        ty: crate::object::SignalWaiterType::Port {
+                            port,
+                            key: wait.key,
+                        },
+                        mask: mask,
+                    });
+                }
+            };
+
+            match &val {
+                KernelValue::Channel(v) => v.signals(waiter),
+                KernelValue::Process(v) => v.signals(waiter),
+                _ => kpanic!("object not signalable"),
+            };
+
+            Ok(0)
+        }
     }
 }
 
@@ -591,11 +468,6 @@ unsafe fn sys_process_handler(arg1: usize, arg2: usize) -> Result<usize, Syscall
 
     match operation {
         KernelProcessOperation::GetExitCode => Ok(*proc.exit_status.lock() as usize),
-        KernelProcessOperation::GetExitEvent => Ok(thread
-            .process()
-            .add_value(proc.exit_signal.clone().into())
-            .0
-            .get()),
         KernelProcessOperation::Kill => {
             proc.kill_threads();
             Ok(0)
@@ -665,4 +537,183 @@ unsafe fn message_handler(arg1: usize, arg2: usize) -> Result<usize, SyscallErro
     }
 
     Ok(0)
+}
+
+unsafe fn sys_channel_handler(syscall: usize, arg2: usize) -> Result<usize, SyscallError> {
+    let action = kunwrap!(ChannelSyscall::from_usize(syscall));
+
+    let thread = CPULocalStorageRW::get_current_task();
+
+    match action {
+        ChannelSyscall::Create => {
+            let create = &mut *(arg2 as *mut ChannelCreate);
+
+            let (left, right) = channel_create();
+
+            let left = thread.process().add_value(left.into());
+            let right = thread.process().add_value(right.into());
+
+            create.left = Some(left);
+            create.right = Some(right);
+            Ok(1)
+        }
+        ChannelSyscall::Read => {
+            let read = &mut *(arg2 as *mut ChannelRead);
+            let handle = kunwrap!(thread.process().get_value(read.handle));
+
+            let chan = kenum_cast!(handle, KernelValue::Channel);
+
+            match chan.read(read.data_len, read.handles_len) {
+                Ok(ok) => {
+                    read.data_len = ok.data.len();
+                    let data_ptr = core::slice::from_raw_parts_mut(read.data, ok.data.len());
+                    data_ptr.copy_from_slice(&ok.data);
+
+                    if let Some(h) = ok.handles {
+                        read.handles_len = h.len();
+                        let data_ptr: &mut [Option<KernelReferenceID>] =
+                            core::slice::from_raw_parts_mut(read.handles.cast(), h.len());
+
+                        let mut i = 0;
+                        for handle in h {
+                            let id = thread.process().add_value(handle);
+                            data_ptr[i] = Some(id);
+                            i += 1;
+                        }
+                    } else {
+                        read.handles_len = 0;
+                    }
+                    Ok(ChannelReadResult::Ok as usize)
+                }
+                Err(ReadError::Empty) => Ok(ChannelReadResult::Empty as usize),
+                Err(ReadError::Size {
+                    min_bytes,
+                    min_handles,
+                }) => {
+                    read.data_len = min_bytes;
+                    read.handles_len = min_handles;
+                    Ok(ChannelReadResult::Size as usize)
+                }
+                Err(ReadError::Closed) => Ok(ChannelReadResult::Closed as usize),
+            }
+        }
+        ChannelSyscall::Write => {
+            let write = &mut *(arg2 as *mut ChannelWrite);
+            let handle = kunwrap!(thread.process().get_value(write.handle));
+
+            let chan = kenum_cast!(handle, KernelValue::Channel);
+            let data = core::slice::from_raw_parts(write.data, write.data_len);
+
+            let handles = if !write.handles.is_null() && write.handles_len > 0 {
+                let handles: &[Option<KernelReferenceID>] =
+                    core::slice::from_raw_parts(write.handles.cast(), write.handles_len);
+                let mut handles_res = Vec::with_capacity(write.handles_len);
+                let mut refs = thread.process().references.lock();
+                for h in handles {
+                    match h {
+                        Some(r) => handles_res.push(kunwrap!(refs.references().get(r)).clone()),
+                        None => kpanic!("null ref not allowed"),
+                    }
+                }
+                Some(handles_res.into_boxed_slice())
+            } else {
+                None
+            };
+
+            let msg = ChannelMessage {
+                data: data.into(),
+                handles,
+            };
+            match chan.send(msg) {
+                Some(()) => Ok(1),
+                None => Ok(0),
+            }
+        }
+    }
+}
+
+unsafe fn sys_port_handler(
+    syscall: usize,
+    arg1: usize,
+    arg2: usize,
+) -> Result<usize, SyscallError> {
+    let action = kunwrap!(PortSyscall::from_usize(syscall));
+    let thread = CPULocalStorageRW::get_current_task();
+
+    match action {
+        PortSyscall::Create => {
+            let port = KPort::new();
+            let handle = thread.process().add_value(Arc::new(port).into());
+            Ok(handle.0.get())
+        }
+        PortSyscall::Wait => {
+            let handle = kunwrap!(KernelReferenceID::from_usize(arg1));
+            let handle = kunwrap!(thread.process().get_value(handle));
+
+            let port = kenum_cast!(handle, KernelValue::Port);
+            let v = port.wait();
+            (arg2 as *mut PortNotification).write(v);
+            Ok(0)
+        }
+        PortSyscall::Push => {
+            let handle = kunwrap!(KernelReferenceID::from_usize(arg1));
+            let handle = kunwrap!(thread.process().get_value(handle));
+
+            let port = kenum_cast!(handle, KernelValue::Port);
+            let v = (arg2 as *const PortNotification).read();
+            port.notify(v);
+            Ok(0)
+        }
+    }
+}
+
+unsafe fn sys_interrupt_handler(
+    syscall: usize,
+    handle: usize,
+    port: usize,
+    key: usize,
+) -> Result<usize, SyscallError> {
+    let action = kunwrap!(InterruptSyscall::from_usize(syscall));
+
+    let thread = CPULocalStorageRW::get_current_task();
+
+    match action {
+        InterruptSyscall::Create => {
+            let interrupt = KInterruptHandle::new();
+            let id = thread.process().add_value(Arc::new(interrupt).into());
+            Ok(id.0.get())
+        }
+        InterruptSyscall::Trigger => {
+            let id = kunwrap!(KernelReferenceID::from_usize(handle));
+            let int = kunwrap!(thread.process().get_value(id));
+            let int = kenum_cast!(int, KernelValue::Interrupt);
+            int.trigger();
+            Ok(0)
+        }
+        InterruptSyscall::SetPort => {
+            let id = kunwrap!(KernelReferenceID::from_usize(handle));
+            let int = kunwrap!(thread.process().get_value(id));
+            let int = kenum_cast!(int, KernelValue::Interrupt);
+
+            let id = kunwrap!(KernelReferenceID::from_usize(port));
+            let port = kunwrap!(thread.process().get_value(id));
+            let port = kenum_cast!(port, KernelValue::Port);
+
+            int.set_port(port, key as u64);
+            Ok(0)
+        }
+        InterruptSyscall::Acknowledge => {
+            let id = kunwrap!(KernelReferenceID::from_usize(handle));
+            let int = kunwrap!(thread.process().get_value(id));
+            let int = kenum_cast!(int, KernelValue::Interrupt);
+            int.ack();
+            Ok(0)
+        }
+        InterruptSyscall::Wait => {
+            let id = kunwrap!(KernelReferenceID::from_usize(handle));
+            let int = kunwrap!(thread.process().get_value(id));
+            let int = kenum_cast!(int, KernelValue::Interrupt);
+            int.wait()
+        }
+    }
 }

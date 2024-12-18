@@ -1,27 +1,48 @@
 use core::fmt::{Arguments, Write};
 
+use alloc::vec::Vec;
 use kernel_userspace::{
-    message::MessageHandle,
-    object::{KernelReference, REFERENCE_STDOUT},
-    socket::SocketHandle,
+    channel::{channel_read_rs, channel_write_rs, ChannelReadResult},
+    object::{object_wait, KernelReferenceID, ObjectSignal},
+    process::get_handle,
+    syscall::exit,
 };
 
 use spin::{Lazy, Mutex};
 
 pub struct Writer {
-    stdout_socket: SocketHandle,
+    stdout_socket: KernelReferenceID,
+    in_flight: usize,
 }
 
 pub static WRITER: Lazy<Mutex<Writer>> = Lazy::new(|| {
+    let handle = get_handle("STDOUT").unwrap();
+
     Mutex::new(Writer {
-        stdout_socket: SocketHandle::from_raw_socket(KernelReference::from_id(REFERENCE_STDOUT)),
+        stdout_socket: handle,
+        in_flight: 0,
     })
 });
 
 impl Writer {
     pub fn write_raw(&mut self, bytes: &[u8]) {
-        let msg = MessageHandle::create(bytes);
-        self.stdout_socket.blocking_send(msg.kref()).unwrap();
+        for chunk in bytes.chunks(0x1000) {
+            if self.in_flight > 100 {
+                let mut data = Vec::new();
+                let mut handles = Vec::new();
+                loop {
+                    match channel_read_rs(self.stdout_socket, &mut data, &mut handles) {
+                        ChannelReadResult::Ok => break,
+                        ChannelReadResult::Empty => {
+                            object_wait(self.stdout_socket, ObjectSignal::READABLE);
+                            continue;
+                        }
+                        _ => exit(),
+                    }
+                }
+            }
+            channel_write_rs(self.stdout_socket, chunk, &[]);
+        }
     }
 }
 

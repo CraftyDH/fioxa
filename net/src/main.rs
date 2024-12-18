@@ -1,12 +1,10 @@
 #![no_std]
 #![no_main]
 
+use alloc::vec::Vec;
 use kernel_userspace::{
-    message::MessageHandle,
     net::{ArpResponse, IPAddr, NotSameSubnetError},
-    object::KernelObjectType,
-    service::{deserialize, make_message_new},
-    socket::SocketHandle,
+    service::{deserialize, serialize, SimpleService},
     syscall::{exit, read_args},
 };
 
@@ -47,14 +45,12 @@ pub extern "C" fn main() {
 }
 
 pub fn lookup_ip(ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
-    let networking = SocketHandle::connect("NETWORKING").unwrap();
-    let msg = make_message_new(&kernel_userspace::net::Networking::ArpRequest(ip));
-    networking.blocking_send(msg.kref()).unwrap();
-    let (resp, ty) = networking.blocking_recv().unwrap();
-    assert_eq!(ty, KernelObjectType::Message);
-    let msg = MessageHandle::from_kref(resp);
-    let resp = msg.read_vec();
-    match deserialize(&resp).unwrap() {
+    let mut networking = SimpleService::with_name("NETWORKING");
+    let mut buf = Vec::new();
+    serialize(&kernel_userspace::net::Networking::ArpRequest(ip), &mut buf);
+    networking.call(&mut buf, &mut Vec::new()).unwrap();
+
+    match deserialize(&buf).unwrap() {
         ArpResponse::Mac(mac) => return Ok(Some(mac)),
         ArpResponse::Pending(pend) => pend?,
     }

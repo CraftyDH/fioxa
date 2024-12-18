@@ -1,21 +1,12 @@
 #![no_std]
 #![no_main]
 
-use core::num::NonZeroUsize;
-
 use kernel_userspace::{
-    backoff_sleep,
     elf::spawn_elf_process,
-    event::{
-        event_queue_create, event_queue_get_event, event_queue_listen, event_queue_pop,
-        receive_event, EventCallback,
-    },
     fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
-    input::InputServiceMessage,
     message::MessageHandle,
-    object::{KernelObjectType, KernelReference, KernelReferenceID, REFERENCE_STDOUT},
-    service::deserialize,
-    socket::{socket_connect, socket_handle_get_event, socket_recv, SocketRecieveResult},
+    process::clone_init_service,
+    service::SimpleService,
     syscall::{exit, sleep},
 };
 
@@ -32,51 +23,28 @@ fn panic(i: &core::panic::PanicInfo) -> ! {
 
 use alloc::{boxed::Box, collections::VecDeque, string::String, vec::Vec};
 use input::keyboard::{
-    virtual_code::{Letter, Modifier, VirtualKeyCode},
+    virtual_code::{Modifier, VirtualKeyCode},
     KeyboardEvent,
 };
 use userspace::print::WRITER;
 
 pub struct KBInputDecoder {
-    socket: KernelReferenceID,
-    socket_recv_ev: KernelReferenceID,
+    service: SimpleService,
     lshift: bool,
     rshift: bool,
     caps_lock: bool,
     num_lock: bool,
-    receive_buffer: Vec<u8>,
 }
 
 impl KBInputDecoder {
-    pub fn new(socket: KernelReferenceID) -> Self {
+    pub fn new(service: SimpleService) -> Self {
         Self {
-            socket,
-            socket_recv_ev: socket_handle_get_event(
-                socket,
-                kernel_userspace::socket::SocketEvents::RecvBufferEmpty,
-            ),
+            service,
             lshift: false,
             rshift: false,
             caps_lock: false,
             num_lock: false,
-            receive_buffer: Default::default(),
         }
-    }
-
-    pub fn try_next_raw(&mut self) -> Option<kernel_userspace::input::InputServiceMessage> {
-        let (msg, ty) = match socket_recv(self.socket) {
-            Ok(ok) => ok,
-            Err(SocketRecieveResult::None) => return None,
-            Err(SocketRecieveResult::EOF) => panic!("kb input channel eof"),
-        };
-
-        assert_eq!(ty, KernelObjectType::Message);
-
-        let msg = MessageHandle::from_kref(KernelReference::from_id(msg));
-        let size = msg.get_size();
-        self.receive_buffer.resize(size, 0);
-        msg.read(&mut self.receive_buffer);
-        Some(deserialize(&self.receive_buffer).unwrap())
     }
 }
 
@@ -85,15 +53,7 @@ impl Iterator for KBInputDecoder {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            receive_event(
-                self.socket_recv_ev,
-                kernel_userspace::event::ReceiveMode::LevelLow,
-            );
-
-            let Some(ev) = self.try_next_raw() else {
-                continue;
-            };
-
+            let ev = self.service.recv_val(&mut Vec::new())?;
             match ev {
                 kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code) => {
                     match scan_code {
@@ -135,9 +95,9 @@ pub extern "C" fn main() {
     let mut buffer = Vec::new();
     let mut file_buffer = Vec::new();
 
-    let keyboard_sid = backoff_sleep(|| socket_connect("INPUT:KB"));
+    let keyboard = SimpleService::with_name("INPUT:KB");
 
-    let mut input: KBInputDecoder = KBInputDecoder::new(keyboard_sid);
+    let mut input: KBInputDecoder = KBInputDecoder::new(keyboard);
 
     let mut input_history: VecDeque<Box<str>> = VecDeque::new();
 
@@ -305,9 +265,8 @@ pub extern "C" fn main() {
 
                 println!("SPAWNING...");
 
-                // Clone stdout for now
                 let proc =
-                    spawn_elf_process(contents, args.as_bytes(), &[REFERENCE_STDOUT], &mut buffer);
+                    spawn_elf_process(contents, args.as_bytes(), clone_init_service(), &mut buffer);
 
                 let mut proc = match proc {
                     Ok(p) => p,
@@ -316,62 +275,9 @@ pub extern "C" fn main() {
                         continue;
                     }
                 };
-                let proc_exit_signal = proc.get_exit_signal();
+                println!("proc!");
 
-                let ev_queue = KernelReference::from_id(event_queue_create());
-                let ev_queue_ev = KernelReference::from_id(event_queue_get_event(ev_queue.id()));
-                let kb_input = EventCallback(NonZeroUsize::new(1).unwrap());
-                let proc_exit = EventCallback(NonZeroUsize::new(2).unwrap());
-
-                event_queue_listen(
-                    ev_queue.id(),
-                    input.socket_recv_ev,
-                    kb_input,
-                    kernel_userspace::event::KernelEventQueueListenMode::OnLevelLow,
-                );
-                event_queue_listen(
-                    ev_queue.id(),
-                    proc_exit_signal.id(),
-                    proc_exit,
-                    kernel_userspace::event::KernelEventQueueListenMode::OnLevelHigh,
-                );
-
-                let mut ctrl = false;
-
-                'l: loop {
-                    receive_event(
-                        ev_queue_ev.id(),
-                        kernel_userspace::event::ReceiveMode::LevelHigh,
-                    );
-                    while let Some(ev) = event_queue_pop(ev_queue.id()) {
-                        if ev == kb_input {
-                            if let Some(ev) = input.try_next_raw() {
-                                match ev {
-                                    InputServiceMessage::KeyboardEvent(KeyboardEvent::Up(
-                                        VirtualKeyCode::Modifier(Modifier::LeftControl),
-                                    )) => ctrl = false,
-                                    InputServiceMessage::KeyboardEvent(KeyboardEvent::Down(
-                                        VirtualKeyCode::Modifier(Modifier::LeftControl),
-                                    )) => ctrl = true,
-                                    InputServiceMessage::KeyboardEvent(KeyboardEvent::Down(
-                                        VirtualKeyCode::Letter(Letter::C),
-                                    )) => {
-                                        if ctrl {
-                                            println!("Ctrl+C -> killing...");
-                                            proc.kill();
-                                        }
-                                    }
-                                    _ => (),
-                                }
-                            }
-                        } else if ev == proc_exit {
-                            // exited
-                            break 'l;
-                        } else {
-                            panic!()
-                        }
-                    }
-                }
+                proc.blocking_exit_code();
             }
             // "uptime" => {
             //     let mut uptime = time::uptime() / 1000;

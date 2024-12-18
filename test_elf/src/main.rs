@@ -1,9 +1,13 @@
 #![no_std]
 #![no_main]
 
+use core::mem::MaybeUninit;
+
+use alloc::vec::Vec;
 use kernel_userspace::{
-    service::make_message_new,
-    socket::SocketHandle,
+    channel::{channel_read_val, channel_write_val, ChannelReadResult},
+    object::{object_wait, ObjectSignal},
+    process::get_handle,
     syscall::{exit, read_args},
 };
 
@@ -22,12 +26,36 @@ pub extern "C" fn main() {
     } else {
         args.parse().unwrap()
     };
-    let sid = SocketHandle::connect("ACCEPTER").unwrap();
 
-    let msg = make_message_new(&());
+    let accepter = get_handle("ACCEPTER").unwrap();
 
-    for _ in 0..count {
-        sid.blocking_send(msg.kref()).unwrap();
+    let mut send_i = 0usize;
+    let mut recv_i = 0usize;
+
+    while send_i < 1024 {
+        channel_write_val(accepter, &send_i, &[]);
+        send_i += 1;
+    }
+
+    while recv_i < count {
+        let mut data: MaybeUninit<usize> = MaybeUninit::uninit();
+        match channel_read_val(accepter, &mut data, &mut Vec::new()) {
+            ChannelReadResult::Ok => unsafe {
+                assert_eq!(data.assume_init(), recv_i);
+                recv_i += 1;
+                if recv_i >= count {
+                    break;
+                }
+                if send_i < count {
+                    channel_write_val(accepter, &send_i, &[]);
+                    send_i += 1;
+                }
+            },
+            ChannelReadResult::Empty => {
+                object_wait(accepter, ObjectSignal::READABLE);
+            }
+            _ => todo!(),
+        }
     }
 
     exit();

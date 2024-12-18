@@ -7,15 +7,11 @@ use crate::{
     mutex::Spinlock,
 };
 
-use alloc::{boxed::Box, sync::Arc};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use kernel_userspace::{
-    backoff_sleep,
-    message::MessageHandle,
-    object::{KernelObjectType, KernelReference},
-    service::deserialize,
-    socket::{socket_connect, socket_create, SocketHandle},
-    syscall::spawn_thread,
+    channel::channel_create_rs, object::KernelReference, process::clone_init_service,
+    service::SimpleService, syscall::spawn_thread,
 };
 use mcfg::MCFG;
 mod express;
@@ -219,10 +215,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                 elf::load_elf(
                     AMD_PCNET_DRIVER,
                     &[],
-                    &[
-                        KernelReference::from_id(backoff_sleep(|| socket_connect("STDOUT"))),
-                        sid,
-                    ],
+                    &[KernelReference::from_id(clone_init_service()), sid],
                     true,
                 )
                 .unwrap();
@@ -278,35 +271,29 @@ fn pci_dev_handler(
     function: u8,
 ) -> KernelReference {
     let mut device = pci_bus.get_device_raw(segment, bus, device, function);
-    let (left, right) = socket_create(10, 10);
-    let right = KernelReference::from_id(right);
-    let socket = SocketHandle::from_raw_socket(KernelReference::from_id(left));
-    spawn_thread(move || loop {
-        let Ok((msg, KernelObjectType::Message)) = socket.blocking_recv() else {
-            return;
-        };
-        let msg = MessageHandle::from_kref(msg).read_vec();
-        let Ok(msg) = deserialize(&msg) else {
-            error!("Bad msg to pci dev");
-            return;
-        };
-        match msg {
-            kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
-                let resp = device.read_u32(offset);
-                let resp = MessageHandle::create(&resp.to_ne_bytes());
-                if socket.blocking_send(resp.kref()).is_err() {
-                    error!("pci dev eof");
+    let (left, right) = channel_create_rs();
+    spawn_thread(move || {
+        let mut service = SimpleService::new(left);
+        loop {
+            let Some(msg) = service.recv_val(&mut Vec::new()) else {
+                return;
+            };
+
+            match msg {
+                kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
+                    let resp = device.read_u32(offset);
+                    service.send_val(&resp, &[]);
+                },
+                kernel_userspace::pci::PCIDevCmd::Write(offset, data) if offset <= 256 => unsafe {
+                    device.write_u32(offset, data);
+                    service.send_val(&(), &[]);
+                },
+                _ => {
+                    error!("Bad args to pci");
                     return;
                 }
-            },
-            kernel_userspace::pci::PCIDevCmd::Write(offset, data) if offset <= 256 => unsafe {
-                device.write_u32(offset, data);
-            },
-            _ => {
-                error!("Bad args to pci");
-                return;
-            }
-        };
+            };
+        }
     });
 
     right

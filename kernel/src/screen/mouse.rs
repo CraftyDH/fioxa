@@ -1,14 +1,5 @@
-use kernel_userspace::{
-    backoff_sleep,
-    event::{receive_event, ReceiveMode},
-    input::InputServiceMessage,
-    message::MessageHandle,
-    object::{KernelObjectType, KernelReference},
-    service::deserialize,
-    socket::{
-        socket_connect, socket_handle_get_event, socket_recv, SocketEvents, SocketRecieveResult,
-    },
-};
+use alloc::vec::Vec;
+use kernel_userspace::{input::InputServiceMessage, service::SimpleService};
 
 use input::mouse::MousePacket;
 
@@ -36,40 +27,18 @@ pub const MOUSE_POINTER: &[u16; 16] = &[
 ];
 
 pub fn monitor_cursor_task() {
-    // loop to in theory allow recovery if the connection dies
-    'outer: loop {
-        // Poll the mouse until the service exists
-        let mouse_id = KernelReference::from_id(backoff_sleep(|| socket_connect("INPUT:MOUSE")));
-        let mouse_event = KernelReference::from_id(socket_handle_get_event(
-            mouse_id.id(),
-            SocketEvents::RecvBufferEmpty,
-        ));
+    let mut mouse = SimpleService::with_name("INPUT:MOUSE");
 
-        let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
+    let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
 
-        loop {
-            receive_event(mouse_event.id(), ReceiveMode::LevelLow);
-            match socket_recv(mouse_id.id()) {
-                Ok((msg, ty)) => {
-                    if ty != KernelObjectType::Message {
-                        error!("Cursor task got non message");
-                        continue 'outer;
-                    }
-                    let msg = MessageHandle::from_kref(KernelReference::from_id(msg));
-                    let data = msg.read_vec();
-                    match deserialize(&data).unwrap() {
-                        InputServiceMessage::MouseEvent(packet) => {
-                            print_cursor(&mut mouse_pos, packet)
-                        }
-                        _ => {
-                            error!("Mouse got non mouse packet");
-                            continue 'outer;
-                        }
-                    }
-                }
-                Err(SocketRecieveResult::None) => (),
-                Err(SocketRecieveResult::EOF) => continue 'outer,
-            }
+    let mut handles = Vec::new();
+
+    loop {
+        let packet = mouse.recv_val(&mut handles).unwrap();
+
+        match packet {
+            InputServiceMessage::KeyboardEvent(_) => panic!(),
+            InputServiceMessage::MouseEvent(mouse) => print_cursor(&mut mouse_pos, mouse),
         }
     }
 }

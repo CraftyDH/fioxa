@@ -1,11 +1,8 @@
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use serde::{Deserialize, Serialize};
 use spin::Mutex;
 
-use crate::{
-    message::MessageHandle, object::KernelObjectType, service::make_message_new,
-    socket::SocketHandle,
-};
+use crate::service::SimpleService;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PCIDevCmd {
@@ -13,9 +10,8 @@ pub enum PCIDevCmd {
     Write(u32, u32),
 }
 
-#[derive(Debug)]
 pub struct PCIDevice {
-    pub device_service: SocketHandle,
+    pub device_service: SimpleService,
 }
 
 #[allow(dead_code)]
@@ -31,15 +27,8 @@ impl PCIDevice {
     }
 
     unsafe fn read_u32(&mut self, offset: u32) -> u32 {
-        let msg = make_message_new(&PCIDevCmd::Read(offset));
-        self.device_service.blocking_send(msg.kref()).unwrap();
-        let (resp, ty) = self.device_service.blocking_recv().unwrap();
-
-        assert_eq!(ty, KernelObjectType::Message);
-        let mut bytes = [0u8; 4];
-        MessageHandle::from_kref(resp).read(&mut bytes);
-
-        u32::from_ne_bytes(bytes)
+        self.device_service
+            .call_val(&PCIDevCmd::Read(offset), &mut Vec::new())
     }
 
     unsafe fn write_u8(&mut self, offset: u32, data: u8) {
@@ -57,8 +46,8 @@ impl PCIDevice {
     }
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {
-        let msg = make_message_new(&PCIDevCmd::Write(offset, data));
-        self.device_service.blocking_send(msg.kref()).unwrap();
+        self.device_service
+            .call_val(&PCIDevCmd::Write(offset, data), &mut Vec::new())
     }
 }
 

@@ -6,18 +6,15 @@ extern crate alloc;
 extern crate userspace;
 extern crate userspace_slaballoc;
 
-use core::num::NonZeroUsize;
-
 use alloc::vec::Vec;
 use kernel_userspace::{
-    event::{
-        event_queue_create, event_queue_get_event, event_queue_listen, event_queue_pop,
-        receive_event, EventCallback, KernelEventQueueListenMode, ReceiveMode,
-    },
-    object::{KernelObjectType, KernelReference},
-    service::{make_message, make_message_new},
-    socket::{socket_accept, socket_listen, socket_listen_get_event, socket_send, SocketHandle},
-    syscall::{exit, sleep},
+    backoff_sleep,
+    channel::{channel_create_rs, channel_read_rs, channel_write_val, ChannelReadResult},
+    interrupt::{interrupt_acknowledge, interrupt_set_port},
+    object::{object_wait_port_rs, KernelReference, ObjectSignal},
+    port::{port_create, port_wait_rs},
+    process::{get_handle, publish_handle},
+    syscall::exit,
     INT_KB, INT_MOUSE,
 };
 use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
@@ -38,112 +35,77 @@ pub extern "C" fn main() {
         panic!("PS2 Controller failed to init because: {}", e);
     }
 
-    let mut buffer = Vec::new();
+    let mut buffer = Vec::with_capacity(100);
+    let mut handles_buffer = Vec::with_capacity(1);
 
-    let interrupts = SocketHandle::connect("INTERRUPTS").unwrap();
+    let interrupts = backoff_sleep(|| get_handle("INTERRUPTS"));
 
-    let kb_msg = make_message(&INT_KB, &mut buffer);
-    let mouse_msg = make_message(&INT_MOUSE, &mut buffer);
-
-    interrupts.blocking_send(kb_msg.kref()).unwrap();
-    interrupts.blocking_send(mouse_msg.kref()).unwrap();
-
-    let (kb_event, kb_ty) = interrupts.blocking_recv().unwrap();
-    let (mouse_event, m_ty) = interrupts.blocking_recv().unwrap();
-
-    assert_eq!(kb_ty, KernelObjectType::Event);
-    assert_eq!(m_ty, KernelObjectType::Event);
-
-    let event_queue = event_queue_create();
-    let event_queue_event = event_queue_get_event(event_queue);
-
-    let kb_cbk = EventCallback(NonZeroUsize::new(1).unwrap());
-    let ms_cbk = EventCallback(NonZeroUsize::new(2).unwrap());
-    let kb_srv_cbk = EventCallback(NonZeroUsize::new(3).unwrap());
-    let ms_srv_cbk = EventCallback(NonZeroUsize::new(4).unwrap());
-
-    let kb_service = socket_listen("INPUT:KB").unwrap();
-    let kb_service_ev = socket_listen_get_event(kb_service);
-    let ms_service = socket_listen("INPUT:MOUSE").unwrap();
-    let ms_service_ev = socket_listen_get_event(ms_service);
-
-    event_queue_listen(
-        event_queue,
-        kb_event.id(),
-        kb_cbk,
-        KernelEventQueueListenMode::OnEdgeHigh,
-    );
-
-    event_queue_listen(
-        event_queue,
-        mouse_event.id(),
-        ms_cbk,
-        KernelEventQueueListenMode::OnEdgeHigh,
-    );
-
-    // TODO: The rest of the kernel sped up and weird behaviour came up (mouse dying)
-    // sleep to add delay :(
-    sleep(500);
-    ps2_controller.flush();
-    while let Some(event) = event_queue_pop(event_queue) {
-        println!("PS2 Flushing");
-        if event == kb_cbk || event == ms_cbk {
-            ps2_controller.flush();
-        } else {
-            panic!("unreachable")
-        }
+    channel_write_val(interrupts, &INT_KB, &[]);
+    match channel_read_rs(interrupts, &mut buffer, &mut handles_buffer) {
+        ChannelReadResult::Ok => (),
+        _ => panic!(),
     }
+    let kb_ev = handles_buffer[0];
+
+    channel_write_val(interrupts, &INT_MOUSE, &[]);
+    match channel_read_rs(interrupts, &mut buffer, &mut handles_buffer) {
+        ChannelReadResult::Ok => (),
+        _ => panic!(),
+    }
+    let mouse_ev = handles_buffer[0];
+
+    let kb_cbk = 1;
+    let ms_cbk = 2;
+    let kb_srv_cbk = 3;
+    let ms_srv_cbk = 4;
+
+    let (kb_service, kb_right) = channel_create_rs();
+    publish_handle("INPUT:KB", kb_right.id());
+
+    let (ms_service, m_right) = channel_create_rs();
+    publish_handle("INPUT:MOUSE", m_right.id());
+
+    let port = port_create();
+
+    interrupt_set_port(kb_ev, port, kb_cbk);
+    interrupt_set_port(mouse_ev, port, ms_cbk);
+
+    ps2_controller.flush();
 
     println!("PS2 Ready");
 
-    event_queue_listen(
-        event_queue,
-        kb_service_ev,
-        kb_srv_cbk,
-        KernelEventQueueListenMode::OnLevelHigh,
-    );
-
-    event_queue_listen(
-        event_queue,
-        ms_service_ev,
-        ms_srv_cbk,
-        KernelEventQueueListenMode::OnLevelHigh,
-    );
+    object_wait_port_rs(kb_service.id(), port, ObjectSignal::READABLE, kb_srv_cbk);
+    object_wait_port_rs(ms_service.id(), port, ObjectSignal::READABLE, ms_srv_cbk);
 
     let mut kb_listeners: Vec<KernelReference> = Vec::new();
     let mut ms_listeners: Vec<KernelReference> = Vec::new();
 
     loop {
-        receive_event(event_queue_event, ReceiveMode::LevelHigh);
-        while let Some(event) = event_queue_pop(event_queue) {
-            if event == kb_cbk {
-                if let Some(ev) = ps2_controller.keyboard.check_interrupts() {
-                    let message = make_message_new(
-                        &kernel_userspace::input::InputServiceMessage::KeyboardEvent(ev),
-                    );
-                    // ignore if pipe is full, just drop
-                    kb_listeners.retain(|l| match socket_send(l.id(), message.kref().id()) {
-                        Err(kernel_userspace::socket::SocketSendResult::Closed) => false,
-                        _ => true,
-                    });
-                }
-            } else if event == ms_cbk {
-                if let Some(message) = ps2_controller.mouse.check_interrupts() {
-                    // ignore if pipe is full, just drop
-                    ms_listeners.retain(|l| match socket_send(l.id(), message.kref().id()) {
-                        Err(kernel_userspace::socket::SocketSendResult::Closed) => false,
-                        _ => true,
-                    });
-                }
-            } else if event == kb_srv_cbk {
-                if let Some(sock) = socket_accept(kb_service) {
-                    kb_listeners.push(KernelReference::from_id(sock))
-                }
-            } else if event == ms_srv_cbk {
-                if let Some(sock) = socket_accept(ms_service) {
-                    ms_listeners.push(KernelReference::from_id(sock))
-                }
+        let ev = port_wait_rs(port);
+
+        if ev.key == kb_cbk {
+            if let Some(ev) = ps2_controller.keyboard.check_interrupts() {
+                let message = kernel_userspace::input::InputServiceMessage::KeyboardEvent(ev);
+                kb_listeners.retain(|l| channel_write_val(l.id(), &message, &[]));
             }
+            interrupt_acknowledge(kb_ev);
+        } else if ev.key == ms_cbk {
+            if let Some(message) = ps2_controller.mouse.check_interrupts() {
+                ms_listeners.retain(|l| channel_write_val(l.id(), &message, &[]));
+            }
+            interrupt_acknowledge(mouse_ev);
+        } else if ev.key == kb_srv_cbk {
+            match channel_read_rs(kb_service.id(), &mut buffer, &mut handles_buffer) {
+                ChannelReadResult::Ok => (),
+                e => panic!("{e:?}"),
+            }
+            kb_listeners.push(KernelReference::from_id(handles_buffer[0]));
+        } else if ev.key == ms_srv_cbk {
+            match channel_read_rs(ms_service.id(), &mut buffer, &mut handles_buffer) {
+                ChannelReadResult::Ok => (),
+                e => panic!("{e:?}"),
+            }
+            ms_listeners.push(KernelReference::from_id(handles_buffer[0]));
         }
     }
 }

@@ -1,16 +1,15 @@
 use core::{
     fmt::Debug,
     mem::{size_of, transmute},
+    ops::ControlFlow,
 };
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 use kernel_userspace::{
-    backoff_sleep,
-    message::MessageHandle,
+    channel::{channel_create_rs, channel_read_rs, channel_write_rs},
     net::{ArpResponse, IPAddr, Networking, NotSameSubnetError},
-    object::KernelObjectType,
-    service::{deserialize, make_message_new},
-    socket::{SocketHandle, SocketListenHandle},
+    object::KernelReference,
+    service::{deserialize, serialize, Service, SimpleService},
     syscall::spawn_thread,
 };
 use modular_bitfield::{bitfield, specifiers::B48};
@@ -70,7 +69,7 @@ const IP_ADDR: IPAddr = IPAddr::V4(10, 0, 2, 15);
 const SUBNET: u32 = 0xFF0000;
 
 pub fn send_arp(
-    service: &SocketHandle,
+    service: &mut SimpleService,
     mac_addr: u64,
     ip: IPAddr,
 ) -> Result<(), NotSameSubnetError> {
@@ -93,73 +92,85 @@ pub fn send_arp(
     let arp_req = ARPEth { header, arp };
     let buf: &[u8; size_of::<ARPEth>()] = &unsafe { transmute(arp_req) };
 
-    let msg = make_message_new(&kernel_userspace::net::PhysicalNet::SendPacket(buf));
-    service.blocking_send(msg.kref()).unwrap();
-    // wait for ack
-    service.blocking_recv().unwrap();
+    let mut buffer = Vec::new();
+    serialize(
+        &kernel_userspace::net::PhysicalNet::SendPacket(buf),
+        &mut buffer,
+    );
+
+    let mut handles = Vec::new();
+    service.call(&mut buffer, &mut handles).unwrap();
 
     Ok(())
 }
 
 pub fn userspace_networking_main() {
-    let service = SocketListenHandle::listen("NETWORKING").unwrap();
+    let mut pcnet = SimpleService::with_name("PCNET");
 
-    let pcnet = backoff_sleep(|| SocketHandle::connect("PCNET"));
+    let mut buffer = Vec::with_capacity(100);
 
-    let msg = make_message_new(&kernel_userspace::net::PhysicalNet::MacAddrGet);
-    pcnet.blocking_send(msg.kref()).unwrap();
-    let (mac, ty) = pcnet.blocking_recv().unwrap();
+    serialize(&kernel_userspace::net::PhysicalNet::MacAddrGet, &mut buffer);
+    pcnet.call(&mut buffer, &mut Vec::new()).unwrap();
+    let mac: u64 = deserialize(&buffer).unwrap();
 
-    assert_eq!(ty, KernelObjectType::Message);
-    let mac = MessageHandle::from_kref(mac).read_vec();
-    let mac: u64 = deserialize(&mac).unwrap();
+    let (listen_chan, listen_chan_right) = channel_create_rs();
 
-    let msg = make_message_new(&kernel_userspace::net::PhysicalNet::ListenToPackets);
-    pcnet.blocking_send(msg.kref()).unwrap();
-    let (listen, ty) = pcnet.blocking_recv().unwrap();
+    serialize(
+        &kernel_userspace::net::PhysicalNet::ListenToPackets,
+        &mut buffer,
+    );
+    let mut handles = Vec::new();
+    handles.push(listen_chan_right.id());
+    pcnet.call(&mut buffer, &mut handles).unwrap();
 
-    assert_eq!(ty, KernelObjectType::Socket);
-    let listener = SocketHandle::from_raw_socket(listen);
+    spawn_thread(move || monitor_packets(listen_chan));
 
-    spawn_thread(move || monitor_packets(listener));
-    let pcnet = Arc::new(pcnet);
-    loop {
-        let query = service.blocking_accept();
-        let (q, ty) = query.blocking_recv().unwrap();
-
-        if ty != KernelObjectType::Message {
-            error!("usernetworking invalid message");
-            continue;
-        }
-
-        let q = MessageHandle::from_kref(q).read_vec();
-        match deserialize(&q) {
-            Ok(Networking::ArpRequest(ip)) => {
-                let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
-
-                let resp = match mac_addr {
-                    Some(mac) => ArpResponse::Mac(mac),
-                    None => ArpResponse::Pending(send_arp(&pcnet, mac, ip)),
-                };
-
-                let resp = make_message_new(&resp);
-                if query.blocking_send(resp.kref()).is_err() {
-                    info!("usernetworking eof");
-                    continue;
+    Service::new(
+        "NETWORKING",
+        || (),
+        |handle, ()| {
+            match channel_read_rs(handle.id(), &mut buffer, &mut Vec::new()) {
+                kernel_userspace::channel::ChannelReadResult::Ok => (),
+                kernel_userspace::channel::ChannelReadResult::Closed => {
+                    return ControlFlow::Break(())
+                }
+                e => {
+                    warn!("{e:?}");
+                    return ControlFlow::Break(());
                 }
             }
-            Err(_) => continue,
-        };
-    }
+
+            match deserialize(&buffer) {
+                Ok(Networking::ArpRequest(ip)) => {
+                    let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
+
+                    let resp = match mac_addr {
+                        Some(mac) => ArpResponse::Mac(mac),
+                        None => ArpResponse::Pending(send_arp(&mut pcnet, mac, ip)),
+                    };
+
+                    serialize(&resp, &mut buffer);
+                    channel_write_rs(handle.id(), &buffer, &[]);
+                }
+                Err(e) => {
+                    warn!("Bad message: {e:?}");
+                    return ControlFlow::Break(());
+                }
+            };
+
+            ControlFlow::Continue(())
+        },
+    )
+    .run();
 }
 
-pub fn monitor_packets(socket: SocketHandle) {
-    let mut buffer = Vec::new();
+pub fn monitor_packets(socket: KernelReference) {
+    let mut buffer = Vec::with_capacity(2048);
     loop {
-        let (message, ty) = socket.blocking_recv().unwrap();
-
-        assert_eq!(ty, KernelObjectType::Message);
-        MessageHandle::from_kref(message).read_into_vec(&mut buffer);
+        match channel_read_rs(socket.id(), &mut buffer, &mut Vec::new()) {
+            kernel_userspace::channel::ChannelReadResult::Ok => (),
+            e => panic!("{e:?}"),
+        };
 
         assert!(buffer.len() > size_of::<EthernetFrameHeader>());
 

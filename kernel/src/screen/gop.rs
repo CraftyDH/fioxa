@@ -1,20 +1,12 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec::Vec;
 use bootloader::gop::GopInfo;
 use conquer_once::spin::OnceCell;
 use core::fmt::Write;
-use core::num::NonZeroUsize;
-use hashbrown::HashMap;
-use kernel_userspace::event::{
-    event_queue_create, event_queue_get_event, event_queue_listen, event_queue_pop,
-    event_queue_unlisten, receive_event, EventCallback, EventQueueListenId,
-};
-use kernel_userspace::message::MessageHandle;
-use kernel_userspace::object::{KernelObjectType, KernelReference};
-use kernel_userspace::socket::{
-    socket_accept, socket_handle_get_event, socket_listen, socket_listen_get_event, socket_recv,
-    SocketEvents, SocketRecieveResult,
-};
+use core::ops::ControlFlow;
+use kernel_userspace::channel::{channel_read_rs, channel_write_rs};
+use kernel_userspace::service::Service;
 use kernel_userspace::syscall::{sleep, spawn_thread};
 
 #[derive(Clone, Copy)]
@@ -109,82 +101,36 @@ use crate::BOOT_INFO;
 use super::mouse::monitor_cursor_task;
 use super::psf1::PSF1Font;
 
-struct GopMonitorInfo {
-    queued: EventQueueListenId,
-    #[allow(dead_code)]
-    event: KernelReference,
-    sock: KernelReference,
-}
-
 pub fn monitor_stdout_task() {
-    let service = socket_listen("STDOUT").unwrap();
-    let service_accept = socket_listen_get_event(service);
-
-    let mut connections: HashMap<EventCallback, GopMonitorInfo> = HashMap::new();
-    let event_queue = event_queue_create();
-    let event_queue_ev = event_queue_get_event(event_queue);
-
-    let accept_cbk = EventCallback(NonZeroUsize::new(1).unwrap());
-    let mut callbacks = 2;
-    event_queue_listen(
-        event_queue,
-        service_accept,
-        accept_cbk,
-        kernel_userspace::event::KernelEventQueueListenMode::OnLevelHigh,
-    );
-
-    loop {
-        receive_event(
-            event_queue_ev,
-            kernel_userspace::event::ReceiveMode::LevelHigh,
-        );
-        while let Some(callback) = event_queue_pop(event_queue) {
-            if callback == accept_cbk {
-                let Some(sock) = socket_accept(service) else {
-                    continue;
-                };
-                let event = socket_handle_get_event(sock, SocketEvents::RecvBufferEmpty);
-                let cbk = EventCallback(NonZeroUsize::new(callbacks).unwrap());
-                callbacks += 1;
-                let queued = event_queue_listen(
-                    event_queue,
-                    event,
-                    cbk,
-                    kernel_userspace::event::KernelEventQueueListenMode::OnLevelLow,
-                );
-                connections.insert(
-                    cbk,
-                    GopMonitorInfo {
-                        event: KernelReference::from_id(event),
-                        sock: KernelReference::from_id(sock),
-                        queued,
-                    },
-                );
-            } else {
-                let conn = connections.get(&callback).unwrap();
-                match socket_recv(conn.sock.id()) {
-                    Ok((msg, ty)) => {
-                        if ty == KernelObjectType::Message {
-                            let msg = MessageHandle::from_kref(KernelReference::from_id(msg));
-                            let msg = msg.read_vec();
-                            let s = String::from_utf8_lossy(&msg);
-                            with_held_interrupts(|| {
-                                let mut w = WRITER.get().unwrap().lock();
-                                w.write_str(&s).unwrap();
-                            });
-                            continue;
-                        }
-                        error!("GOP STDOUT only accepts messages")
-                    }
-                    Err(SocketRecieveResult::None) => continue,
-                    Err(SocketRecieveResult::EOF) => (),
+    let mut data_buf = Vec::with_capacity(0x1000);
+    let mut empty = Vec::new();
+    let mut service = Service::new(
+        "STDOUT",
+        || (),
+        |handle, ()| {
+            match channel_read_rs(handle.id(), &mut data_buf, &mut empty) {
+                kernel_userspace::channel::ChannelReadResult::Ok => (),
+                kernel_userspace::channel::ChannelReadResult::Empty => {
+                    return ControlFlow::Continue(());
                 }
-                // did something to exit
-                let conn = connections.remove(&callback).unwrap();
-                event_queue_unlisten(event_queue, conn.queued);
-            }
-        }
-    }
+                kernel_userspace::channel::ChannelReadResult::Size => {
+                    warn!("too big message");
+                    return ControlFlow::Break(());
+                }
+                kernel_userspace::channel::ChannelReadResult::Closed => {
+                    return ControlFlow::Break(());
+                }
+            };
+            let s = String::from_utf8_lossy(&data_buf);
+            with_held_interrupts(|| {
+                let mut w = WRITER.get().unwrap().lock();
+                w.write_str(&s).unwrap();
+            });
+            channel_write_rs(handle.id(), &[], &[]);
+            ControlFlow::Continue(())
+        },
+    );
+    service.run();
 }
 
 fn redraw_screen_task() {

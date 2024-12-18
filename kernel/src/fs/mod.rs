@@ -1,20 +1,18 @@
 pub mod fat;
 pub mod mbr;
 
-use core::{fmt::Debug, sync::atomic::AtomicU64};
+use core::{fmt::Debug, ops::ControlFlow, sync::atomic::AtomicU64};
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use conquer_once::spin::Lazy;
 use kernel_userspace::{
+    channel::{channel_read_rs, channel_write_rs},
     fs::{
         FSServiceError, FSServiceMessage, FSServiceMessageResp, StatResponse, StatResponseFile,
         StatResponseFolder,
     },
     message::MessageHandle,
-    object::KernelObjectType,
-    service::{deserialize, make_message_new},
-    socket::{SocketHandle, SocketListenHandle},
-    syscall::spawn_thread,
+    service::{deserialize, serialize, Service},
 };
 
 use crate::{
@@ -202,47 +200,58 @@ pub fn get_file_from_path(partition_id: PartitionId, path: &str) -> Result<VFile
 //     }
 // }
 
-fn file_job_runner(conn: SocketHandle) -> Option<()> {
+pub fn file_handler() {
     // A bit of a hack to extend the lifetime
-    let mut buffer = Vec::new();
+    let mut buffer = Vec::with_capacity(0x1000);
+    let mut fs_buffer = Vec::new();
     let mut btree_child_buffer = BTreeMap::new();
     let mut sec_buf = [0; 512];
 
-    loop {
-        let (msg, ty) = conn.blocking_recv().ok()?;
-        if ty != KernelObjectType::Message {
-            info!("bad message type");
-            return None;
-        }
-        let msg = MessageHandle::from_kref(msg);
-        let msg = msg.read_vec();
-        let msg = deserialize(&msg).ok()?;
-        let res = run_fs_query(msg, &mut buffer, &mut sec_buf, &mut btree_child_buffer);
-        match res {
-            Ok((a, b)) => {
-                let m = make_message_new(&Ok::<_, FSServiceError>(a));
-                conn.blocking_send(m.kref()).ok()?;
-                if let Some(b) = b {
-                    conn.blocking_send(b.kref()).ok()?;
+    let mut service = Service::new(
+        "FS",
+        || (),
+        |handle, ()| {
+            let mut handles_buffer = Vec::new();
+            match channel_read_rs(handle.id(), &mut buffer, &mut handles_buffer) {
+                kernel_userspace::channel::ChannelReadResult::Ok => (),
+                kernel_userspace::channel::ChannelReadResult::Empty => {
+                    return ControlFlow::Continue(());
+                }
+                kernel_userspace::channel::ChannelReadResult::Size => {
+                    error!("Too large fs message");
+                    return ControlFlow::Break(());
+                }
+                kernel_userspace::channel::ChannelReadResult::Closed => {
+                    return ControlFlow::Break(());
                 }
             }
-            Err(e) => {
-                let m = make_message_new(&Err::<FSServiceMessageResp, _>(e));
-                conn.blocking_send(m.kref()).ok()?;
+
+            let msg = match deserialize(&buffer) {
+                Ok(m) => m,
+                Err(e) => {
+                    error!("{e:?}");
+                    return ControlFlow::Break(());
+                }
+            };
+            let res = run_fs_query(msg, &mut fs_buffer, &mut sec_buf, &mut btree_child_buffer);
+            match res {
+                Ok((a, b)) => {
+                    let m = serialize(&Ok::<_, FSServiceError>(a), &mut buffer);
+                    match b {
+                        Some(h) => channel_write_rs(handle.id(), &m, &[h.kref().id()]),
+                        None => channel_write_rs(handle.id(), &m, &[]),
+                    };
+                }
+                Err(e) => {
+                    let m = serialize(&Err::<FSServiceMessageResp, _>(e), &mut buffer);
+                    channel_write_rs(handle.id(), &m, &[]);
+                }
             }
-        }
-    }
-}
 
-pub fn file_handler() {
-    let service = SocketListenHandle::listen("FS").unwrap();
-
-    loop {
-        let conn = service.blocking_accept();
-        spawn_thread(move || {
-            file_job_runner(conn);
-        });
-    }
+            core::ops::ControlFlow::Continue(())
+        },
+    );
+    service.run();
 }
 
 fn run_fs_query<'a>(

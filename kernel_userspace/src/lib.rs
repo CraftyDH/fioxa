@@ -7,19 +7,20 @@ use syscall::sleep;
 #[macro_use]
 extern crate alloc;
 
+pub mod channel;
 pub mod disk;
 pub mod elf;
-pub mod event;
 pub mod fs;
 pub mod ids;
 pub mod input;
+pub mod interrupt;
 pub mod message;
 pub mod net;
 pub mod object;
 pub mod pci;
+pub mod port;
 pub mod process;
 pub mod service;
-pub mod socket;
 pub mod syscall;
 
 pub use num_derive;

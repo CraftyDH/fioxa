@@ -1,17 +1,22 @@
-use core::{mem::ManuallyDrop, ptr::slice_from_raw_parts};
+use core::mem::ManuallyDrop;
 
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 
 use conquer_once::spin::Lazy;
-use kernel_userspace::{ids::ProcessID, process::ProcessExit, syscall::thread_bootstraper};
+use kernel_userspace::{
+    ids::ProcessID,
+    object::{KernelReference, ObjectSignal},
+    process::ProcessExit,
+    syscall::thread_bootstraper,
+};
 use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::{
     assembly::{registers::SavedTaskState, wrmsr},
     cpu_localstorage::CPULocalStorageRW,
     gdt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR},
-    kassert,
     mutex::{Spinlock, SpinlockGuard},
+    scheduling::with_held_interrupts,
     syscall::{syscall_sysret_handler, SyscallError},
 };
 
@@ -150,42 +155,57 @@ pub fn exit_thread_inner(thread: Box<Thread>) {
     if t.threads.is_empty() {
         drop(t);
         *p.exit_status.lock() = ProcessExit::Exited;
-        p.exit_signal.lock().set_level(true);
+        p.signals
+            .lock()
+            .set_signal(ObjectSignal::PROCESS_EXITED, true);
         PROCESSES.lock().remove(&p.pid);
     }
 }
 
-pub fn spawn_process(
-    arg1: usize,
-    arg2: usize,
-    arg3: usize,
-    arg4: usize,
-) -> Result<usize, SyscallError> {
-    let curr = unsafe { CPULocalStorageRW::get_current_task() };
-
-    kassert!(
-        curr.process().privilege != super::process::ProcessPrivilige::USER,
-        "Only kernel may use spawn process"
-    );
-
-    let nbytes = unsafe { &*slice_from_raw_parts(arg2 as *const u8, arg3) };
-
-    let privilege = if arg4 == 1 {
+pub fn spawn_process<F>(
+    func: F,
+    args: &[u8],
+    references: &[KernelReference],
+    kernel: bool,
+) -> ProcessID
+where
+    F: Fn() + Send + Sync + 'static,
+{
+    let privilege = if kernel {
         super::process::ProcessPrivilige::KERNEL
     } else {
         super::process::ProcessPrivilige::USER
     };
 
-    let process = Process::new(privilege, nbytes);
+    let process = Process::new(privilege, args);
+
+    with_held_interrupts(|| unsafe {
+        let mut refs = process.references.lock();
+        let this = CPULocalStorageRW::get_current_task();
+        let mut this_refs = this.process().references.lock();
+        for r in references {
+            refs.add_value(
+                this_refs
+                    .references()
+                    .get(&r.id())
+                    .expect("loader proc should have ref in its map")
+                    .clone(),
+            );
+        }
+    });
+
     let pid = process.pid;
 
+    let boxed_func: Box<dyn Fn()> = Box::new(func);
+    let raw = Box::into_raw(Box::new(boxed_func)) as usize;
+
     // TODO: Validate r8 is a valid entrypoint
-    let thread = process.new_thread(thread_bootstraper as *const u64, arg1);
+    let thread = process.new_thread(thread_bootstraper as *const u64, raw);
     PROCESSES.lock().insert(process.pid, process);
     push_task_queue(thread.expect("new process shouldn't have died"));
 
     // Return process id as successful result;
-    Ok(pid.0 as usize)
+    pid
 }
 
 pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Result<usize, SyscallError> {

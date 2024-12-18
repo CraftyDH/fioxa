@@ -1,6 +1,5 @@
-use alloc::vec::Vec;
 use input::mouse::MousePacket;
-use kernel_userspace::{input::InputServiceMessage, message::MessageHandle, service::make_message};
+use kernel_userspace::input::InputServiceMessage;
 
 use super::PS2Command;
 
@@ -26,7 +25,6 @@ pub struct Mouse {
     command: PS2Command,
     mouse_type: MouseTypeId,
     packet_state: PS2MousePackets,
-    send_buffer: Vec<u8>,
 }
 
 impl Mouse {
@@ -35,7 +33,6 @@ impl Mouse {
             command,
             mouse_type: MouseTypeId::Standard,
             packet_state: PS2MousePackets::None,
-            send_buffer: Default::default(),
         }
     }
 
@@ -141,7 +138,7 @@ impl Mouse {
         Ok(())
     }
 
-    pub fn check_interrupts(&mut self) -> Option<MessageHandle> {
+    pub fn check_interrupts(&mut self) -> Option<InputServiceMessage> {
         let data: u8 = unsafe { self.command.data_port.read() };
         let mut res = None;
         self.packet_state = match (&self.packet_state, &self.mouse_type) {
@@ -165,7 +162,7 @@ impl Mouse {
         res
     }
 
-    pub fn send_packet(&mut self, p1: u8, p2: u8, p3: u8) -> MessageHandle {
+    pub fn send_packet(&mut self, p1: u8, p2: u8, p3: u8) -> InputServiceMessage {
         let left = p1 & 0b0000_0001 > 0;
         let right = p1 & 0b0000_0010 > 0;
         let middle = p1 & 0b0000_0100 > 0;
@@ -191,10 +188,6 @@ impl Mouse {
             x_mov: x as i8,
             y_mov: y as i8,
         };
-
-        make_message(
-            &InputServiceMessage::MouseEvent(packet),
-            &mut self.send_buffer,
-        )
+        InputServiceMessage::MouseEvent(packet)
     }
 }

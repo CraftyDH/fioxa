@@ -12,7 +12,6 @@ pub const SYSCALL_NUMBER: usize = 0x80;
 // Syscalls
 pub const ECHO: usize = 0;
 pub const YIELD_NOW: usize = 1;
-pub const SPAWN_PROCESS: usize = 2;
 pub const SPAWN_THREAD: usize = 3;
 pub const SLEEP: usize = 4;
 pub const EXIT_THREAD: usize = 5;
@@ -22,9 +21,9 @@ pub const GET_PID: usize = 8;
 pub const UNMMAP_PAGE: usize = 9;
 pub const MMAP_PAGE32: usize = 10;
 pub const MESSAGE: usize = 11;
-pub const EVENT: usize = 12;
-pub const EVENT_QUEUE: usize = 13;
-pub const SOCKET: usize = 14;
+pub const PORT: usize = 12;
+pub const INTERRUPT: usize = 13;
+pub const CHANNEL: usize = 14;
 pub const OBJECT: usize = 15;
 pub const PROCESS: usize = 16;
 
@@ -176,29 +175,6 @@ pub fn echo(num: usize) -> usize {
 #[inline]
 pub fn yield_now() {
     unsafe { make_syscall!(YIELD_NOW) };
-}
-
-pub fn spawn_process<F>(func: F, args: &[u8], kernel: bool) -> ProcessID
-where
-    F: Fn() + Send + Sync + 'static,
-{
-    let boxed_func: Box<dyn Fn()> = Box::new(func);
-    let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
-
-    let privilege = if kernel { 1 } else { 0 };
-
-    let res: u64;
-    unsafe {
-        make_syscall!(
-            SPAWN_PROCESS,
-            raw as usize,
-            args.as_ptr() as usize,
-            args.len(),
-            privilege
-            => res
-        )
-    }
-    ProcessID(res)
 }
 
 pub fn spawn_thread<F>(func: F) -> ThreadID

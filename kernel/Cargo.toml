@@ -10,18 +10,18 @@ bootloader = {path = "../bootloader"}
 kernel_userspace = { path = "../kernel_userspace", features = ["kernel"] }
 input = {path = "../input"}
 
-x86_64 = "0.14"
-bit_field = "0.10"
-conquer-once = {version = "0.4", default-features = false}
 acpi = "5.1"
+bit_field = "0.10"
+bitflags = { version = "2.6.0", default-features = false }
+conquer-once = {version = "0.4", default-features = false}
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
+lock_api = { version = "0.4.12", default-features = false }
+log = { version = "0.4", default-features = false }
 modular-bitfield = { version = "0.11", default-features = false}
+serde = { version = "1.0.*", default-features = false, features = ["derive"] }
 thiserror = { version = "2.0", default-features = false }
 volatile = "0.3"
-serde = { version = "1.0.*", default-features = false, features = ["derive"] }
-bitflags = { version = "2.4.1", default-features = false }
-hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
-log = { version = "0.4", default-features = false }
-lock_api = { version = "0.4.12", default-features = false }
+x86_64 = "0.14"
 
 [profile.dev]
 # Increase speed by 1000% since there are lots of hot loops / "zero cost" abstrations that need optimising

@@ -1,10 +1,14 @@
-use alloc::sync::Arc;
-use conquer_once::spin::{Lazy, OnceCell};
+use core::{mem::MaybeUninit, u64};
+
+use alloc::{sync::Arc, vec::Vec};
+use conquer_once::spin::Lazy;
 use kernel_userspace::{
-    message::MessageHandle,
-    object::{KernelObjectType, KernelReference},
-    service::deserialize,
-    socket::{SocketListenHandle, SocketRecieveResult},
+    channel::{
+        channel_create_rs, channel_read_rs, channel_read_val, channel_write_rs, ChannelReadResult,
+    },
+    object::KernelReference,
+    port::{PortNotification, PortNotificationType},
+    process::publish_handle,
     syscall::spawn_thread,
     INT_KB, INT_MOUSE, INT_PCI,
 };
@@ -15,8 +19,13 @@ pub mod exceptions;
 pub mod pic;
 
 use crate::{
-    cpu_localstorage::CPULocalStorageRW, event::KEvent, lapic, mutex::Spinlock,
-    scheduling::with_held_interrupts, syscall,
+    cpu_localstorage::CPULocalStorageRW,
+    kassert, lapic,
+    mutex::Spinlock,
+    port::KPort,
+    scheduling::{process::ThreadHandle, taskmanager::block_task, with_held_interrupts},
+    syscall::{self, SyscallError},
+    time::uptime,
 };
 
 use self::pic::disable_pic;
@@ -120,9 +129,10 @@ pub fn spurious(s: InterruptStackFrame) {
 
 #[inline(always)]
 fn int_interrupt_handler(vector: usize) {
-    INTERRUPT_SOURCES
-        .get()
-        .map(|e| e[vector].lock().trigger_edge(true));
+    INTERRUPT_SOURCES[vector]
+        .lock()
+        .iter()
+        .for_each(|e| e.trigger());
 }
 
 interrupt_handler!(kb_interrupt_handler => keyboard_int_handler);
@@ -140,60 +150,178 @@ fn pci_interrupt_handler(_: InterruptStackFrame) {
     int_interrupt_handler(INT_PCI)
 }
 
-static INTERRUPT_SOURCES: OnceCell<[Arc<Spinlock<KEvent>>; 3]> = OnceCell::uninit();
+static INTERRUPT_SOURCES: Lazy<[Arc<Spinlock<Vec<Arc<KInterruptHandle>>>>; 3]> = Lazy::new(|| {
+    [
+        Arc::new(Default::default()),
+        Arc::new(Default::default()),
+        Arc::new(Default::default()),
+    ]
+});
 
 /// Returns true if there were any interrupt events dispatched
 pub fn check_interrupts() {
-    let kb = KEvent::new();
-    let mouse = KEvent::new();
-    let pci = KEvent::new();
-    INTERRUPT_SOURCES
-        .try_init_once(|| [kb.clone(), mouse.clone(), pci.clone()])
-        .unwrap();
+    let (service, sright) = channel_create_rs();
+    publish_handle("INTERRUPTS", sright.id());
 
-    let ids = Arc::new(with_held_interrupts(|| unsafe {
-        let thread = CPULocalStorageRW::get_current_task();
-        [
-            KernelReference::from_id(thread.process().add_value(kb.into())),
-            KernelReference::from_id(thread.process().add_value(mouse.into())),
-            KernelReference::from_id(thread.process().add_value(pci.into())),
-        ]
-    }));
-
-    let service = SocketListenHandle::listen("INTERRUPTS").expect("we should be able to listen");
-
+    let mut data = Vec::with_capacity(100);
+    let mut handles = Vec::with_capacity(1);
     loop {
-        let conn = service.blocking_accept();
+        match channel_read_rs(service.id(), &mut data, &mut handles) {
+            ChannelReadResult::Ok => (),
+            _ => todo!(),
+        };
+        let handle = KernelReference::from_id(handles[0]);
         spawn_thread({
-            let ids = ids.clone();
-            move || loop {
-                match conn.blocking_recv() {
-                    Ok((msg, ty)) => {
-                        if ty != KernelObjectType::Message {
-                            error!("INTERRUPTS service got invalid message");
-                            return;
-                        }
-                        let msg = MessageHandle::from_kref(msg).read_vec();
+            move || {
+                let mut handles = Vec::with_capacity(1);
+                loop {
+                    let mut val = MaybeUninit::<usize>::uninit();
+                    match channel_read_val(handle.id(), &mut val, &mut handles) {
+                        ChannelReadResult::Ok => (),
+                        ChannelReadResult::Size | ChannelReadResult::Closed => return,
+                        _ => todo!(),
+                    };
 
-                        let Ok(req) = deserialize::<usize>(&msg) else {
-                            error!("INTERRUPTS service got invalid message desc");
-                            return;
-                        };
+                    let req = unsafe { val.assume_init() };
 
-                        let Some(id) = ids.get(req) else {
-                            error!("INTERRUPTS service got invalid id");
-                            return;
-                        };
-
-                        let Ok(()) = conn.blocking_send(id) else {
-                            error!("INTERRUPT service got eof");
-                            return;
-                        };
+                    if req > 2 {
+                        error!("INTERRUPTS service got invalid id");
+                        return;
                     }
-                    Err(SocketRecieveResult::EOF) => return,
-                    Err(SocketRecieveResult::None) => break,
+
+                    let h = Arc::new(KInterruptHandle::new());
+
+                    let id = with_held_interrupts(|| unsafe {
+                        let thread = CPULocalStorageRW::get_current_task();
+                        KernelReference::from_id(thread.process().add_value(h.clone().into()))
+                    });
+
+                    INTERRUPT_SOURCES[req].lock().push(h);
+
+                    channel_write_rs(handle.id(), &[], &[id.id()]);
                 }
             }
         });
+    }
+}
+
+pub struct KInterruptHandle {
+    inner: Spinlock<KInterruptHandleInner>,
+}
+
+struct KInterruptHandleInner {
+    // has the last trigger been acked
+    waiting_ack: bool,
+    // do we have a waiting event (do not deliver if waiting_ack)
+    pending: bool,
+    waiter: InterruptWaiter,
+}
+
+enum InterruptWaiter {
+    None,
+    Thread(Arc<ThreadHandle>),
+    Port { port: Arc<KPort>, key: u64 },
+}
+
+impl KInterruptHandle {
+    pub const fn new() -> Self {
+        Self {
+            inner: Spinlock::new(KInterruptHandleInner {
+                waiting_ack: false,
+                pending: false,
+                waiter: InterruptWaiter::None,
+            }),
+        }
+    }
+
+    pub fn trigger(&self) {
+        let mut this = self.inner.lock();
+
+        if this.pending || this.waiting_ack {
+            this.pending = true;
+            return;
+        }
+
+        match &this.waiter {
+            InterruptWaiter::None => this.pending = true,
+            InterruptWaiter::Thread(t) => {
+                t.wake_up();
+                this.pending = true;
+                this.waiter = InterruptWaiter::None
+            }
+            InterruptWaiter::Port { port, key } => {
+                port.notify(PortNotification {
+                    key: *key,
+                    ty: PortNotificationType::Interrupt {
+                        timestamp: uptime(),
+                    },
+                });
+            }
+        }
+    }
+
+    pub fn wait(&self) -> Result<usize, SyscallError> {
+        loop {
+            let mut this = self.inner.lock();
+
+            kassert!(matches!(this.waiter, InterruptWaiter::None));
+
+            this.waiting_ack = false;
+
+            if this.pending {
+                this.pending = false;
+                return Ok(0);
+            }
+
+            let thread = unsafe { CPULocalStorageRW::get_current_task() };
+            let handle = thread.handle();
+
+            let status = handle.thread.lock();
+            this.waiter = InterruptWaiter::Thread(handle.clone());
+            drop(this);
+            block_task(status);
+        }
+    }
+
+    pub fn set_port(&self, port: Arc<KPort>, key: u64) {
+        let mut this = self.inner.lock();
+
+        if this.pending && !this.waiting_ack {
+            port.notify(PortNotification {
+                key,
+                ty: PortNotificationType::Interrupt {
+                    timestamp: uptime(),
+                },
+            });
+            this.waiting_ack = true;
+        }
+
+        this.waiter = InterruptWaiter::Port { port, key };
+    }
+
+    pub fn ack(&self) {
+        let mut this = self.inner.lock();
+
+        this.waiting_ack = false;
+
+        if this.pending {
+            match core::mem::replace(&mut this.waiter, InterruptWaiter::None) {
+                InterruptWaiter::None => (),
+                InterruptWaiter::Thread(t) => {
+                    t.wake_up();
+                }
+                InterruptWaiter::Port { port, key } => {
+                    port.notify(PortNotification {
+                        key,
+                        ty: PortNotificationType::Interrupt {
+                            timestamp: uptime(),
+                        },
+                    });
+                    this.waiter = InterruptWaiter::Port { port, key };
+                }
+            }
+
+            this.waiting_ack = true;
+        }
     }
 }

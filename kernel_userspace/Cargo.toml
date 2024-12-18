@@ -10,11 +10,12 @@ iret = []
 kernel = []
 
 [dependencies]
-postcard = { version = "1.0.4", features = ["alloc"] }
-serde = { version = "1.0.*", default-features = false, features = ["derive"] }
-input = { path = "../input" }
+bitflags = { version = "2.6.0", default-features = false }
 conquer-once = {version = "0.4", default-features = false}
-thiserror = { version = "2.0", default-features = false }
+input = { path = "../input" }
 num-derive = { version = "0.4.2" }
 num-traits = { version = "0.2.18", default-features = false }
+postcard = { version = "1.0.4", features = ["alloc"] }
+serde = { version = "1.0.*", default-features = false, features = ["derive"] }
 spin = "0.9"
+thiserror = { version = "2.0", default-features = false }

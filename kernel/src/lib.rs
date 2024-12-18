@@ -9,6 +9,7 @@
 #![feature(const_for)]
 #![feature(const_try)]
 #![feature(btree_extract_if)]
+#![feature(extract_if)]
 
 use core::fmt::Write;
 
@@ -34,10 +35,10 @@ pub mod allocator;
 pub mod assembly;
 pub mod boot_aps;
 pub mod bootfs;
+pub mod channel;
 pub mod cpu_localstorage;
 pub mod driver;
 pub mod elf;
-pub mod event;
 pub mod fs;
 pub mod gdt;
 pub mod interrupts;
@@ -49,10 +50,11 @@ pub mod memory;
 pub mod message;
 pub mod mutex;
 pub mod net;
+pub mod object;
 pub mod paging;
 pub mod pci;
+pub mod port;
 pub mod scheduling;
-pub mod socket;
 pub mod syscall;
 pub mod terminal;
 pub mod time;
