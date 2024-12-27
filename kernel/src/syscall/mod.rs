@@ -27,8 +27,8 @@ use crate::{
     },
     port::KPort,
     scheduling::{
-        process::KernelValue,
-        taskmanager::{self, block_task, exit_task, kill_bad_task, yield_task},
+        process::{KernelValue, ThreadState},
+        taskmanager::{self, enter_sched, kill_bad_task},
     },
     time::{uptime, SleptProcess, SLEPT_PROCESSES},
 };
@@ -42,7 +42,6 @@ pub fn set_syscall_idt(idt: &mut InterruptDescriptorTable) {
 
 #[derive(Debug)]
 pub enum SyscallError {
-    Info(&'static str),
     Error,
 }
 
@@ -233,18 +232,33 @@ unsafe extern "C" fn syscall_handler(
     // Run syscalls without interrupts
     // This means execution should not be interrupted
     let thread = CPULocalStorageRW::get_current_task();
-    assert!(!thread.in_syscall);
-    thread.in_syscall = true;
+    {
+        let mut sched = thread.sched().lock();
+        assert!(!sched.in_syscall);
+        if sched.killed {
+            enter_sched(&mut sched);
+            unreachable!("exit thread shouldn't return")
+        }
+        sched.in_syscall = true;
+    }
     use kernel_userspace::syscall::*;
     let res = match number {
-        ECHO => echo_handler(arg1),
         YIELD_NOW => {
-            yield_task();
-            Ok(0)
+            let mut sched = thread.sched().lock();
+            sched.in_syscall = false;
+            enter_sched(&mut sched);
+            return 0;
         }
+        EXIT_THREAD => {
+            let mut sched = thread.sched().lock();
+            sched.in_syscall = false;
+            sched.killed = true;
+            enter_sched(&mut sched);
+            unreachable!("exit thread shouldn't return")
+        }
+        ECHO => echo_handler(arg1),
         SPAWN_THREAD => taskmanager::spawn_thread(arg1, arg2),
         SLEEP => sleep_handler(arg1),
-        EXIT_THREAD => exit_task(),
         MMAP_PAGE => mmap_page_handler(arg1, arg2),
         MMAP_PAGE32 => mmap_page32_handler(),
         UNMMAP_PAGE => {
@@ -265,14 +279,11 @@ unsafe extern "C" fn syscall_handler(
             Err(SyscallError::Error)
         }
     };
-    thread.in_syscall = false;
+
+    thread.sched().lock().in_syscall = false;
     match res {
         Ok(r) => r,
         Err(SyscallError::Error) => kill_bad_task(),
-        Err(SyscallError::Info(e)) => {
-            error!("Error occured during syscall {e:?}");
-            kill_bad_task()
-        }
     }
 }
 
@@ -381,19 +392,19 @@ unsafe fn sys_reference_handler(
         ReferenceOperation::Wait => {
             let val = kunwrap!(refs.references().get(&id)).clone();
 
-            let handle = thread.handle().clone();
             let mask = ObjectSignal::from_bits_truncate(arg3 as u64);
 
             let waiter = |signals: &mut KObjectSignal| {
                 if signals.signal_status().intersects(mask) {
                     Ok(signals.signal_status())
                 } else {
-                    let status = handle.thread.lock();
+                    let mut sched = thread.sched().lock();
+                    sched.state = ThreadState::Sleeping;
                     signals.wait(SignalWaiter {
-                        ty: crate::object::SignalWaiterType::One(handle.clone()),
+                        ty: crate::object::SignalWaiterType::One(thread.thread()),
                         mask,
                     });
-                    Err(status)
+                    Err(sched)
                 }
             };
 
@@ -405,9 +416,9 @@ unsafe fn sys_reference_handler(
 
             match res {
                 Ok(val) => Ok(val.bits() as usize),
-                Err(status) => {
+                Err(mut status) => {
                     drop(refs);
-                    block_task(status);
+                    enter_sched(&mut status);
                     Ok(match val {
                         KernelValue::Channel(v) => v.signals(|w| w.signal_status().bits() as usize),
                         KernelValue::Process(v) => v.signals(|w| w.signal_status().bits() as usize),
@@ -480,17 +491,17 @@ unsafe fn sleep_handler(arg1: usize) -> Result<usize, SyscallError> {
     let time = start + arg1 as u64;
     let thread = CPULocalStorageRW::get_current_task();
 
-    let handle = thread.handle().clone();
-    let status = handle.thread.lock();
+    let mut sched = thread.sched().lock();
+    sched.state = ThreadState::Sleeping;
 
     SLEPT_PROCESSES
         .lock()
         .push(core::cmp::Reverse(SleptProcess {
             wakeup: time,
-            thread: Arc::downgrade(&handle),
+            thread: thread.thread(),
         }));
 
-    block_task(status);
+    enter_sched(&mut sched);
     Ok((uptime() - start) as usize)
 }
 

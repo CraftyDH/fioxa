@@ -1,5 +1,3 @@
-use core::mem::ManuallyDrop;
-
 use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
 
 use conquer_once::spin::Lazy;
@@ -9,30 +7,91 @@ use kernel_userspace::{
     process::ProcessExit,
     syscall::thread_bootstraper,
 };
-use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::{
     assembly::{registers::SavedTaskState, wrmsr},
     cpu_localstorage::CPULocalStorageRW,
     gdt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR},
     mutex::{Spinlock, SpinlockGuard},
-    scheduling::with_held_interrupts,
+    scheduling::{process::ThreadState, with_held_interrupts},
     syscall::{syscall_sysret_handler, SyscallError},
 };
 
-use super::process::{LinkedThreadList, Process, Thread};
+use super::process::{Process, Thread, ThreadSched};
 
 pub type ProcessesListType = BTreeMap<ProcessID, Arc<Process>>;
 pub static PROCESSES: Lazy<Spinlock<ProcessesListType>> =
     Lazy::new(|| Spinlock::new(BTreeMap::new()));
-static TASK_QUEUE: Spinlock<LinkedThreadList> = Spinlock::new(LinkedThreadList::new());
 
-pub fn push_task_queue(val: Box<Thread>) {
-    TASK_QUEUE.lock().push(val)
+pub static SCHEDULER: Spinlock<GlobalSchedData> = Spinlock::new(GlobalSchedData::new());
+
+pub struct GlobalSchedData {
+    queue_head: Option<Arc<Thread>>,
+    queue_tail: Option<Arc<Thread>>,
 }
 
-pub fn append_task_queue(list: &mut LinkedThreadList) {
-    TASK_QUEUE.lock().append(list)
+pub struct ThreadSchedGlobalData {
+    queued: bool,
+    next: Option<Arc<Thread>>,
+}
+
+impl ThreadSchedGlobalData {
+    pub const fn new() -> Self {
+        Self {
+            queued: false,
+            next: None,
+        }
+    }
+}
+
+impl GlobalSchedData {
+    pub const fn new() -> Self {
+        Self {
+            queue_head: None,
+            queue_tail: None,
+        }
+    }
+
+    fn pop_thread(&mut self) -> Option<Arc<Thread>> {
+        unsafe {
+            let head = self.queue_head.take()?;
+            let sg = head.sched_global();
+            sg.queued = false;
+            match sg.next.take() {
+                nxt @ Some(_) => self.queue_head = nxt,
+                None => {
+                    // We were head and tail
+                    self.queue_tail = None;
+                }
+            }
+            Some(head)
+        }
+    }
+
+    pub fn queue_thread(&mut self, thread: Arc<Thread>) {
+        unsafe {
+            let sg = thread.sched_global();
+            if sg.queued {
+                return;
+            }
+            sg.queued = true;
+
+            if self.queue_head.is_none() {
+                // Case 1: nothing else is in the queue, we become head and tail
+                assert!(self.queue_tail.is_none());
+                self.queue_head = Some(thread.clone());
+                self.queue_tail = Some(thread)
+            } else {
+                // Case 2: insert ourself as the new tail
+                if let Some(tail) = self.queue_tail.take() {
+                    let tsg = tail.sched_global();
+                    assert!(tsg.next.is_none());
+                    tsg.next = Some(thread.clone());
+                }
+                self.queue_tail = Some(thread)
+            }
+        }
+    }
 }
 
 pub unsafe fn enable_syscall() {
@@ -79,67 +138,37 @@ unsafe extern "C" fn scheduler() {
     info!("Starting scheduler on core: {}", id);
 
     loop {
-        let t = TASK_QUEUE.lock().pop();
-        match t {
-            Some(task) => {
-                without_interrupts(|| {
-                    if !task.in_syscall
-                        && task
-                            .handle()
-                            .kill_signal
-                            .load(core::sync::atomic::Ordering::Relaxed)
-                    {
-                        exit_thread_inner(task);
-                        return;
-                    }
-                    let (task, res) = sched_run_tick(task);
-
-                    // If the state is bad attempt to continue
-                    let after = || {
-                        let depth = CPULocalStorageRW::hold_interrupts_depth();
-                        if res == ACTION_YIELD {
-                            if depth > 0 {
-                                error!("Thread shouldn't be holding interrupts when yielding");
-                                return Err(task);
-                            }
-                            TASK_QUEUE.lock().push(task);
-                        } else if res == ACTION_EXIT_TASK {
-                            if depth > 0 {
-                                error!("Thread shouldn't be holding interrupts when exiting (was there a panic?)");
-                                return Err(task);
-                            }
-
-                            exit_thread_inner(task);
-                        } else if res == ACTION_BLOCKING {
-                            let handle = task.handle().clone();
-                            if depth == 0 {
-                                error!("Thread should be holding it's handle when blocking");
-                                return Err(task);
-                            } else if depth == 1 {
-                                *handle.thread.data_ptr() = Some(task);
-                                handle.thread.force_unlock();
-                            } else {
-                                error!("Thread should not be holding more than it's handle when blocking");
-                                handle.thread.force_unlock();
-                                return Err(task);
-                            }
-                        } else {
-                            error!("should be a valid action");
-                            return Err(task);
-                        }
-                        Ok(())
-                    };
-
-                    if let Err(task) = after() {
-                        exit_thread_inner(task);
-                        CPULocalStorageRW::set_hold_interrupts_depth(0);
-                    }
-                })
+        let task = SCHEDULER.lock().pop_thread();
+        if let Some(task) = task {
+            let mut sched = task.sched().lock();
+            if !sched.in_syscall && sched.killed {
+                exit_thread_inner(&task, &mut sched);
+                continue;
             }
-            None => {
-                // nothing can run so sleep
-                core::arch::asm!("hlt")
+            assert_eq!(sched.state, ThreadState::Runnable);
+
+            sched_run_tick(&task, &mut sched);
+
+            if CPULocalStorageRW::hold_interrupts_depth() != 1 {
+                error!("Thread shouldn't be holding interrupts when yielding");
+                exit_thread_inner(&task, &mut sched);
+                CPULocalStorageRW::set_hold_interrupts_depth(0);
             }
+
+            match sched.state {
+                ThreadState::Zombie => {
+                    panic!("bad state")
+                }
+                ThreadState::Runnable => {
+                    sched.state = ThreadState::Runnable;
+                    drop(sched);
+                    SCHEDULER.lock().queue_thread(task);
+                }
+                ThreadState::Sleeping => (),
+            }
+        } else {
+            // nothing can run so sleep
+            core::arch::asm!("hlt")
         }
     }
 }
@@ -153,30 +182,33 @@ pub fn kill_bad_task() -> ! {
         warn!(
             "KILLING BAD TASK: PID: {:?}, TID: {:?}, PRIV: {:?}",
             thread.process().pid,
-            thread.handle().tid(),
+            thread.tid(),
             thread.process().privilege
         );
 
         if CPULocalStorageRW::get_context() == 0 {
             panic!("Cannot kill in context 0");
         }
-        exit_task();
+
+        let mut sched = CPULocalStorageRW::get_current_task().sched().lock();
+        sched.killed = true;
+        if sched.in_syscall {
+            error!("Killing bad task in syscall");
+            sched.in_syscall = false;
+        }
+        enter_sched(&mut sched);
+        unreachable!("exit thread shouldn't return");
     }
 }
 
-pub fn exit_task() -> ! {
-    unsafe {
-        enter_sched(ACTION_EXIT_TASK);
-        unreachable!("exit thread shouldn't return")
-    }
-}
-
-pub fn exit_thread_inner(thread: Box<Thread>) {
+pub fn exit_thread_inner(thread: &Thread, sched: &mut ThreadSched) {
+    sched.state = ThreadState::Zombie;
     let p = thread.process();
     let mut t = p.threads.lock();
-    t.threads
-        .remove(&thread.handle().tid())
-        .expect("thread should be in thread list");
+    if t.threads.remove(&thread.tid()).is_none() {
+        error!("thread should be in thread list {thread:?}")
+    }
+
     if t.threads.is_empty() {
         drop(t);
         *p.exit_status.lock() = ProcessExit::Exited;
@@ -227,7 +259,7 @@ where
     // TODO: Validate r8 is a valid entrypoint
     let thread = process.new_thread(thread_bootstraper as *const u64, raw);
     PROCESSES.lock().insert(process.pid, process);
-    push_task_queue(thread.expect("new process shouldn't have died"));
+    SCHEDULER.lock().queue_thread(thread.unwrap());
 
     // Return process id as successful result;
     pid
@@ -241,8 +273,8 @@ pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Result<usize, SyscallErr
     match thread {
         Some(thread) => {
             // Return process id as successful result;
-            let res = thread.handle().tid().0 as usize;
-            push_task_queue(thread);
+            let res = thread.tid().0 as usize;
+            SCHEDULER.lock().queue_thread(thread);
             Ok(res)
         }
         // process has been killed
@@ -250,23 +282,18 @@ pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Result<usize, SyscallErr
     }
 }
 
-pub const ACTION_YIELD: usize = 0;
-pub const ACTION_EXIT_TASK: usize = 1;
-pub const ACTION_BLOCKING: usize = 2;
-
-unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
-    let SavedTaskState { sp, ip } = task.state.take().unwrap();
+unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
+    let SavedTaskState { sp, ip } = sched.task_state.take().unwrap();
 
     let tss = &mut CPULocalStorageRW::get_gdt().tss;
-    tss.privilege_stack_table[0] = task.kstack_top;
+    tss.privilege_stack_table[0] = sched.kstack_top;
 
     let cr3 = task.process().cr3_page;
 
-    CPULocalStorageRW::set_current_task(task);
+    CPULocalStorageRW::set_current_task(task, &sched);
 
     let new_sp;
     let new_ip;
-    let action;
 
     core::arch::asm!(
         "push rbx",
@@ -302,58 +329,49 @@ unsafe fn sched_run_tick(mut task: Box<Thread>) -> (Box<Thread>, usize) {
         lateout("r8") _,
         lateout("rdi") new_ip,
         lateout("rsi") new_sp,
-        lateout("rdx") action,
-        lateout("rcx") _,
-    );
-    let mut task = CPULocalStorageRW::take_current_task();
-
-    task.state = Some(SavedTaskState {
-        sp: new_sp,
-        ip: new_ip,
-    });
-
-    (task, action)
-}
-
-pub unsafe fn enter_sched(action: usize) {
-    core::arch::asm!(
-        "push rbx",
-        "push rbp",
-        "pushfq",
-        "cli",
-        "mov gs:0x9, cl",
-        "lea rdi, [rip+2f]", // ret addr
-        "mov rsi, rsp",      // save rsp
-        "mov rsp, gs:0x22",  // load new stack
-        "mov rax, gs:0x2A",
-        "jmp rax",
-        "2:",
-        "popfq",
-        "pop rbp",
-        "pop rbx",
-        in("cl") 0u8,
-        in("rdx") action,
-        lateout("rax") _,
-        lateout("r15") _,
-        lateout("r14") _,
-        lateout("r13") _,
-        lateout("r12") _,
-        lateout("r11") _,
-        lateout("r10") _,
-        lateout("r9") _,
-        lateout("r8") _,
-        lateout("rdi") _,
-        lateout("rsi") _,
         lateout("rdx") _,
         lateout("rcx") _,
     );
+    CPULocalStorageRW::clear_current_task();
+
+    sched.task_state = Some(SavedTaskState {
+        sp: new_sp,
+        ip: new_ip,
+    });
 }
 
-pub fn yield_task() {
-    unsafe { enter_sched(ACTION_YIELD) };
-}
-
-pub fn block_task(handle: SpinlockGuard<Option<Box<Thread>>>) {
-    let _ = ManuallyDrop::new(handle);
-    unsafe { enter_sched(ACTION_BLOCKING) }
+/// We need to hold the threads spinlock before enter, and it will be held after return
+pub fn enter_sched(_: &mut SpinlockGuard<ThreadSched>) {
+    unsafe {
+        core::arch::asm!(
+            "push rbx",
+            "push rbp",
+            "pushfq",
+            "cli",
+            "mov gs:0x9, cl",
+            "lea rdi, [rip+2f]", // ret addr
+            "mov rsi, rsp",      // save rsp
+            "mov rsp, gs:0x22",  // load new stack
+            "mov rax, gs:0x2A",
+            "jmp rax",
+            "2:",
+            "popfq",
+            "pop rbp",
+            "pop rbx",
+            in("cl") 0u8,
+            lateout("rax") _,
+            lateout("r15") _,
+            lateout("r14") _,
+            lateout("r13") _,
+            lateout("r12") _,
+            lateout("r11") _,
+            lateout("r10") _,
+            lateout("r9") _,
+            lateout("r8") _,
+            lateout("rdi") _,
+            lateout("rsi") _,
+            lateout("rdx") _,
+            lateout("rcx") _,
+        );
+    }
 }

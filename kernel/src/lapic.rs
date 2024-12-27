@@ -10,7 +10,7 @@ use crate::{
         page_table::{MapMemoryError, Mapper, PageTable, TableLevel4},
         MemoryMappingFlags,
     },
-    scheduling::{taskmanager::yield_task, with_held_interrupts},
+    scheduling::{taskmanager::enter_sched, with_held_interrupts},
     time::{check_sleep, HPET},
 };
 
@@ -84,7 +84,8 @@ pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
 
         // if we are not in sched yield to it
         if CPULocalStorageRW::get_context() > 0 {
-            yield_task();
+            let mut sched = CPULocalStorageRW::get_current_task().sched().lock();
+            enter_sched(&mut sched);
         }
     }
 }

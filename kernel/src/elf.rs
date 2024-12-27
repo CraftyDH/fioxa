@@ -15,7 +15,7 @@ use crate::{
     paging::{page_mapper::PageMapping, MemoryMappingFlags},
     scheduling::{
         process::{Process, ProcessPrivilige},
-        taskmanager::{push_task_queue, PROCESSES},
+        taskmanager::{PROCESSES, SCHEDULER},
         with_held_interrupts,
     },
 };
@@ -128,10 +128,10 @@ pub fn load_elf<'a>(
         }
     }
     let thread = process.new_thread(elf_header.e_entry as *const u64, 0);
-    with_held_interrupts(|| {
-        PROCESSES.lock().insert(process.pid, process.clone());
-    });
-    push_task_queue(thread.expect("new process shouldn't have died"));
+    PROCESSES.lock().insert(process.pid, process.clone());
+    SCHEDULER
+        .lock()
+        .queue_thread(thread.expect("new process shouldn't have died"));
     Ok(process)
 }
 

@@ -3,7 +3,6 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use alloc::boxed::Box;
 use x86_64::instructions::interrupts;
 
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
         page::Page, page_allocator::global_allocator, page_table::Mapper, virt_addr_for_phys,
         MemoryLoc, MemoryMappingFlags, PageAllocator, PER_CPU_MAP,
     },
-    scheduling::process::Thread,
+    scheduling::process::{Thread, ThreadSched},
 };
 
 // Do we probe the task manager for a new task?
@@ -142,35 +141,31 @@ impl CPULocalStorageRW {
         }
     }
 
-    /// SAFTEY: The pointer must be dropped before the next take_current_task call, and there cannot be multiple pointers at once
-    pub unsafe fn get_current_task<'l>() -> &'l mut Thread {
+    pub unsafe fn get_current_task<'l>() -> &'l Thread {
         unsafe {
             let ptr = localstorage_read_imm!(current_task_ptr: u64);
 
             assert_ne!(ptr, 0);
-            &mut *(ptr as *mut Thread)
+            &*(ptr as *const Thread)
         }
     }
 
-    pub fn take_current_task() -> Box<Thread> {
+    pub fn clear_current_task() {
         unsafe {
             let ptr = localstorage_read_imm!(current_task_ptr: u64);
+            assert_ne!(ptr, 0);
             localstorage_write!(0 => current_task_ptr: u64);
-
-            assert_ne!(ptr, 0);
-            Box::from_raw(ptr as *mut _)
         }
     }
 
-    pub fn set_current_task(task: Box<Thread>) {
+    pub fn set_current_task(task: &Thread, sched: &ThreadSched) {
         unsafe {
             let old_ptr = localstorage_read_imm!(current_task_ptr: u64);
             assert_eq!(old_ptr, 0);
 
-            let kstack_top = task.kstack_top.as_u64();
-            let ptr = Box::into_raw(task);
+            let kstack_top = sched.kstack_top.as_u64();
             localstorage_write!(kstack_top => current_task_kernel_stack_top: u64);
-            localstorage_write!(ptr => current_task_ptr: u64);
+            localstorage_write!(task as *const Thread as u64 => current_task_ptr: u64);
         }
     }
 

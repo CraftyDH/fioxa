@@ -1,10 +1,10 @@
 use core::cmp::Reverse;
 
 use acpi::AcpiTables;
-use alloc::{collections::binary_heap::BinaryHeap, sync::Weak};
+use alloc::{collections::binary_heap::BinaryHeap, sync::Arc};
 use conquer_once::spin::OnceCell;
 
-use crate::{acpi::FioxaAcpiHandler, mutex::Spinlock, scheduling::process::ThreadHandle};
+use crate::{acpi::FioxaAcpiHandler, mutex::Spinlock, scheduling::process::Thread};
 
 pub mod hpet;
 
@@ -28,12 +28,12 @@ pub fn uptime() -> u64 {
 #[derive(Debug)]
 pub struct SleptProcess {
     pub wakeup: u64,
-    pub thread: Weak<ThreadHandle>,
+    pub thread: Arc<Thread>,
 }
 
 impl PartialEq for SleptProcess {
     fn eq(&self, other: &Self) -> bool {
-        self.wakeup == other.wakeup && self.thread.ptr_eq(&other.thread)
+        self.wakeup == other.wakeup && Arc::ptr_eq(&self.thread, &other.thread)
     }
 }
 
@@ -62,9 +62,7 @@ pub fn check_sleep() {
     if let Some(mut procs) = SLEPT_PROCESSES.try_lock() {
         // pop elements from the heap if they should be woken up
         while procs.peek().is_some_and(|p| p.0.wakeup <= uptime) {
-            if let Some(p) = procs.pop().unwrap().0.thread.upgrade() {
-                p.wake_up();
-            }
+            procs.pop().unwrap().0.thread.wake();
         }
     }
 }

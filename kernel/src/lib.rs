@@ -101,7 +101,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
             error!(
                 "KERNEL PANIC: Caused by {:?} {:?}\n{}",
                 thread.process().pid,
-                thread.handle().tid(),
+                thread.tid(),
                 info
             );
         }

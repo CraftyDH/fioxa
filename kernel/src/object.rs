@@ -15,7 +15,7 @@ use kernel_userspace::{
     service::deserialize,
 };
 
-use crate::{port::KPort, scheduling::process::ThreadHandle};
+use crate::{port::KPort, scheduling::process::Thread};
 
 #[derive(Default)]
 pub struct KObjectSignal {
@@ -54,7 +54,7 @@ impl KObjectSignal {
 
         for waiter in self.signal_waiters.extract_if(|w| new.intersects(w.mask)) {
             match waiter.ty {
-                SignalWaiterType::One(thread) => thread.wake_up(),
+                SignalWaiterType::One(thread) => thread.wake(),
                 SignalWaiterType::Port { port, key } => {
                     port.notify(PortNotification {
                         key,
@@ -75,7 +75,7 @@ pub struct SignalWaiter {
 }
 
 pub enum SignalWaiterType {
-    One(Arc<ThreadHandle>),
+    One(Arc<Thread>),
     Port { port: Arc<KPort>, key: u64 },
 }
 

@@ -4,7 +4,10 @@ use kernel_userspace::port::PortNotification;
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     mutex::Spinlock,
-    scheduling::{process::ThreadHandle, taskmanager::block_task},
+    scheduling::{
+        process::{Thread, ThreadState},
+        taskmanager::enter_sched,
+    },
 };
 
 pub struct KPort {
@@ -13,7 +16,7 @@ pub struct KPort {
 
 pub struct KPortInner {
     queue: VecDeque<PortNotification>,
-    waiters: VecDeque<Arc<ThreadHandle>>,
+    waiters: VecDeque<Arc<Thread>>,
 }
 
 impl KPort {
@@ -34,12 +37,12 @@ impl KPort {
             }
 
             let thread = unsafe { CPULocalStorageRW::get_current_task() };
-            let handle = thread.handle();
 
-            let status = handle.thread.lock();
-            this.waiters.push_back(handle.clone());
+            let mut sched = thread.sched().lock();
+            sched.state = ThreadState::Sleeping;
+            this.waiters.push_back(thread.thread());
             drop(this);
-            block_task(status);
+            enter_sched(&mut sched);
         }
     }
 
@@ -47,7 +50,7 @@ impl KPort {
         let mut this = self.inner.lock();
         this.queue.push_back(notif);
         if let Some(t) = this.waiters.pop_front() {
-            t.wake_up();
+            t.wake();
         }
     }
 }

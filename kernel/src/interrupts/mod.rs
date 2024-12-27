@@ -23,7 +23,11 @@ use crate::{
     kassert, lapic,
     mutex::Spinlock,
     port::KPort,
-    scheduling::{process::ThreadHandle, taskmanager::block_task, with_held_interrupts},
+    scheduling::{
+        process::{Thread, ThreadState},
+        taskmanager::enter_sched,
+        with_held_interrupts,
+    },
     syscall::{self, SyscallError},
     time::uptime,
 };
@@ -219,7 +223,7 @@ struct KInterruptHandleInner {
 
 enum InterruptWaiter {
     None,
-    Thread(Arc<ThreadHandle>),
+    Thread(Arc<Thread>),
     Port { port: Arc<KPort>, key: u64 },
 }
 
@@ -245,7 +249,7 @@ impl KInterruptHandle {
         match &this.waiter {
             InterruptWaiter::None => this.pending = true,
             InterruptWaiter::Thread(t) => {
-                t.wake_up();
+                t.wake();
                 this.pending = true;
                 this.waiter = InterruptWaiter::None
             }
@@ -274,12 +278,11 @@ impl KInterruptHandle {
             }
 
             let thread = unsafe { CPULocalStorageRW::get_current_task() };
-            let handle = thread.handle();
-
-            let status = handle.thread.lock();
-            this.waiter = InterruptWaiter::Thread(handle.clone());
+            let mut sched = thread.sched().lock();
+            sched.state = ThreadState::Sleeping;
+            this.waiter = InterruptWaiter::Thread(thread.thread());
             drop(this);
-            block_task(status);
+            enter_sched(&mut sched);
         }
     }
 
@@ -307,9 +310,7 @@ impl KInterruptHandle {
         if this.pending {
             match core::mem::replace(&mut this.waiter, InterruptWaiter::None) {
                 InterruptWaiter::None => (),
-                InterruptWaiter::Thread(t) => {
-                    t.wake_up();
-                }
+                InterruptWaiter::Thread(t) => t.wake(),
                 InterruptWaiter::Port { port, key } => {
                     port.notify(PortNotification {
                         key,

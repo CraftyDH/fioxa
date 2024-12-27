@@ -1,11 +1,11 @@
 use core::{
+    cell::UnsafeCell,
     fmt::Debug,
     num::NonZeroUsize,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use alloc::{
-    boxed::Box,
     collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
@@ -25,6 +25,7 @@ use x86_64::{
 use crate::{
     assembly::registers::SavedTaskState,
     channel::KChannelHandle,
+    cpu_localstorage::CPULocalStorageRW,
     gdt,
     interrupts::KInterruptHandle,
     message::KMessage,
@@ -39,7 +40,7 @@ use crate::{
     time::HPET,
 };
 
-use super::taskmanager::{push_task_queue, PROCESSES};
+use super::taskmanager::{ThreadSchedGlobalData, PROCESSES, SCHEDULER};
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 pub const KSTACK_ADDR: u64 = 0xffff_800_000_000_000;
@@ -93,7 +94,7 @@ pub struct Process {
 #[derive(Default)]
 pub struct ProcessThreads {
     thread_next_id: u64,
-    pub threads: BTreeMap<ThreadID, Arc<ThreadHandle>>,
+    pub threads: BTreeMap<ThreadID, Arc<Thread>>,
 }
 
 pub struct ProcessMemory {
@@ -170,7 +171,7 @@ impl Process {
         })
     }
 
-    pub fn new_thread(&self, entry_point: *const u64, arg: usize) -> Option<Box<Thread>> {
+    pub fn new_thread(&self, entry_point: *const u64, arg: usize) -> Option<Arc<Thread>> {
         let mut threads = self.threads.lock();
         let tid = threads.get_next_id();
 
@@ -210,11 +211,21 @@ impl Process {
 
         unsafe { *(kstack_base_virt as *mut usize) = arg };
         unsafe { *((kstack_base_virt + 8) as *mut InterruptStackFrameValue) = interrupt_frame }
-        let handle = Arc::new(ThreadHandle {
+        let thread = Arc::new_cyclic(|this| Thread {
+            weak_self: this.clone(),
             process: self.this.upgrade().unwrap(),
             tid,
-            thread: Spinlock::new(None),
-            kill_signal: AtomicBool::new(false),
+            sched_global: ThreadSchedGlobal::new(),
+            sched: Spinlock::new(ThreadSched {
+                state: ThreadState::Runnable,
+                task_state: Some(SavedTaskState {
+                    sp: kstack_top - 0x1000,
+                    ip: start_new_task as usize,
+                }),
+                kstack_top: VirtAddr::from_ptr(kstack_top as *const ()),
+                in_syscall: false,
+                killed: false,
+            }),
         });
 
         let status = self.exit_status.lock();
@@ -222,18 +233,9 @@ impl Process {
         if let ProcessExit::Exited = *status {
             return None;
         }
+        threads.threads.insert(tid, thread.clone());
 
-        threads.threads.insert(tid, handle.clone());
-        Some(Box::new(Thread {
-            handle,
-            kstack_top: VirtAddr::from_ptr(kstack_top as *const ()),
-            state: Some(SavedTaskState {
-                sp: kstack_top - 0x1000,
-                ip: start_new_task as usize,
-            }),
-            linked_next: None,
-            in_syscall: false,
-        }))
+        return Some(thread);
     }
 
     pub fn add_value(&self, value: KernelValue) -> KernelReferenceID {
@@ -247,7 +249,7 @@ impl Process {
     pub fn kill_threads(&self) {
         let threads = self.threads.lock();
         for t in &threads.threads {
-            t.1.kill_signal.store(true, Ordering::Relaxed);
+            t.1.sched().lock().killed = true;
         }
         if threads.threads.is_empty() {
             drop(threads);
@@ -268,10 +270,17 @@ impl KObject for Process {
 
 #[naked]
 pub extern "C" fn start_new_task(arg: usize) {
+    unsafe extern "C" fn after_start_cleanup() {
+        let thread = CPULocalStorageRW::get_current_task();
+        // We must unlock the mutex after return from scheduler
+        thread.sched().force_unlock();
+    }
+
     unsafe {
         core::arch::naked_asm!(
             "mov cl, 2",
             "mov gs:0x9, cl", // set cpu context
+            "call {}",
             "pop rdi",
             // Zero registers (except rdi which has arg)
             "xor r15d, r15d",
@@ -290,6 +299,7 @@ pub extern "C" fn start_new_task(arg: usize) {
             "xor ebp,  ebp",
             // start
             "iretq",
+            sym after_start_cleanup
         );
     }
 }
@@ -307,107 +317,94 @@ impl ProcessThreads {
     }
 }
 
-pub struct ThreadHandle {
+pub struct Thread {
+    weak_self: Weak<Thread>,
     process: Arc<Process>,
     tid: ThreadID,
-    pub thread: Spinlock<Option<Box<Thread>>>,
-    pub kill_signal: AtomicBool,
+
+    sched_global: ThreadSchedGlobal,
+    sched: Spinlock<ThreadSched>,
 }
 
-impl ThreadHandle {
-    pub fn tid(&self) -> ThreadID {
-        self.tid
+impl Debug for Thread {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Thread")
+            .field("pid", &self.process.pid)
+            .field("tid", &self.tid)
+            .finish()
+    }
+}
+
+impl Thread {
+    pub fn thread(&self) -> Arc<Thread> {
+        self.weak_self.upgrade().unwrap()
     }
 
     pub fn process(&self) -> &Arc<Process> {
         &self.process
     }
 
-    pub fn wake_up(&self) {
-        if let Some(thread) = self.thread.lock().take() {
-            push_task_queue(thread)
+    pub fn tid(&self) -> ThreadID {
+        self.tid
+    }
+
+    /// SAFTEY: Must hold the global sched lock
+    pub unsafe fn sched_global(&self) -> &mut ThreadSchedGlobalData {
+        &mut *self.sched_global.0.get()
+    }
+
+    pub fn sched(&self) -> &Spinlock<ThreadSched> {
+        &self.sched
+    }
+
+    pub fn wake(&self) {
+        let mut s = self.sched.lock();
+        match s.state {
+            ThreadState::Zombie | ThreadState::Runnable => (),
+            ThreadState::Sleeping => {
+                s.state = ThreadState::Runnable;
+                drop(s);
+                SCHEDULER
+                    .lock()
+                    .queue_thread(self.weak_self.upgrade().unwrap());
+            }
         }
     }
 }
 
-pub struct LinkedThreadList {
-    head: Option<Box<Thread>>,
-    tail: Option<*mut Thread>,
-}
+/// Data used for the scheduler blocked behind the global lock
+pub struct ThreadSchedGlobal(UnsafeCell<ThreadSchedGlobalData>);
 
-unsafe impl Send for LinkedThreadList {}
+/// The sched global is safe, we must hold lock to access it
+unsafe impl Send for ThreadSchedGlobal {}
+unsafe impl Sync for ThreadSchedGlobal {}
 
-impl LinkedThreadList {
+impl ThreadSchedGlobal {
     pub const fn new() -> Self {
-        Self {
-            head: None,
-            tail: None,
-        }
-    }
-
-    pub fn push(&mut self, mut thread: Box<Thread>) {
-        let next_addr = Some(thread.as_mut() as *mut Thread);
-        let next_tail = Some(thread);
-        match self.tail {
-            Some(addr) => unsafe {
-                let tail = &mut *addr;
-                assert!(
-                    tail.linked_next.is_none(),
-                    "the tail shouldn't have any linked elements"
-                );
-                tail.linked_next = next_tail;
-            },
-            None => {
-                assert!(self.head.is_none(), "if tail is none, head should be none");
-                self.head = next_tail;
-            }
-        }
-        self.tail = next_addr;
-    }
-
-    pub fn pop(&mut self) -> Option<Box<Thread>> {
-        let mut el = self.head.take()?;
-        match el.linked_next.take() {
-            Some(nxt) => self.head = Some(nxt),
-            None => self.tail = None,
-        }
-        Some(el)
-    }
-
-    /// Takes all threads from other and places them in here.
-    pub fn append(&mut self, other: &mut LinkedThreadList) {
-        let Some(nxt) = other.head.take() else { return };
-        match self.tail {
-            Some(addr) => unsafe {
-                let tail = &mut *addr;
-                assert!(
-                    tail.linked_next.is_none(),
-                    "the tail shouldn't have any linked elements"
-                );
-                tail.linked_next = Some(nxt);
-            },
-            None => {
-                assert!(self.head.is_none(), "if tail is none, head should be none");
-                self.head = Some(nxt)
-            }
-        }
-        self.tail = other.tail.take();
+        Self(UnsafeCell::new(ThreadSchedGlobalData::new()))
     }
 }
 
-impl Default for LinkedThreadList {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-pub struct Thread {
-    handle: Arc<ThreadHandle>,
-    pub state: Option<SavedTaskState>,
+pub struct ThreadSched {
+    pub state: ThreadState,
+    pub task_state: Option<SavedTaskState>,
     pub kstack_top: VirtAddr,
-    linked_next: Option<Box<Thread>>,
-    // if true do not kill as it might hold resources
     pub in_syscall: bool,
+    pub killed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadState {
+    Zombie,
+    Runnable,
+    Sleeping,
+}
+
+impl ThreadSched {
+    pub fn save(&mut self, state: SavedTaskState) {
+        assert!(self.task_state.is_none());
+        self.task_state = Some(state);
+    }
 }
 
 #[derive(Clone)]
@@ -473,37 +470,12 @@ impl Into<KernelValue> for Arc<KInterruptHandle> {
     }
 }
 
-impl Thread {
-    pub fn handle(&self) -> &Arc<ThreadHandle> {
-        &self.handle
-    }
-
-    pub fn process(&self) -> &Arc<Process> {
-        &self.handle.process
-    }
-
-    pub fn save(&mut self, state: SavedTaskState) {
-        assert!(self.state.is_none());
-        self.state = Some(state);
-    }
-}
-
-impl Debug for Thread {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Thread")
-            .field("tid", &self.handle.tid)
-            .field("state", &self.state)
-            .finish()
-    }
-}
-
 impl Drop for Thread {
     fn drop(&mut self) {
-        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.handle.tid.0;
+        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.tid.0;
 
         unsafe {
-            self.handle
-                .process
+            self.process
                 .memory
                 .lock()
                 .page_mapper

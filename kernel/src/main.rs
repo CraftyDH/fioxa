@@ -39,7 +39,7 @@ use kernel::paging::{
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::Process;
 use kernel::scheduling::taskmanager::{
-    core_start_multitasking, push_task_queue, spawn_process, PROCESSES,
+    core_start_multitasking, spawn_process, PROCESSES, SCHEDULER,
 };
 use kernel::scheduling::with_held_interrupts;
 use kernel::screen::gop;
@@ -149,7 +149,9 @@ unsafe extern "C" fn main_stage2() {
         .lock()
         .insert(init_process.pid, init_process.clone());
 
-    push_task_queue(init_process.new_thread(init as *const u64, 0).unwrap());
+    SCHEDULER
+        .lock()
+        .queue_thread(init_process.new_thread(init as *const u64, 0).unwrap());
 
     core_start_multitasking();
 }
