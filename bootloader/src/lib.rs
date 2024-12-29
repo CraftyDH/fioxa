@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(slice_pattern)]
 
 #[macro_use]
 extern crate log;

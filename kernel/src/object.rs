@@ -52,7 +52,10 @@ impl KObjectSignal {
 
         self.signal_status = new;
 
-        for waiter in self.signal_waiters.extract_if(|w| new.intersects(w.mask)) {
+        for waiter in self
+            .signal_waiters
+            .extract_if(.., |w| new.intersects(w.mask))
+        {
             match waiter.ty {
                 SignalWaiterType::One(thread) => thread.wake(),
                 SignalWaiterType::Port { port, key } => {
