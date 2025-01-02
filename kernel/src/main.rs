@@ -26,6 +26,7 @@ use kernel::ioapic::{enable_apic, Madt};
 use kernel::lapic::{enable_localapic, map_lapic};
 use kernel::logging::KERNEL_LOGGER;
 use kernel::memory::MemoryMapIter;
+use kernel::mutex::Spinlock;
 use kernel::net::ethernet::userspace_networking_main;
 use kernel::object::init_handle_new_proc;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
@@ -44,6 +45,7 @@ use kernel::scheduling::taskmanager::{
 use kernel::scheduling::with_held_interrupts;
 use kernel::screen::gop;
 use kernel::screen::psf1;
+use kernel::serial::{serial_monitor_stdin, Serial, COM_1, SERIAL};
 use kernel::syscall::syscall_kernel_handler;
 use kernel::terminal::Writer;
 use kernel::time::init_time;
@@ -68,6 +70,15 @@ pub fn main_stage1(info: *const BootInfo) -> ! {
         // init gdt & idt
         gdt::init_bootgdt();
         interrupts::init_idt();
+
+        // Try connecting to COM1
+        let mut serial = Serial::new(COM_1);
+        if serial.init() {
+            // Reset colors, clear screen and move to top left
+            serial.write_str("\x1b[0m\x1b[2J\x1b[H");
+            serial.write_str("Welcome to Fioxa...\n");
+            SERIAL.init_once(|| Spinlock::new(serial));
+        }
 
         set_syscall_fn(syscall_kernel_handler as u64);
 
@@ -142,7 +153,11 @@ unsafe extern "C" fn main_stage2() {
 
     init_bsp_localstorage();
 
-    let init_process = Process::new(kernel::scheduling::process::ProcessPrivilige::KERNEL, &[]);
+    let init_process = Process::new(
+        kernel::scheduling::process::ProcessPrivilige::KERNEL,
+        &[],
+        "INIT_PROCESS",
+    );
     assert!(init_process.pid == ProcessID(0));
 
     PROCESSES
@@ -227,12 +242,37 @@ extern "C" fn init() {
         r
     };
 
-    spawn_process(check_interrupts, &[], &[get_init()], true);
-    spawn_process(elf::elf_new_process_loader, &[], &[get_init()], true);
-    spawn_process(gop::gop_entry, &[], &[get_init()], true);
-    spawn_process(userspace_networking_main, &[], &[get_init()], true);
-    spawn_process(testing_proc, &[], &[get_init()], true);
-    spawn_process(after_boot_pci, &[], &[get_init()], true);
+    spawn_process(
+        check_interrupts,
+        &[],
+        &[get_init()],
+        "check interrupts",
+        true,
+    );
+    spawn_process(
+        elf::elf_new_process_loader,
+        &[],
+        &[get_init()],
+        "elf_new_process_loader",
+        true,
+    );
+    spawn_process(gop::gop_entry, &[], &[get_init()], "gop_entry", true);
+    spawn_process(
+        userspace_networking_main,
+        &[],
+        &[get_init()],
+        "userspace_networking_main",
+        true,
+    );
+    spawn_process(testing_proc, &[], &[get_init()], "testing_proc", true);
+    spawn_process(after_boot_pci, &[], &[get_init()], "after_boot_pci", true);
+    spawn_process(
+        serial_monitor_stdin,
+        &[],
+        &[get_init()],
+        "serial montior",
+        true,
+    );
 
     // TODO: Use IO permissions instead of kernel
     load_elf(PS2_DRIVER, &[], &[get_init()], true).unwrap();

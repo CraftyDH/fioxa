@@ -42,3 +42,4 @@ pub fn backoff_sleep<R>(mut f: impl FnMut() -> Option<R>) -> R {
 pub const INT_KB: usize = 0;
 pub const INT_MOUSE: usize = 1;
 pub const INT_PCI: usize = 2;
+pub const INT_COM1: usize = 3;

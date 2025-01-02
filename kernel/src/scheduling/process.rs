@@ -89,6 +89,7 @@ pub struct Process {
     pub references: Spinlock<ProcessReferences>,
     pub exit_status: Spinlock<ProcessExit>,
     pub signals: Spinlock<KObjectSignal>,
+    pub name: &'static str,
 }
 
 #[derive(Default)]
@@ -121,7 +122,7 @@ impl ProcessReferences {
 }
 
 impl Process {
-    pub fn new(privilege: ProcessPrivilige, args: &[u8]) -> Arc<Self> {
+    pub fn new(privilege: ProcessPrivilige, args: &[u8], name: &'static str) -> Arc<Self> {
         let mut page_mapper = PageMapperManager::new(global_allocator());
 
         static APIC_LOCATION: Lazy<Arc<PageMapping>> =
@@ -168,6 +169,7 @@ impl Process {
             }),
             exit_status: Spinlock::new(ProcessExit::NotExitedYet),
             signals: Default::default(),
+            name,
         })
     }
 
@@ -331,6 +333,7 @@ impl Debug for Thread {
         f.debug_struct("Thread")
             .field("pid", &self.process.pid)
             .field("tid", &self.tid)
+            .field("name", &self.process.name)
             .finish()
     }
 }

@@ -1,4 +1,6 @@
-use alloc::{boxed::Box, collections::BTreeMap, sync::Arc};
+use core::fmt::Write;
+
+use alloc::{boxed::Box, collections::BTreeMap, fmt, sync::Arc};
 
 use conquer_once::spin::Lazy;
 use kernel_userspace::{
@@ -49,6 +51,18 @@ impl GlobalSchedData {
         Self {
             queue_head: None,
             queue_tail: None,
+        }
+    }
+
+    pub fn dump_runnable(&self, writer: &mut impl Write) -> fmt::Result {
+        unsafe {
+            writer.write_str("Runnable tasks\n")?;
+            let mut head = &self.queue_head;
+            while let Some(h) = head {
+                writer.write_fmt(format_args!("{h:?}\n"))?;
+                head = &h.sched_global().next;
+            }
+            Ok(())
         }
     }
 
@@ -223,6 +237,7 @@ pub fn spawn_process<F>(
     func: F,
     args: &[u8],
     references: &[KernelReference],
+    name: &'static str,
     kernel: bool,
 ) -> ProcessID
 where
@@ -234,7 +249,7 @@ where
         super::process::ProcessPrivilige::USER
     };
 
-    let process = Process::new(privilege, args);
+    let process = Process::new(privilege, args, name);
 
     with_held_interrupts(|| unsafe {
         let mut refs = process.references.lock();

@@ -10,7 +10,7 @@ use kernel_userspace::{
     port::{PortNotification, PortNotificationType},
     process::publish_handle,
     syscall::spawn_thread,
-    INT_KB, INT_MOUSE, INT_PCI,
+    INT_COM1, INT_KB, INT_MOUSE, INT_PCI,
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
@@ -153,9 +153,14 @@ interrupt_handler!(pci_interrupt_handler => pci_int_handler);
 fn pci_interrupt_handler(_: InterruptStackFrame) {
     int_interrupt_handler(INT_PCI)
 }
+interrupt_handler!(com1_interrupt_handler => com1_int_handler);
+fn com1_interrupt_handler(_: InterruptStackFrame) {
+    int_interrupt_handler(INT_COM1)
+}
 
-static INTERRUPT_SOURCES: Lazy<[Arc<Spinlock<Vec<Arc<KInterruptHandle>>>>; 3]> = Lazy::new(|| {
+static INTERRUPT_SOURCES: Lazy<[Arc<Spinlock<Vec<Arc<KInterruptHandle>>>>; 4]> = Lazy::new(|| {
     [
+        Arc::new(Default::default()),
         Arc::new(Default::default()),
         Arc::new(Default::default()),
         Arc::new(Default::default()),
@@ -188,7 +193,7 @@ pub fn check_interrupts() {
 
                     let req = unsafe { val.assume_init() };
 
-                    if req > 2 {
+                    if req > 3 {
                         error!("INTERRUPTS service got invalid id");
                         return;
                     }

@@ -10,7 +10,9 @@ use conquer_once::noblock::OnceCell;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
-    interrupts::{keyboard_int_handler, mouse_int_handler, pci_int_handler, set_irq_handler},
+    interrupts::{
+        com1_int_handler, keyboard_int_handler, mouse_int_handler, pci_int_handler, set_irq_handler,
+    },
     paging::{
         page::{Page, Size4KB},
         page_allocator::global_allocator,
@@ -58,6 +60,9 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<TableLevel4>) {
     set_irq_handler(52, pci_int_handler);
     set_redirect_entry(apic.apic_addr, 0, 10, 52, true);
     set_redirect_entry(apic.apic_addr, 0, 11, 52, true);
+
+    set_irq_handler(53, com1_int_handler);
+    set_redirect_entry(apic.apic_addr, 0, 4, 53, true);
 }
 
 pub fn send_ipi_to(apic_id: u8, vector: u8) {

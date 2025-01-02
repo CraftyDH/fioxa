@@ -50,6 +50,7 @@ pub mod paging;
 pub mod pci;
 pub mod port;
 pub mod scheduling;
+pub mod serial;
 pub mod syscall;
 pub mod terminal;
 pub mod time;

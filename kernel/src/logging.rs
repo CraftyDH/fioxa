@@ -2,7 +2,7 @@ use core::fmt::Write;
 
 use log::{Level, Log};
 
-use crate::{scheduling::with_held_interrupts, screen::gop::WRITER};
+use crate::{screen::gop::WRITER, serial::SERIAL};
 
 pub static KERNEL_LOGGER: KernelLogger = KernelLogger;
 pub struct KernelLogger;
@@ -14,15 +14,28 @@ impl Log for KernelLogger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            with_held_interrupts(|| {
-                let mut w = WRITER.get().unwrap().lock();
+            if let Some(serial) = SERIAL.get() {
+                serial
+                    .lock()
+                    .write_fmt(format_args!(
+                        "\x1b[1;{}m{: <5}\x1b[22;39m {} > {}\n",
+                        get_8bit_color_for_level(record.level()),
+                        record.level(),
+                        record.target(),
+                        record.args()
+                    ))
+                    .unwrap();
+            }
+            if let Some(w) = WRITER.get() {
+                let mut w = w.lock();
                 let color = w.tty.set_fg_colour(get_color_for_level(record.level()));
-                w.write_fmt(format_args!("{} ", record.level())).unwrap();
+                w.write_fmt(format_args!("{: <5} ", record.level()))
+                    .unwrap();
                 w.tty.set_fg_colour(0xFFFFFF);
                 w.write_fmt(format_args!("{} > {}\n", record.target(), record.args()))
                     .unwrap();
                 w.tty.set_fg_colour(color);
-            });
+            }
         }
     }
 
@@ -36,5 +49,15 @@ pub fn get_color_for_level(level: Level) -> u32 {
         Level::Info => 0x55FF55,
         Level::Debug => 0x5555FF,
         Level::Trace => 0x55FFFF,
+    }
+}
+
+pub fn get_8bit_color_for_level(level: Level) -> &'static str {
+    match level {
+        Level::Error => "31",
+        Level::Warn => "33",
+        Level::Info => "32",
+        Level::Debug => "34",
+        Level::Trace => "35",
     }
 }

@@ -56,6 +56,7 @@ pub fn load_elf<'a>(
             ProcessPrivilige::USER
         },
         args,
+        "ELF SPAWNED",
     );
 
     // build initial refs
