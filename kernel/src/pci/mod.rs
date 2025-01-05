@@ -5,6 +5,7 @@ use crate::{
     elf,
     fs::FSDRIVES,
     mutex::Spinlock,
+    scheduling::process::ProcessReferences,
 };
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
@@ -212,13 +213,14 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                 debug!("AMD PCnet");
                 let sid = pci_dev_handler(pci_bus, segment, bus, device, function);
 
-                elf::load_elf(
-                    AMD_PCNET_DRIVER,
-                    &[],
-                    &[KernelReference::from_id(clone_init_service()), sid],
-                    true,
-                )
-                .unwrap();
+                elf::load_elf(AMD_PCNET_DRIVER)
+                    .unwrap()
+                    .references(ProcessReferences::from_refs(&[
+                        clone_init_service(),
+                        sid.id(),
+                    ]))
+                    .privilege(crate::scheduling::process::ProcessPrivilege::KERNEL)
+                    .build();
                 return;
             }
             _ => (),

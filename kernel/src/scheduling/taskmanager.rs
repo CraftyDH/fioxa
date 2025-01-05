@@ -1,13 +1,10 @@
-use core::fmt::Write;
+use core::{any::type_name, fmt::Write};
 
 use alloc::{boxed::Box, collections::BTreeMap, fmt, sync::Arc};
 
 use conquer_once::spin::Lazy;
 use kernel_userspace::{
-    ids::ProcessID,
-    object::{KernelReference, ObjectSignal},
-    process::ProcessExit,
-    syscall::thread_bootstraper,
+    ids::ProcessID, object::ObjectSignal, process::ProcessExit, syscall::thread_bootstraper,
 };
 
 use crate::{
@@ -15,11 +12,11 @@ use crate::{
     cpu_localstorage::CPULocalStorageRW,
     gdt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR},
     mutex::{Spinlock, SpinlockGuard},
-    scheduling::{process::ThreadState, with_held_interrupts},
+    scheduling::process::ThreadState,
     syscall::{syscall_sysret_handler, SyscallError},
 };
 
-use super::process::{Process, Thread, ThreadSched};
+use super::process::{Process, ProcessBuilder, ProcessMemory, Thread, ThreadSched};
 
 pub type ProcessesListType = BTreeMap<ProcessID, Arc<Process>>;
 pub static PROCESSES: Lazy<Spinlock<ProcessesListType>> =
@@ -233,58 +230,23 @@ pub fn exit_thread_inner(thread: &Thread, sched: &mut ThreadSched) {
     }
 }
 
-pub fn spawn_process<F>(
-    func: F,
-    args: &[u8],
-    references: &[KernelReference],
-    name: &'static str,
-    kernel: bool,
-) -> ProcessID
+pub fn spawn_process<F>(func: F) -> ProcessBuilder
 where
     F: Fn() + Send + Sync + 'static,
 {
-    let privilege = if kernel {
-        super::process::ProcessPrivilige::KERNEL
-    } else {
-        super::process::ProcessPrivilige::USER
-    };
-
-    let process = Process::new(privilege, args, name);
-
-    with_held_interrupts(|| unsafe {
-        let mut refs = process.references.lock();
-        let this = CPULocalStorageRW::get_current_task();
-        let mut this_refs = this.process().references.lock();
-        for r in references {
-            refs.add_value(
-                this_refs
-                    .references()
-                    .get(&r.id())
-                    .expect("loader proc should have ref in its map")
-                    .clone(),
-            );
-        }
-    });
-
-    let pid = process.pid;
-
     let boxed_func: Box<dyn Fn()> = Box::new(func);
     let raw = Box::into_raw(Box::new(boxed_func)) as usize;
 
-    // TODO: Validate r8 is a valid entrypoint
-    let thread = process.new_thread(thread_bootstraper as *const u64, raw);
-    PROCESSES.lock().insert(process.pid, process);
-    SCHEDULER.lock().queue_thread(thread.unwrap());
-
-    // Return process id as successful result;
-    pid
+    ProcessBuilder::new(ProcessMemory::new(), thread_bootstraper as *const u64, raw)
+        .privilege(super::process::ProcessPrivilege::KERNEL)
+        .name(type_name::<F>())
 }
 
 pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Result<usize, SyscallError> {
     let thread = CPULocalStorageRW::get_current_task();
 
     // TODO: Validate r8 is a valid entrypoint
-    let thread = thread.process().new_thread(arg1 as *const u64, arg2);
+    let thread = Thread::new(thread.process().clone(), arg1 as *const u64, arg2);
     match thread {
         Some(thread) => {
             // Return process id as successful result;
@@ -303,7 +265,7 @@ unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
     let tss = &mut CPULocalStorageRW::get_gdt().tss;
     tss.privilege_stack_table[0] = sched.kstack_top;
 
-    let cr3 = task.process().cr3_page;
+    let cr3 = sched.cr3_page;
 
     CPULocalStorageRW::set_current_task(task, &sched);
 

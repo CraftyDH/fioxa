@@ -38,10 +38,10 @@ use kernel::paging::{
     KERNEL_DATA_MAP, KERNEL_LVL4, OFFSET_MAP,
 };
 use kernel::pci::enumerate_pci;
-use kernel::scheduling::process::Process;
-use kernel::scheduling::taskmanager::{
-    core_start_multitasking, spawn_process, PROCESSES, SCHEDULER,
+use kernel::scheduling::process::{
+    ProcessBuilder, ProcessMemory, ProcessPrivilege, ProcessReferences,
 };
+use kernel::scheduling::taskmanager::{core_start_multitasking, spawn_process};
 use kernel::scheduling::with_held_interrupts;
 use kernel::screen::gop;
 use kernel::screen::psf1;
@@ -153,20 +153,12 @@ unsafe extern "C" fn main_stage2() {
 
     init_bsp_localstorage();
 
-    let init_process = Process::new(
-        kernel::scheduling::process::ProcessPrivilige::KERNEL,
-        &[],
-        "INIT_PROCESS",
-    );
+    let init_process = ProcessBuilder::new(ProcessMemory::new(), init as *const u64, 0)
+        .privilege(ProcessPrivilege::KERNEL)
+        .name("INIT PROCESS".into())
+        .build();
+
     assert!(init_process.pid == ProcessID(0));
-
-    PROCESSES
-        .lock()
-        .insert(init_process.pid, init_process.clone());
-
-    SCHEDULER
-        .lock()
-        .queue_thread(init_process.new_thread(init as *const u64, 0).unwrap());
 
     core_start_multitasking();
 }
@@ -239,44 +231,41 @@ extern "C" fn init() {
     let mut get_init = || {
         let (l, r) = channel_create_rs();
         init_handles.push(l);
-        r
+        ProcessReferences::from_refs(&[r.id()])
     };
 
-    spawn_process(
-        check_interrupts,
-        &[],
-        &[get_init()],
-        "check interrupts",
-        true,
-    );
-    spawn_process(
-        elf::elf_new_process_loader,
-        &[],
-        &[get_init()],
-        "elf_new_process_loader",
-        true,
-    );
-    spawn_process(gop::gop_entry, &[], &[get_init()], "gop_entry", true);
-    spawn_process(
-        userspace_networking_main,
-        &[],
-        &[get_init()],
-        "userspace_networking_main",
-        true,
-    );
-    spawn_process(testing_proc, &[], &[get_init()], "testing_proc", true);
-    spawn_process(after_boot_pci, &[], &[get_init()], "after_boot_pci", true);
-    spawn_process(
-        serial_monitor_stdin,
-        &[],
-        &[get_init()],
-        "serial montior",
-        true,
-    );
+    spawn_process(check_interrupts)
+        .references(get_init())
+        .build();
+
+    spawn_process(elf::elf_new_process_loader)
+        .references(get_init())
+        .build();
+
+    spawn_process(gop::gop_entry).references(get_init()).build();
+
+    spawn_process(userspace_networking_main)
+        .references(get_init())
+        .build();
+
+    spawn_process(testing_proc).references(get_init()).build();
+    spawn_process(after_boot_pci).references(get_init()).build();
+
+    spawn_process(serial_monitor_stdin)
+        .references(get_init())
+        .build();
 
     // TODO: Use IO permissions instead of kernel
-    load_elf(PS2_DRIVER, &[], &[get_init()], true).unwrap();
-    load_elf(TERMINAL_ELF, &[], &[get_init()], false).unwrap();
+    load_elf(PS2_DRIVER)
+        .unwrap()
+        .references(get_init())
+        .privilege(ProcessPrivilege::KERNEL)
+        .build();
+
+    load_elf(TERMINAL_ELF)
+        .unwrap()
+        .references(get_init())
+        .build();
 
     init_handle_new_proc(init_handles);
 }

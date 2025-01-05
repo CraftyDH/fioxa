@@ -55,37 +55,34 @@ fn generate_next_process_id() -> ProcessID {
     ProcessID(PID.fetch_add(1, Ordering::Relaxed))
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum ProcessPrivilige {
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ProcessPrivilege {
     KERNEL,
     USER,
 }
 
-impl ProcessPrivilige {
+impl ProcessPrivilege {
     pub fn get_code_segment(&self) -> SegmentSelector {
         match self {
-            ProcessPrivilige::KERNEL => gdt::KERNEL_CODE_SELECTOR,
-            ProcessPrivilige::USER => gdt::USER_CODE_SELECTOR,
+            ProcessPrivilege::KERNEL => gdt::KERNEL_CODE_SELECTOR,
+            ProcessPrivilege::USER => gdt::USER_CODE_SELECTOR,
         }
     }
 
     pub fn get_data_segment(&self) -> SegmentSelector {
         match self {
-            ProcessPrivilige::KERNEL => gdt::KERNEL_DATA_SELECTOR,
-            ProcessPrivilige::USER => gdt::USER_DATA_SELECTOR,
+            ProcessPrivilege::KERNEL => gdt::KERNEL_DATA_SELECTOR,
+            ProcessPrivilege::USER => gdt::USER_DATA_SELECTOR,
         }
     }
 }
 
 pub struct Process {
-    // a reference to the process so that we can clone it for threads (it is weak to avoid a circular chain)
-    this: Weak<Process>,
     pub pid: ProcessID,
     pub threads: Spinlock<ProcessThreads>,
-    pub privilege: ProcessPrivilige,
+    pub privilege: ProcessPrivilege,
     pub args: Vec<u8>,
     pub memory: Spinlock<ProcessMemory>,
-    pub cr3_page: u64,
     pub references: Spinlock<ProcessReferences>,
     pub exit_status: Spinlock<ProcessExit>,
     pub signals: Spinlock<KObjectSignal>,
@@ -103,26 +100,8 @@ pub struct ProcessMemory {
     pub owned32_pages: Vec<AllocatedPage<GlobalPageAllocator>>,
 }
 
-pub struct ProcessReferences {
-    references: HashMap<KernelReferenceID, KernelValue>,
-    next_id: usize,
-}
-
-impl ProcessReferences {
-    pub fn references(&mut self) -> &mut HashMap<KernelReferenceID, KernelValue> {
-        &mut self.references
-    }
-
-    pub fn add_value(&mut self, value: KernelValue) -> KernelReferenceID {
-        let id = KernelReferenceID(NonZeroUsize::new(self.next_id).unwrap());
-        self.next_id += 1;
-        assert!(self.references.insert(id, value).is_none());
-        id
-    }
-}
-
-impl Process {
-    pub fn new(privilege: ProcessPrivilige, args: &[u8], name: &'static str) -> Arc<Self> {
+impl ProcessMemory {
+    pub fn new() -> Self {
         let mut page_mapper = PageMapperManager::new(global_allocator());
 
         static APIC_LOCATION: Lazy<Arc<PageMapping>> =
@@ -152,92 +131,82 @@ impl Process {
                 .unwrap();
         }
 
-        Arc::new_cyclic(|this| Self {
-            this: this.clone(),
+        Self {
+            page_mapper,
+            owned32_pages: Vec::new(),
+        }
+    }
+}
+
+pub struct ProcessReferences {
+    references: HashMap<KernelReferenceID, KernelValue>,
+    next_id: usize,
+}
+
+impl ProcessReferences {
+    pub fn new() -> Self {
+        Self {
+            references: HashMap::new(),
+            next_id: 1,
+        }
+    }
+
+    pub fn from_refs(refs_to_clone: &[KernelReferenceID]) -> Self {
+        let mut refs = ProcessReferences::new();
+
+        unsafe {
+            let this = CPULocalStorageRW::get_current_task();
+            let mut this_refs = this.process().references.lock();
+            for r in refs_to_clone {
+                refs.add_value(
+                    this_refs
+                        .references()
+                        .get(r)
+                        .expect("the references should belong to the calling process")
+                        .clone(),
+                );
+            }
+        }
+        refs
+    }
+
+    pub fn references(&mut self) -> &mut HashMap<KernelReferenceID, KernelValue> {
+        &mut self.references
+    }
+
+    pub fn add_value(&mut self, value: KernelValue) -> KernelReferenceID {
+        let id = KernelReferenceID(NonZeroUsize::new(self.next_id).unwrap());
+        self.next_id += 1;
+        assert!(self.references.insert(id, value).is_none());
+        id
+    }
+}
+
+impl Default for ProcessReferences {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Process {
+    pub fn new(
+        privilege: ProcessPrivilege,
+        memory: ProcessMemory,
+        references: ProcessReferences,
+        args: Vec<u8>,
+        name: &'static str,
+    ) -> Arc<Self> {
+        Arc::new(Self {
             pid: generate_next_process_id(),
             privilege,
-            args: args.to_vec(),
-            cr3_page: unsafe { page_mapper.get_mapper_mut().get_physical_address() as u64 },
-            memory: Spinlock::new(ProcessMemory {
-                page_mapper,
-                owned32_pages: Default::default(),
-            }),
+            args: args,
+            memory: Spinlock::new(memory),
             threads: Default::default(),
-            references: Spinlock::new(ProcessReferences {
-                references: Default::default(),
-                next_id: 1,
-            }),
+            references: Spinlock::new(references),
             exit_status: Spinlock::new(ProcessExit::NotExitedYet),
             signals: Default::default(),
             name,
         })
-    }
-
-    pub fn new_thread(&self, entry_point: *const u64, arg: usize) -> Option<Arc<Thread>> {
-        let mut threads = self.threads.lock();
-        let tid = threads.get_next_id();
-
-        // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
-        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0;
-
-        let stack = match self.privilege {
-            ProcessPrivilige::KERNEL => PageMapping::new_lazy_filled(STACK_SIZE as usize),
-            _ => PageMapping::new_lazy(STACK_SIZE as usize),
-        };
-
-        self.memory
-            .lock()
-            .page_mapper
-            .insert_mapping_at_set(stack_base as usize, stack, MemoryMappingFlags::all())
-            .unwrap();
-
-        let kstack_base = KSTACK_ADDR + (KSTACK_SIZE + 0x1000) * tid.0;
-        let kstack_top = (kstack_base + KSTACK_SIZE) as usize;
-        let stack = PageMapping::new_lazy_filled(KSTACK_SIZE as usize);
-        let kstack_ptr_for_start = stack.base_top_stack();
-        let kstack_base_virt = virt_addr_for_phys(kstack_ptr_for_start as u64) as usize;
-
-        self.memory
-            .lock()
-            .page_mapper
-            .insert_mapping_at_set(kstack_base as usize, stack, MemoryMappingFlags::WRITEABLE)
-            .unwrap();
-
-        let interrupt_frame = InterruptStackFrameValue {
-            instruction_pointer: VirtAddr::from_ptr(entry_point),
-            code_segment: self.privilege.get_code_segment().0 as u64,
-            cpu_flags: 0x202,
-            stack_pointer: VirtAddr::new(stack_base + STACK_SIZE),
-            stack_segment: self.privilege.get_data_segment().0 as u64,
-        };
-
-        unsafe { *(kstack_base_virt as *mut usize) = arg };
-        unsafe { *((kstack_base_virt + 8) as *mut InterruptStackFrameValue) = interrupt_frame }
-        let thread = Arc::new_cyclic(|this| Thread {
-            weak_self: this.clone(),
-            process: self.this.upgrade().unwrap(),
-            tid,
-            sched_global: ThreadSchedGlobal::new(),
-            sched: Spinlock::new(ThreadSched {
-                state: ThreadState::Runnable,
-                task_state: Some(SavedTaskState {
-                    sp: kstack_top - 0x1000,
-                    ip: start_new_task as usize,
-                }),
-                kstack_top: VirtAddr::from_ptr(kstack_top as *const ()),
-                in_syscall: false,
-                killed: false,
-            }),
-        });
-
-        let status = self.exit_status.lock();
-
-        if let ProcessExit::Exited = *status {
-            return None;
-        }
-        threads.threads.insert(tid, thread.clone());
-
-        return Some(thread);
     }
 
     pub fn add_value(&self, value: KernelValue) -> KernelReferenceID {
@@ -306,6 +275,64 @@ pub extern "C" fn start_new_task(arg: usize) {
     }
 }
 
+pub struct ProcessBuilder {
+    name: &'static str,
+    privilege: ProcessPrivilege,
+    references: Option<ProcessReferences>,
+    vm: ProcessMemory,
+    entry_point: *const u64,
+    arg: usize,
+    args: Vec<u8>,
+}
+
+impl ProcessBuilder {
+    pub const fn new(vm: ProcessMemory, entry_point: *const u64, arg: usize) -> Self {
+        Self {
+            name: "",
+            privilege: ProcessPrivilege::USER,
+            args: Vec::new(),
+            vm,
+            entry_point,
+            references: None,
+            arg,
+        }
+    }
+
+    pub fn name(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
+    }
+
+    pub fn privilege(mut self, privilege: ProcessPrivilege) -> Self {
+        self.privilege = privilege;
+        self
+    }
+
+    pub fn args(mut self, args: Vec<u8>) -> Self {
+        self.args = args;
+        self
+    }
+
+    pub fn references(mut self, refs: ProcessReferences) -> Self {
+        self.references = Some(refs);
+        self
+    }
+
+    pub fn build(self) -> Arc<Process> {
+        let proc = Process::new(
+            self.privilege,
+            self.vm,
+            self.references.unwrap_or_default(),
+            self.args,
+            self.name,
+        );
+        PROCESSES.lock().insert(proc.pid, proc.clone());
+        let thread = Thread::new(proc.clone(), self.entry_point, self.arg).unwrap();
+        SCHEDULER.lock().queue_thread(thread);
+        proc
+    }
+}
+
 // Returns null if unknown process
 pub fn share_kernel_value(value: KernelValue, proc: ProcessID) -> Option<KernelReferenceID> {
     PROCESSES.lock().get(&proc).map(|p| p.add_value(value))
@@ -339,6 +366,78 @@ impl Debug for Thread {
 }
 
 impl Thread {
+    pub fn new(process: Arc<Process>, entry_point: *const u64, arg: usize) -> Option<Arc<Thread>> {
+        let mut threads = process.threads.lock();
+        let tid = threads.get_next_id();
+
+        // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
+        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0;
+
+        let stack = match process.privilege {
+            ProcessPrivilege::KERNEL => PageMapping::new_lazy_filled(STACK_SIZE as usize),
+            _ => PageMapping::new_lazy(STACK_SIZE as usize),
+        };
+
+        process
+            .memory
+            .lock()
+            .page_mapper
+            .insert_mapping_at_set(stack_base as usize, stack, MemoryMappingFlags::all())
+            .unwrap();
+
+        let kstack_base = KSTACK_ADDR + (KSTACK_SIZE + 0x1000) * tid.0;
+        let kstack_top = (kstack_base + KSTACK_SIZE) as usize;
+        let stack = PageMapping::new_lazy_filled(KSTACK_SIZE as usize);
+        let kstack_ptr_for_start = stack.base_top_stack();
+        let kstack_base_virt = virt_addr_for_phys(kstack_ptr_for_start as u64) as usize;
+
+        process
+            .memory
+            .lock()
+            .page_mapper
+            .insert_mapping_at_set(kstack_base as usize, stack, MemoryMappingFlags::WRITEABLE)
+            .unwrap();
+
+        let interrupt_frame = InterruptStackFrameValue {
+            instruction_pointer: VirtAddr::from_ptr(entry_point),
+            code_segment: process.privilege.get_code_segment().0 as u64,
+            cpu_flags: 0x202,
+            stack_pointer: VirtAddr::new(stack_base + STACK_SIZE),
+            stack_segment: process.privilege.get_data_segment().0 as u64,
+        };
+
+        unsafe { *(kstack_base_virt as *mut usize) = arg };
+        unsafe { *((kstack_base_virt + 8) as *mut InterruptStackFrameValue) = interrupt_frame }
+        let thread = Arc::new_cyclic(|this| Thread {
+            weak_self: this.clone(),
+            process: process.clone(),
+            tid,
+            sched_global: ThreadSchedGlobal::new(),
+            sched: Spinlock::new(ThreadSched {
+                state: ThreadState::Runnable,
+                task_state: Some(SavedTaskState {
+                    sp: kstack_top - 0x1000,
+                    ip: start_new_task as usize,
+                }),
+                kstack_top: VirtAddr::from_ptr(kstack_top as *const ()),
+                in_syscall: false,
+                killed: false,
+                cr3_page: unsafe {
+                    process
+                        .memory
+                        .lock()
+                        .page_mapper
+                        .get_mapper_mut()
+                        .get_physical_address() as u64
+                },
+            }),
+        });
+
+        threads.threads.insert(tid, thread.clone());
+
+        return Some(thread);
+    }
+
     pub fn thread(&self) -> Arc<Thread> {
         self.weak_self.upgrade().unwrap()
     }
@@ -394,6 +493,7 @@ pub struct ThreadSched {
     pub kstack_top: VirtAddr,
     pub in_syscall: bool,
     pub killed: bool,
+    pub cr3_page: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

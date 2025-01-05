@@ -1,9 +1,9 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 use kernel_userspace::{
     channel::{channel_create_rs, channel_read_rs, channel_write_rs, ChannelReadResult},
     elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
     message::MessageHandle,
-    object::KernelReference,
+    object::{delete_reference, KernelReference},
     process::publish_handle,
     service::serialize,
     syscall::spawn_thread,
@@ -14,8 +14,7 @@ use crate::{
     cpu_localstorage::CPULocalStorageRW,
     paging::{page_mapper::PageMapping, MemoryMappingFlags},
     scheduling::{
-        process::{Process, ProcessPrivilige},
-        taskmanager::{PROCESSES, SCHEDULER},
+        process::{ProcessBuilder, ProcessMemory, ProcessReferences},
         with_held_interrupts,
     },
 };
@@ -38,42 +37,13 @@ impl ElfSegmentFlags {
     }
 }
 
-pub fn load_elf<'a>(
-    data: &'a [u8],
-    args: &[u8],
-    references: &[KernelReference],
-    kernel: bool,
-) -> Result<Arc<Process>, LoadElfError<'a>> {
+pub fn load_elf<'a>(data: &'a [u8]) -> Result<ProcessBuilder, LoadElfError<'a>> {
     // Transpose the header as an elf header
     let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
     validate_elf_header(elf_header)?;
 
-    let process = Process::new(
-        if kernel {
-            ProcessPrivilige::KERNEL
-        } else {
-            ProcessPrivilige::USER
-        },
-        args,
-        "ELF SPAWNED",
-    );
-
-    // build initial refs
-    with_held_interrupts(|| unsafe {
-        let mut refs = process.references.lock();
-        let this = CPULocalStorageRW::get_current_task();
-        let mut this_refs = this.process().references.lock();
-        for r in references {
-            refs.add_value(
-                this_refs
-                    .references()
-                    .get(&r.id())
-                    .expect("loader proc should have ref in its map")
-                    .clone(),
-            );
-        }
-    });
+    let mut memory = ProcessMemory::new();
 
     let headers = (elf_header.e_phoff..((elf_header.e_phnum * elf_header.e_phentsize).into()))
         .step_by(elf_header.e_phentsize.into())
@@ -95,9 +65,7 @@ pub fn load_elf<'a>(
             let flags = ElfSegmentFlags::from_bits_truncate(program_header.p_flags);
 
             // Map into the new processes address space
-            process
-                .memory
-                .lock()
+            memory
                 .page_mapper
                 .insert_mapping_at(vstart as usize, mem.clone(), flags.to_mapping_flags())
                 .ok_or(LoadElfError::InternalError)?;
@@ -128,12 +96,11 @@ pub fn load_elf<'a>(
             }
         }
     }
-    let thread = process.new_thread(elf_header.e_entry as *const u64, 0);
-    PROCESSES.lock().insert(process.pid, process.clone());
-    SCHEDULER
-        .lock()
-        .queue_thread(thread.expect("new process shouldn't have died"));
-    Ok(process)
+    Ok(ProcessBuilder::new(
+        memory,
+        elf_header.e_entry as *const u64,
+        0,
+    ))
 }
 
 pub fn elf_new_process_loader() {
@@ -160,27 +127,35 @@ pub fn elf_new_process_loader() {
                         return;
                     }
                 };
-                if handles.len() != 2 {
+                if handles.len() == 0 {
                     warn!("wrong args");
                     return;
                 }
 
                 let elf = MessageHandle::from_kref(KernelReference::from_id(handles[0])).read_vec();
-                let res = load_elf(&elf, &data, &[KernelReference::from_id(handles[1])], false);
 
-                match res {
-                    Ok(proc) => {
-                        let proc = with_held_interrupts(|| unsafe {
-                            let thread = CPULocalStorageRW::get_current_task();
-                            KernelReference::from_id(thread.process().add_value(proc.into()))
-                        });
-                        channel_write_rs(handle.id(), &[], &[proc.id()]);
-                    }
+                let process = match load_elf(&elf) {
+                    Ok(p) => p,
                     Err(err) => {
                         let msg = serialize(&err, &mut data);
                         channel_write_rs(handle.id(), msg, &[]);
+                        return;
                     }
+                };
+
+                let process = process
+                    .references(ProcessReferences::from_refs(&handles[1..]))
+                    .build();
+
+                for r in &handles[1..] {
+                    delete_reference(*r);
                 }
+
+                let proc = with_held_interrupts(|| unsafe {
+                    let thread = CPULocalStorageRW::get_current_task();
+                    KernelReference::from_id(thread.process().add_value(process.into()))
+                });
+                channel_write_rs(handle.id(), &[], &[proc.id()]);
             }
         });
     }
