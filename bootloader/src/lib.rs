@@ -44,14 +44,14 @@ pub unsafe fn get_buffer<'b, T>(bt: &BootServices, length: usize) -> &'b mut [T]
     let ptr = bt
         .allocate_pool(MemoryType::LOADER_DATA, size_of::<T>() * length)
         .unwrap();
-    slice::from_raw_parts_mut(ptr.as_ptr() as *mut T, length)
+    unsafe { slice::from_raw_parts_mut(ptr.as_ptr() as *mut T, length) }
 }
 
 pub unsafe fn get_buffer_as_type<'b, T>(bt: &BootServices) -> &'b mut T {
     let ptr = bt
         .allocate_pool(MemoryType::LOADER_DATA, size_of::<T>())
         .unwrap();
-    &mut *(ptr.as_ptr() as *mut T)
+    unsafe { &mut *(ptr.as_ptr() as *mut T) }
 }
 
 /// The struct that is passed from bootloader to the kernel
@@ -72,7 +72,7 @@ pub type EntryPoint = fn(*const BootInfo) -> !;
 #[macro_export]
 macro_rules! entry_point {
     ($path:path) => {
-        #[export_name = "_start"]
+        #[unsafe(export_name = "_start")]
         // We are reciecing the call from UEFI which is win64 calling
         pub extern "C" fn bootstrap(info: *const bootloader::BootInfo) -> ! {
             let f: bootloader::EntryPoint = $path;

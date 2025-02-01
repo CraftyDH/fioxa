@@ -1,12 +1,11 @@
 use alloc::{boxed::Box, sync::Arc};
 
 use crate::paging::{
-    ensure_ident_map_curr_process,
+    MemoryMappingFlags, ensure_ident_map_curr_process,
     page::{Page, Size4KB},
-    MemoryMappingFlags,
 };
 
-use super::{mcfg::MCFG, PCIBus, PCIDevice, PCIHeaderCommon};
+use super::{PCIBus, PCIDevice, PCIHeaderCommon, mcfg::MCFG};
 
 pub struct ExpressPCI<'mcfg> {
     mcfg: &'mcfg MCFG,
@@ -18,31 +17,31 @@ pub struct PCIExpressDevice {
 
 impl PCIDevice for PCIExpressDevice {
     unsafe fn read_u8(&self, offset: u32) -> u8 {
-        *((self.address + offset as u64) as *const u8)
+        unsafe { *((self.address + offset as u64) as *const u8) }
     }
 
     unsafe fn read_u16(&self, offset: u32) -> u16 {
         assert!(offset % 2 == 0);
-        *((self.address + offset as u64) as *const u16)
+        unsafe { *((self.address + offset as u64) as *const u16) }
     }
 
     unsafe fn read_u32(&self, offset: u32) -> u32 {
         assert!(offset % 4 == 0);
-        *((self.address + offset as u64) as *const u32)
+        unsafe { *((self.address + offset as u64) as *const u32) }
     }
 
     unsafe fn write_u8(&mut self, offset: u32, data: u8) {
-        *((self.address + offset as u64) as *mut u8) = data;
+        unsafe { *((self.address + offset as u64) as *mut u8) = data };
     }
 
     unsafe fn write_u16(&mut self, offset: u32, data: u16) {
         assert!(offset % 2 == 0);
-        *((self.address + offset as u64) as *mut u16) = data;
+        unsafe { *((self.address + offset as u64) as *mut u16) = data };
     }
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {
         assert!(offset % 4 == 0);
-        *((self.address + offset as u64) as *mut u32) = data;
+        unsafe { *((self.address + offset as u64) as *mut u32) = data };
     }
 }
 

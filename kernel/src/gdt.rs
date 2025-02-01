@@ -1,14 +1,14 @@
 use conquer_once::spin::Lazy;
 use x86_64::{
+    PrivilegeLevel, VirtAddr,
     instructions::{
-        segmentation::{Segment, CS, SS},
+        segmentation::{CS, SS, Segment},
         tables::load_tss,
     },
     structures::{
         gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector},
         tss::TaskStateSegment,
     },
-    PrivilegeLevel, VirtAddr,
 };
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
@@ -46,9 +46,11 @@ pub static BOOTGDT: Lazy<GlobalDescriptorTable> = Lazy::new(|| {
 
 pub unsafe fn init_bootgdt() {
     BOOTGDT.load();
-    CS::set_reg(KERNEL_CODE_SELECTOR);
-    SS::set_reg(KERNEL_DATA_SELECTOR);
-    load_tss(TSS_SELECTOR);
+    unsafe {
+        CS::set_reg(KERNEL_CODE_SELECTOR);
+        SS::set_reg(KERNEL_DATA_SELECTOR);
+        load_tss(TSS_SELECTOR);
+    }
 }
 
 pub struct CPULocalGDT {
@@ -60,9 +62,11 @@ pub struct CPULocalGDT {
 impl CPULocalGDT {
     pub unsafe fn load(&'static self) {
         self.gdt.load();
-        CS::set_reg(KERNEL_CODE_SELECTOR);
-        SS::set_reg(KERNEL_DATA_SELECTOR);
-        load_tss(TSS_SELECTOR);
+        unsafe {
+            CS::set_reg(KERNEL_CODE_SELECTOR);
+            SS::set_reg(KERNEL_DATA_SELECTOR);
+            load_tss(TSS_SELECTOR);
+        }
     }
 }
 
@@ -76,14 +80,16 @@ pub unsafe fn create_gdt_for_core(gdt: &'static mut CPULocalGDT) {
 
     gdt.tss = TaskStateSegment::new();
 
-    gdt.tss.privilege_stack_table[0] =
-        VirtAddr::from_ptr(gdt.tss_stack[0].as_ptr().add(TSS_STACK_SIZE));
+    unsafe {
+        gdt.tss.privilege_stack_table[0] =
+            VirtAddr::from_ptr(gdt.tss_stack[0].as_ptr().add(TSS_STACK_SIZE));
 
-    gdt.tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
-        VirtAddr::from_ptr(gdt.tss_stack[1].as_ptr().add(TSS_STACK_SIZE));
+        gdt.tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
+            VirtAddr::from_ptr(gdt.tss_stack[1].as_ptr().add(TSS_STACK_SIZE));
 
-    gdt.tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] =
-        VirtAddr::from_ptr(gdt.tss_stack[2].as_ptr().add(TSS_STACK_SIZE));
+        gdt.tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] =
+            VirtAddr::from_ptr(gdt.tss_stack[2].as_ptr().add(TSS_STACK_SIZE));
+    }
 
     gdt.gdt.add_entry(Descriptor::tss_segment(&gdt.tss));
 }

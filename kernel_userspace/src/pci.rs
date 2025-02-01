@@ -17,13 +17,17 @@ pub struct PCIDevice {
 #[allow(dead_code)]
 impl PCIDevice {
     unsafe fn read_u8(&mut self, offset: u32) -> u8 {
-        let block = self.read_u32(offset & !0b11);
-        ((block >> 8 * (offset & 0b11)) & 0xFF) as u8
+        unsafe {
+            let block = self.read_u32(offset & !0b11);
+            ((block >> 8 * (offset & 0b11)) & 0xFF) as u8
+        }
     }
 
     unsafe fn read_u16(&mut self, offset: u32) -> u16 {
-        let block = self.read_u32(offset & !0b11);
-        ((block >> 8 * (offset & 0b11)) & 0xFFFF) as u16
+        unsafe {
+            let block = self.read_u32(offset & !0b11);
+            ((block >> 8 * (offset & 0b11)) & 0xFFFF) as u16
+        }
     }
 
     unsafe fn read_u32(&mut self, offset: u32) -> u32 {
@@ -34,17 +38,21 @@ impl PCIDevice {
     }
 
     unsafe fn write_u8(&mut self, offset: u32, data: u8) {
-        let mut block = self.read_u32(offset & !0b11);
-        block &= !(0xFF << 8 * (offset & 0b11));
-        block |= (data as u32) << 8 * (offset & 0b11);
-        self.write_u32(offset & !0b11, block);
+        unsafe {
+            let mut block = self.read_u32(offset & !0b11);
+            block &= !(0xFF << 8 * (offset & 0b11));
+            block |= (data as u32) << 8 * (offset & 0b11);
+            self.write_u32(offset & !0b11, block);
+        }
     }
 
     unsafe fn write_u16(&mut self, offset: u32, data: u16) {
-        let mut block = self.read_u32(offset & !0b10);
-        block &= !(0xFFFF << 8 * (offset & 0b11));
-        block |= (data as u32) << 8 * (offset & 0b11);
-        self.write_u32(offset & !0b11, block);
+        unsafe {
+            let mut block = self.read_u32(offset & !0b10);
+            block &= !(0xFFFF << 8 * (offset & 0b11));
+            block |= (data as u32) << 8 * (offset & 0b11);
+            self.write_u32(offset & !0b11, block);
+        }
     }
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {

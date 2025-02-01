@@ -141,28 +141,32 @@ impl PageAllocator for GlobalPageAllocator {
     }
 
     unsafe fn free_page(&self, page: Page<Size4KB>) {
-        global_allocator().free_page(page);
+        unsafe { global_allocator().free_page(page) };
     }
 
     unsafe fn free_pages(&self, page: Page<Size4KB>, count: usize) {
-        global_allocator().free_pages(page, count);
+        unsafe { global_allocator().free_pages(page, count) };
     }
 }
 
 pub unsafe fn get_task_mapper<T>(f: impl FnOnce(&mut PageTable<TableLevel4>) -> T) -> T {
-    let thread = CPULocalStorageRW::get_current_task();
+    unsafe {
+        let thread = CPULocalStorageRW::get_current_task();
 
-    let mut mem = thread.process().memory.lock();
-    f(mem.page_mapper.get_mapper_mut())
+        let mut mem = thread.process().memory.lock();
+        f(mem.page_mapper.get_mapper_mut())
+    }
 }
 
 pub unsafe fn ensure_ident_map_curr_process<S: PageSize>(page: Page<S>, flags: MemoryMappingFlags)
 where
     PageTable<TableLevel4>: Mapper<S>,
 {
-    match get_task_mapper(|m| m.identity_map(global_allocator(), page, flags)) {
-        Ok(f) => f.flush(),
-        Err(MapMemoryError::MemAlreadyMapped { to, current, .. }) if to == current => (),
-        Err(e) => panic!("Faield to ident map: {e}"),
+    unsafe {
+        match get_task_mapper(|m| m.identity_map(global_allocator(), page, flags)) {
+            Ok(f) => f.flush(),
+            Err(MapMemoryError::MemAlreadyMapped { to, current, .. }) if to == current => (),
+            Err(e) => panic!("Faield to ident map: {e}"),
+        }
     }
 }

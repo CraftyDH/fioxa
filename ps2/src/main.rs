@@ -24,7 +24,7 @@ pub mod mouse;
 pub mod scancode;
 pub mod translate;
 
-#[export_name = "_start"]
+#[unsafe(export_name = "_start")]
 pub extern "C" fn main() {
     println!("Initalizing PS2 devices...");
     let mut ps2_controller = PS2Controller::new();

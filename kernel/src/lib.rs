@@ -57,7 +57,7 @@ pub mod time;
 pub mod uefi;
 
 pub static mut BOOT_INFO: *const BootInfo = 0 as *const BootInfo;
-extern "C" {
+unsafe extern "C" {
     static KERNEL_START: u8;
     static KERNEL_END: u8;
 }

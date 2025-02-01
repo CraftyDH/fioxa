@@ -26,8 +26,10 @@ pub unsafe fn clone_pml4(
             1,
         )
         .unwrap();
-    core::ptr::write_bytes(new_page as *mut u8, 0, 0x1000);
-    // Copy first entry
-    core::ptr::copy_nonoverlapping(addr as *mut u8, new_page as *mut u8, 0x1000 / 512);
-    PageTableManager::new(new_page)
+    unsafe {
+        core::ptr::write_bytes(new_page as *mut u8, 0, 0x1000);
+        // Copy first entry
+        core::ptr::copy_nonoverlapping(addr as *mut u8, new_page as *mut u8, 0x1000 / 512);
+        PageTableManager::new(new_page)
+    }
 }

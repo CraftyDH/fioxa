@@ -52,12 +52,13 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     let block_size = SLAB_SIZES[index];
                     // Only works if all blocks are powers of 2
 
-                    let base =
-                        sys_map(null_mut(), 0x1000, MapMemoryFlags::WRITEABLE).unwrap() as usize;
+                    let base = unsafe {
+                        sys_map(null_mut(), 0x1000, MapMemoryFlags::WRITEABLE).unwrap() as usize
+                    };
 
                     let mut current_node = None;
                     for block in (base..(base + 0x1000)).step_by(block_size) {
-                        let node = &mut *(block as *mut ListNode);
+                        let node = unsafe { &mut *(block as *mut ListNode) };
                         node.next = current_node;
                         current_node = Some(node);
                     }
@@ -67,9 +68,11 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     nxt as *mut ListNode as *mut u8
                 }
             },
-            None => sys_map(null_mut(), min_size, MapMemoryFlags::WRITEABLE)
-                .unwrap()
-                .cast(),
+            None => unsafe {
+                sys_map(null_mut(), min_size, MapMemoryFlags::WRITEABLE)
+                    .unwrap()
+                    .cast()
+            },
         }
     }
 
@@ -79,7 +82,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
         let max_size = layout.size().max(layout.align());
 
         match block_size(max_size) {
-            Some(index) => {
+            Some(index) => unsafe {
                 // Return block to correct list size
                 let new_node = ListNode {
                     next: allocator.slab_heads[index].take(),
@@ -88,10 +91,10 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                 let new_node_ptr = ptr as *mut ListNode;
                 new_node_ptr.write(new_node);
                 allocator.slab_heads[index] = Some(&mut *new_node_ptr);
-            }
-            None => {
+            },
+            None => unsafe {
                 sys_unmap(ptr.cast(), max_size).assert_ok();
-            }
+            },
         }
     }
 }

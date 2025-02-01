@@ -8,8 +8,8 @@ use x86_64::instructions::interrupts;
 use crate::{
     gdt::CPULocalGDT,
     paging::{
-        page::Page, page_allocator::global_allocator, page_table::Mapper, virt_addr_for_phys,
-        MemoryLoc, MemoryMappingFlags, PageAllocator, PER_CPU_MAP,
+        MemoryLoc, MemoryMappingFlags, PER_CPU_MAP, PageAllocator, page::Page,
+        page_allocator::global_allocator, page_table::Mapper, virt_addr_for_phys,
     },
     scheduling::process::{Thread, ThreadSched},
     syscall::syscall_kernel_handler,
@@ -209,13 +209,13 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     ls.current_task_ptr = 0;
     ls.kernel_syscall_entry = syscall_kernel_handler as usize;
 
-    crate::gdt::create_gdt_for_core(unsafe { &mut *((vaddr_base + 0x1000) as *mut CPULocalGDT) });
+    unsafe { crate::gdt::create_gdt_for_core(&mut *((vaddr_base + 0x1000) as *mut CPULocalGDT)) };
 
     vaddr_base
 }
 
 pub unsafe fn init_bsp_localstorage() {
-    let gs_base = new_cpu(0);
+    let gs_base = unsafe { new_cpu(0) };
 
     // Load new core GDT
     // TODO: Remove old GDT
@@ -244,7 +244,7 @@ pub unsafe fn init_bsp_localstorage() {
 pub const CPU_STACK_SIZE_PAGES: usize = 10;
 
 pub unsafe fn new_cpu(core_id: u8) -> u64 {
-    let vaddr = init_core(core_id);
+    let vaddr = unsafe { init_core(core_id) };
     let ls = unsafe { &mut *(vaddr as *mut CPULocalStorage) };
 
     let stack_base = global_allocator()

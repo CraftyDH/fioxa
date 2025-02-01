@@ -13,16 +13,16 @@ use core::ops::ControlFlow;
 
 use ::acpi::AcpiError;
 use alloc::vec::Vec;
-use bootloader::{entry_point, BootInfo};
+use bootloader::{BootInfo, entry_point};
 use kernel::acpi::FioxaAcpiHandler;
 use kernel::boot_aps::boot_aps;
 use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER, TERMINAL_ELF};
-use kernel::cpu_localstorage::{init_bsp_localstorage, CPULocalStorageRW};
+use kernel::cpu_localstorage::{CPULocalStorageRW, init_bsp_localstorage};
 use kernel::elf::load_elf;
 use kernel::fs::{self, FSDRIVES};
 use kernel::interrupts::{self, check_interrupts};
 
-use kernel::ioapic::{enable_apic, Madt};
+use kernel::ioapic::{Madt, enable_apic};
 use kernel::lapic::{enable_localapic, map_lapic};
 use kernel::logging::KERNEL_LOGGER;
 use kernel::memory::MemoryMapIter;
@@ -34,8 +34,8 @@ use kernel::paging::page::{Page, Size4KB};
 use kernel::paging::page_allocator::global_allocator;
 use kernel::paging::page_table::Mapper;
 use kernel::paging::{
-    ensure_ident_map_curr_process, set_mem_offset, virt_addr_offset, MemoryLoc, MemoryMappingFlags,
-    KERNEL_DATA_MAP, KERNEL_LVL4, OFFSET_MAP,
+    KERNEL_DATA_MAP, KERNEL_LVL4, MemoryLoc, MemoryMappingFlags, OFFSET_MAP,
+    ensure_ident_map_curr_process, set_mem_offset, virt_addr_offset,
 };
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::{
@@ -45,11 +45,11 @@ use kernel::scheduling::taskmanager::{core_start_multitasking, spawn_process};
 use kernel::scheduling::with_held_interrupts;
 use kernel::screen::gop;
 use kernel::screen::psf1;
-use kernel::serial::{serial_monitor_stdin, Serial, COM_1, SERIAL};
+use kernel::serial::{COM_1, SERIAL, Serial, serial_monitor_stdin};
 use kernel::terminal::Writer;
 use kernel::time::init_time;
 use kernel::uefi::get_config_table;
-use kernel::{elf, gdt, paging, BOOT_INFO};
+use kernel::{BOOT_INFO, elf, gdt, paging};
 
 use bootloader::uefi::table::cfg::ACPI2_GUID;
 use bootloader::uefi::table::{Runtime, SystemTable};
@@ -148,7 +148,7 @@ unsafe extern "C" fn main_stage2() {
     log::set_max_level(log::LevelFilter::Debug);
     info!("Welcome to Fioxa...");
 
-    init_bsp_localstorage();
+    unsafe { init_bsp_localstorage() };
 
     let init_process = ProcessBuilder::new(ProcessMemory::new(), init as *const u64, 0)
         .privilege(ProcessPrivilege::KERNEL)
@@ -157,7 +157,7 @@ unsafe extern "C" fn main_stage2() {
 
     assert!(init_process.pid.into_raw() == 1);
 
-    core_start_multitasking();
+    unsafe { core_start_multitasking() };
 }
 
 extern "C" fn init() {

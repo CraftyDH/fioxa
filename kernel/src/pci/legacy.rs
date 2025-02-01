@@ -17,19 +17,23 @@ pub struct LegacyPCICommand {
 
 impl LegacyPCICommand {
     unsafe fn read(&mut self, address: u32) -> u32 {
-        // Send the device ID to the PCI controller
-        self.command_port.write(address);
+        unsafe {
+            // Send the device ID to the PCI controller
+            self.command_port.write(address);
 
-        // Read the result
-        self.data_port.read()
+            // Read the result
+            self.data_port.read()
+        }
     }
 
     unsafe fn write(&mut self, address: u32, value: u32) {
-        // Send the device ID to the PCI controller
-        self.command_port.write(address);
+        unsafe {
+            // Send the device ID to the PCI controller
+            self.command_port.write(address);
 
-        // Read the result
-        self.data_port.write(value)
+            // Read the result
+            self.data_port.write(value)
+        }
     }
 }
 
@@ -85,36 +89,38 @@ impl PCILegacyDevice {
 
 impl PCIDevice for PCILegacyDevice {
     unsafe fn read_u8(&self, offset: u32) -> u8 {
-        let block = self.read_u32(offset & !0b11);
+        let block = unsafe { self.read_u32(offset & !0b11) };
         ((block >> 8 * (offset & 0b11)) & 0xFF) as u8
     }
 
     unsafe fn read_u16(&self, offset: u32) -> u16 {
-        let block = self.read_u32(offset & !0b11);
+        let block = unsafe { self.read_u32(offset & !0b11) };
         ((block >> 8 * (offset & 0b11)) & 0xFFFF) as u16
     }
 
     unsafe fn read_u32(&self, offset: u32) -> u32 {
-        LEGACY_PCI_COMMAND.lock().read(self.base_address + offset)
+        unsafe { LEGACY_PCI_COMMAND.lock().read(self.base_address + offset) }
     }
 
     unsafe fn write_u8(&mut self, offset: u32, data: u8) {
-        let mut block = self.read_u32(offset & !0b11);
+        let mut block = unsafe { self.read_u32(offset & !0b11) };
         block &= !(0xFF << 8 * (offset & 0b11));
         block |= (data as u32) << 8 * (offset & 0b11);
-        self.write_u32(offset & !0b11, block);
+        unsafe { self.write_u32(offset & !0b11, block) };
     }
 
     unsafe fn write_u16(&mut self, offset: u32, data: u16) {
-        let mut block = self.read_u32(offset & !0b10);
+        let mut block = unsafe { self.read_u32(offset & !0b10) };
         block &= !(0xFFFF << 8 * (offset & 0b11));
         block |= (data as u32) << 8 * (offset & 0b11);
-        self.write_u32(offset & !0b11, block);
+        unsafe { self.write_u32(offset & !0b11, block) };
     }
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {
-        LEGACY_PCI_COMMAND
-            .lock()
-            .write(self.base_address + offset, data);
+        unsafe {
+            LEGACY_PCI_COMMAND
+                .lock()
+                .write(self.base_address + offset, data)
+        };
     }
 }

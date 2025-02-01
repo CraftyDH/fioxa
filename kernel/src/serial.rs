@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use conquer_once::spin::OnceCell;
 use kernel_sys::syscall::sys_exit;
 use kernel_userspace::{
-    backoff_sleep, channel::Channel, interrupt::Interrupt, process::get_handle, INT_COM1,
+    INT_COM1, backoff_sleep, channel::Channel, interrupt::Interrupt, process::get_handle,
 };
 use log::LevelFilter;
 use x86_64::instructions::{interrupts::without_interrupts, port::Port};
@@ -12,7 +12,7 @@ use x86_64::instructions::{interrupts::without_interrupts, port::Port};
 use crate::{
     mutex::Spinlock,
     scheduling::taskmanager::{PROCESSES, SCHEDULER},
-    time::{uptime, SLEPT_PROCESSES},
+    time::{SLEPT_PROCESSES, uptime},
 };
 
 pub static SERIAL: OnceCell<Spinlock<Serial>> = OnceCell::uninit();
@@ -34,7 +34,7 @@ impl Serial {
     }
 
     pub unsafe fn init(&mut self) -> bool {
-        without_interrupts(|| {
+        without_interrupts(|| unsafe {
             // Disable all interrupts
             self.get_port(1).write(0x00);
 

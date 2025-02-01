@@ -7,7 +7,7 @@ use kernel_userspace::{
     backoff_sleep,
     channel::Channel,
     elf::spawn_elf_process,
-    fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
+    fs::{self, StatResponse, add_path, get_disks, read_file_sector, read_full_file},
     message::MessageHandle,
     process::{clone_init_service, get_handle},
     sys::syscall::{sys_echo, sys_exit, sys_sleep},
@@ -26,8 +26,8 @@ fn panic(i: &core::panic::PanicInfo) -> ! {
 
 use alloc::{boxed::Box, collections::VecDeque, string::String, vec::Vec};
 use input::keyboard::{
-    virtual_code::{Modifier, VirtualKeyCode},
     KeyboardEvent,
+    virtual_code::{Modifier, VirtualKeyCode},
 };
 use userspace::print::WRITER;
 
@@ -90,7 +90,7 @@ impl Iterator for KBInputDecoder {
     }
 }
 
-#[export_name = "_start"]
+#[unsafe(export_name = "_start")]
 pub extern "C" fn main() {
     let mut cwd: String = String::from("/");
     let mut partiton_id = 0u64;

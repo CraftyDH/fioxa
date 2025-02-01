@@ -8,7 +8,7 @@ extern crate alloc;
 extern crate userspace;
 extern crate userspace_slaballoc;
 
-#[export_name = "_start"]
+#[unsafe(export_name = "_start")]
 pub extern "C" fn main() {
     let args = sys_read_args_string();
 

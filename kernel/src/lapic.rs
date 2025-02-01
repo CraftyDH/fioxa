@@ -5,13 +5,13 @@ use x86_64::structures::idt::InterruptStackFrame;
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     paging::{
+        MemoryMappingFlags,
         page::{Page, Size4KB},
         page_allocator::global_allocator,
         page_table::{MapMemoryError, Mapper, PageTable, TableLevel4},
-        MemoryMappingFlags,
     },
     scheduling::{taskmanager::enter_sched, with_held_interrupts},
-    time::{check_sleep, HPET},
+    time::{HPET, check_sleep},
 };
 
 // Local APIC
@@ -36,18 +36,18 @@ pub fn map_lapic(mapper: &mut PageTable<TableLevel4>) {
 
 unsafe fn write_lapic(offset: u64, val: u32) {
     let addr = (LAPIC_ADDR + offset) as *mut u32;
-    addr.write_volatile(val);
+    unsafe { addr.write_volatile(val) };
 }
 
 unsafe fn read_lapic(offset: u64) -> u32 {
     let addr = (LAPIC_ADDR + offset) as *mut u32;
-    addr.read_volatile()
+    unsafe { addr.read_volatile() }
 }
 
 pub static LAPIC_TICKS_PER_MS: AtomicU32 = AtomicU32::new(0);
 
 pub unsafe fn enable_localapic() {
-    with_held_interrupts(|| {
+    with_held_interrupts(|| unsafe {
         // Enable + Spurious vector
         write_lapic(0xF0, 1 << 8 | 0xFF);
 

@@ -14,8 +14,8 @@ use conquer_once::spin::Lazy;
 use hashbrown::HashMap;
 use kernel_sys::types::{Hid, KernelObjectType, Pid, RawValue, Tid};
 use x86_64::{
-    structures::{gdt::SegmentSelector, idt::InterruptStackFrameValue},
     VirtAddr,
+    structures::{gdt::SegmentSelector, idt::InterruptStackFrameValue},
 };
 
 use crate::{
@@ -28,15 +28,16 @@ use crate::{
     mutex::Spinlock,
     object::{KObject, KObjectSignal},
     paging::{
+        AllocatedPage, GlobalPageAllocator, MemoryMappingFlags,
         page_allocator::global_allocator,
         page_mapper::{PageMapperManager, PageMapping},
-        virt_addr_for_phys, AllocatedPage, GlobalPageAllocator, MemoryMappingFlags,
+        virt_addr_for_phys,
     },
     port::KPort,
     time::HPET,
 };
 
-use super::taskmanager::{ThreadSchedGlobalData, PROCESSES, SCHEDULER};
+use super::taskmanager::{PROCESSES, SCHEDULER, ThreadSchedGlobalData};
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 pub const KSTACK_ADDR: u64 = 0xffff_800_000_000_000;
@@ -223,9 +224,11 @@ impl KObject for Process {
 #[naked]
 pub extern "C" fn start_new_task(arg: usize) {
     unsafe extern "C" fn after_start_cleanup() {
-        let thread = CPULocalStorageRW::get_current_task();
-        // We must unlock the mutex after return from scheduler
-        thread.sched().force_unlock();
+        unsafe {
+            let thread = CPULocalStorageRW::get_current_task();
+            // We must unlock the mutex after return from scheduler
+            thread.sched().force_unlock();
+        }
     }
 
     unsafe {
@@ -429,7 +432,7 @@ impl Thread {
 
     /// SAFTEY: Must hold the global sched lock
     pub unsafe fn sched_global(&self) -> &mut ThreadSchedGlobalData {
-        &mut *self.sched_global.0.get()
+        unsafe { &mut *self.sched_global.0.get() }
     }
 
     pub fn sched(&self) -> &Spinlock<ThreadSched> {

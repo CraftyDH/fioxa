@@ -60,7 +60,7 @@ struct BufferDescriptor {
     avail: u32,
 }
 
-#[export_name = "_start"]
+#[unsafe(export_name = "_start")]
 pub extern "C" fn main() {
     let pci_ref = unsafe { Handle::from_id(Hid::from_usize(2).unwrap()) };
     assert_eq!(

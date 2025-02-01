@@ -7,8 +7,9 @@ use crate::{
 };
 
 use super::{
+    PageAllocator,
     page::{Page, Size4KB},
-    virt_addr_for_phys, virt_addr_offset_mut, PageAllocator,
+    virt_addr_for_phys, virt_addr_offset_mut,
 };
 
 static GLOBAL_FRAME_ALLOCATOR: OnceCell<Spinlock<PageFrameAllocator>> = OnceCell::uninit();
@@ -82,7 +83,7 @@ impl PageFrameAllocator {
         };
 
         let mut free = mmap
-            .map(|e| &*e)
+            .map(|e| unsafe { &*e })
             .filter(|e| e.ty == MemoryType::CONVENTIONAL);
 
         // Capture the reserved pages
@@ -108,15 +109,17 @@ impl PageFrameAllocator {
                 .step_by(0x1000)
                 .take(taken_amount)
                 .filter(|&p| p != 0x8000)
-                .for_each(|p| this.free_32bit_reserved_page(p));
+                .for_each(|p| unsafe { this.free_32bit_reserved_page(p) });
 
             if free_found == RESERVED_32BIT_MEM_PAGES {
                 let amount_left = entry.page_count as usize - taken_amount;
                 this.total_free += amount_left;
-                this.insert_free_of_range(
-                    entry.phys_start as usize + taken_amount * 0x1000,
-                    amount_left,
-                );
+                unsafe {
+                    this.insert_free_of_range(
+                        entry.phys_start as usize + taken_amount * 0x1000,
+                        amount_left,
+                    );
+                }
                 break;
             } else if free_found > RESERVED_32BIT_MEM_PAGES {
                 unreachable!("logic error")
@@ -128,7 +131,7 @@ impl PageFrameAllocator {
             let pages_left = entry.page_count as usize;
 
             this.total_free += pages_left;
-            this.insert_free_of_range(start_addr, pages_left);
+            unsafe { this.insert_free_of_range(start_addr, pages_left) };
         }
         this
     }
@@ -145,7 +148,7 @@ impl PageFrameAllocator {
             let address_order = (start_addr / 0x1000).ilog2() as usize;
             let order = core::cmp::min(core::cmp::min(pages_order, address_order), MAX_ORDER);
 
-            self.insert_free_of_order(start_addr, order);
+            unsafe { self.insert_free_of_order(start_addr, order) };
 
             let page_count = pages_in_order(order);
             pages_left -= page_count;
@@ -154,7 +157,7 @@ impl PageFrameAllocator {
     }
 
     unsafe fn insert_free_of_order(&mut self, base: usize, order: usize) {
-        let left = &mut *virt_addr_offset_mut(base as *mut PageMetadata);
+        let left = unsafe { &mut *virt_addr_offset_mut(base as *mut PageMetadata) };
         left.order = order;
         left.next_node = None;
         left.prev_node = None;
@@ -162,8 +165,9 @@ impl PageFrameAllocator {
         // if order is 0, we only have 1 page
         if order > 0 {
             let last_page_addr_offset = (pages_in_order(order) - 1) * 0x1000;
-            let right =
-                &mut *virt_addr_offset_mut((base + last_page_addr_offset) as *mut PageMetadata);
+            let right = unsafe {
+                &mut *virt_addr_offset_mut((base + last_page_addr_offset) as *mut PageMetadata)
+            };
             right.order = order;
         }
 
@@ -203,7 +207,7 @@ impl PageFrameAllocator {
     }
 
     pub unsafe fn free_32bit_reserved_page(&mut self, page: usize) {
-        let meta = &mut *virt_addr_offset_mut(page as *mut PageMetadata32);
+        let meta = unsafe { &mut *virt_addr_offset_mut(page as *mut PageMetadata32) };
 
         if let Some(p) = self.reserved_32bit {
             meta.next_node = Some(p);
@@ -280,13 +284,13 @@ impl PageAllocator for Spinlock<PageFrameAllocator> {
     }
 
     unsafe fn free_page(&self, page: Page<Size4KB>) {
-        self.lock().free_page(page);
+        unsafe { self.lock().free_page(page) };
     }
 
     unsafe fn free_pages(&self, page: Page<Size4KB>, count: usize) {
         let mut this = self.lock();
         for p in 0..count {
-            this.free_page(Page::new(page.get_address() + p as u64 * 0x1000));
+            unsafe { this.free_page(Page::new(page.get_address() + p as u64 * 0x1000)) };
         }
     }
 }

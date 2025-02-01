@@ -3,10 +3,10 @@ use core::alloc::{GlobalAlloc, Layout};
 use crate::{
     locked_mutex::Locked,
     paging::{
+        KERNEL_HEAP_MAP, MemoryMappingFlags, PageAllocator,
         page::{Page, Size4KB},
         page_allocator::global_allocator,
         page_table::Mapper,
-        MemoryMappingFlags, PageAllocator, KERNEL_HEAP_MAP,
     },
     scheduling::with_held_interrupts,
 };
@@ -51,7 +51,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                         allocator.slab_heads[index] = node.next.take();
                         node as *mut ListNode as *mut u8
                     }
-                    None => {
+                    None => unsafe {
                         let alloc = global_allocator();
                         // No block exists in list => allocate new block
                         let block_size = SLAB_SIZES[index];
@@ -77,7 +77,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                         allocator.slab_heads[index] = nxt.next.take();
                         // current_node as *mut ListNode as *mut u8
                         nxt as *mut ListNode as *mut u8
-                    }
+                    },
                 },
                 None => {
                     // Round to next page
@@ -109,7 +109,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
             let max_size = layout.size().max(layout.align());
 
             match block_size(max_size) {
-                Some(index) => {
+                Some(index) => unsafe {
                     // Return block to correct list size
                     let new_node = ListNode {
                         next: allocator.slab_heads[index].take(),
@@ -118,8 +118,8 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     let new_node_ptr = ptr as *mut ListNode;
                     new_node_ptr.write(new_node);
                     allocator.slab_heads[index] = Some(&mut *new_node_ptr);
-                }
-                None => {
+                },
+                None => unsafe {
                     let base = ptr as u64;
                     let length = ((max_size + 0xFFF) & !0xFFF) as u64;
 
@@ -133,7 +133,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                         m.unmap(alloc, page).unwrap().flush();
                         alloc.free_page(phys_page);
                     }
-                }
+                },
             }
         });
     }

@@ -107,42 +107,47 @@ impl GlobalSchedData {
 }
 
 pub unsafe fn enable_syscall() {
-    // set up syscall/syscret
-    // In Long Mode, userland CS will be loaded from STAR 63:48 + 16 and userland SS from STAR 63:48 + 8 on SYSRET.
-    let star = ((USER_CODE_SELECTOR.0 - 16) as u64) << 48 | (KERNEL_CODE_SELECTOR.0 as u64) << 32;
-    // set star
-    wrmsr(0xC0000081, star);
+    unsafe {
+        // set up syscall/syscret
+        // In Long Mode, userland CS will be loaded from STAR 63:48 + 16 and userland SS from STAR 63:48 + 8 on SYSRET.
+        let star =
+            ((USER_CODE_SELECTOR.0 - 16) as u64) << 48 | (KERNEL_CODE_SELECTOR.0 as u64) << 32;
+        // set star
+        wrmsr(0xC0000081, star);
 
-    // set lstar (the rip that it'll go to)
-    wrmsr(0xC0000082, syscall_sysret_handler as u64);
+        // set lstar (the rip that it'll go to)
+        wrmsr(0xC0000082, syscall_sysret_handler as u64);
 
-    // set flag mask (mask everything)
-    wrmsr(0xC0000084, 0x200);
+        // set flag mask (mask everything)
+        wrmsr(0xC0000084, 0x200);
 
-    // enable syscall
-    core::arch::asm!(
-        "rdmsr",
-        "or eax, 1",
-        "wrmsr",
-        in("ecx") 0xC0000080u32,
-        lateout("ecx") _,
-        lateout("eax") _,
-        options(preserves_flags, nostack)
-    );
+        // enable syscall
+        core::arch::asm!(
+            "rdmsr",
+            "or eax, 1",
+            "wrmsr",
+            in("ecx") 0xC0000080u32,
+            lateout("ecx") _,
+            lateout("eax") _,
+            options(preserves_flags, nostack)
+        );
+    }
 }
 
 pub unsafe fn core_start_multitasking() {
-    enable_syscall();
+    unsafe {
+        enable_syscall();
 
-    // Init complete, start executing tasks
-    CPULocalStorageRW::dec_hold_interrupts();
+        // Init complete, start executing tasks
+        CPULocalStorageRW::dec_hold_interrupts();
 
-    core::arch::asm!(
-        "sti",
-        "mov rsp, gs:1",
-        "jmp {}",
-        sym scheduler,
-    )
+        core::arch::asm!(
+            "sti",
+            "mov rsp, gs:1",
+            "jmp {}",
+            sym scheduler,
+        )
+    }
 }
 
 unsafe extern "C" fn scheduler() {
@@ -156,7 +161,7 @@ unsafe extern "C" fn scheduler() {
 
             assert_eq!(sched.state, ThreadState::Runnable);
 
-            sched_run_tick(&task, &mut sched);
+            unsafe { sched_run_tick(&task, &mut sched) };
 
             if CPULocalStorageRW::hold_interrupts_depth() != 1 {
                 error!("Thread shouldn't be holding interrupts when yielding");
@@ -180,7 +185,7 @@ unsafe extern "C" fn scheduler() {
             }
         } else {
             // nothing can run so sleep
-            core::arch::asm!("hlt")
+            unsafe { core::arch::asm!("hlt") };
         }
     }
 }
@@ -247,7 +252,7 @@ where
 }
 
 pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Tid {
-    let thread = CPULocalStorageRW::get_current_task();
+    let thread = unsafe { CPULocalStorageRW::get_current_task() };
 
     // TODO: Validate r8 is a valid entrypoint
     let thread = Thread::new(thread.process().clone(), arg1 as *const u64, arg2);
@@ -276,43 +281,45 @@ unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
     let new_sp;
     let new_ip;
 
-    core::arch::asm!(
-        "push rbx",
-        "push rbp",
-        "pushfq",
-        "mov r9, cr3", // save current cr3
-        "push r9",
-        "mov cr3, r8",
-        "mov gs:0x9, cl",
-        "lea r8, [rip+2f]",
-        "mov gs:0x22, rsp",
-        "mov gs:0x2A, r8",
-        "mov rsp, rsi",
-        "jmp rdi",
-        "2:",
-        "pop rax",
-        "mov cr3, rax",
-        "popfq",
-        "pop rbp",
-        "pop rbx",
-        in("cl") 1u8,
-        in("rdi") ip,
-        in("rsi") sp,
-        in("r8") cr3,
-        lateout("rax") _,
-        lateout("r15") _,
-        lateout("r14") _,
-        lateout("r13") _,
-        lateout("r12") _,
-        lateout("r11") _,
-        lateout("r10") _,
-        lateout("r9") _,
-        lateout("r8") _,
-        lateout("rdi") new_ip,
-        lateout("rsi") new_sp,
-        lateout("rdx") _,
-        lateout("rcx") _,
-    );
+    unsafe {
+        core::arch::asm!(
+            "push rbx",
+            "push rbp",
+            "pushfq",
+            "mov r9, cr3", // save current cr3
+            "push r9",
+            "mov cr3, r8",
+            "mov gs:0x9, cl",
+            "lea r8, [rip+2f]",
+            "mov gs:0x22, rsp",
+            "mov gs:0x2A, r8",
+            "mov rsp, rsi",
+            "jmp rdi",
+            "2:",
+            "pop rax",
+            "mov cr3, rax",
+            "popfq",
+            "pop rbp",
+            "pop rbx",
+            in("cl") 1u8,
+            in("rdi") ip,
+            in("rsi") sp,
+            in("r8") cr3,
+            lateout("rax") _,
+            lateout("r15") _,
+            lateout("r14") _,
+            lateout("r13") _,
+            lateout("r12") _,
+            lateout("r11") _,
+            lateout("r10") _,
+            lateout("r9") _,
+            lateout("r8") _,
+            lateout("rdi") new_ip,
+            lateout("rsi") new_sp,
+            lateout("rdx") _,
+            lateout("rcx") _,
+        )
+    };
     CPULocalStorageRW::clear_current_task();
 
     sched.task_state = Some(SavedTaskState {

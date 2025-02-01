@@ -1,22 +1,23 @@
 use alloc::sync::Arc;
-use bootloader::{gop::GopInfo, BootInfo};
+use bootloader::{BootInfo, gop::GopInfo};
 use conquer_once::spin::OnceCell;
 
 use crate::{
     kernel_memory_loc,
     memory::MemoryMapIter,
     paging::{
-        page::{get_chunked_page_range, Page},
+        MemoryLoc,
+        page::{Page, get_chunked_page_range},
         page_table::Mapper,
-        virt_addr_offset, MemoryLoc,
+        virt_addr_offset,
     },
 };
 
 use super::{
+    MemoryMappingFlags, PageAllocator,
     page::Size4KB,
     page_mapper::PageMapping,
     page_table::{PageTable, TableLevel3, TableLevel4},
-    MemoryMappingFlags, PageAllocator,
 };
 
 pub unsafe fn create_offset_map(
@@ -89,7 +90,7 @@ pub unsafe fn map_gop(
     gop: &GopInfo,
 ) {
     // Map GOP framebuffer
-    let fb_base = *gop.buffer.as_ptr() as u64;
+    let fb_base = unsafe { *gop.buffer.as_ptr() as u64 };
     let fb_size = fb_base + (gop.buffer_size as u64);
 
     for i in (fb_base..fb_size + 0xFFF).step_by(0x1000) {
@@ -107,7 +108,7 @@ pub unsafe fn map_gop(
 pub unsafe fn get_gop_range(gop: &GopInfo) -> (usize, Arc<PageMapping>) {
     static GOP_RANGE: OnceCell<(usize, Arc<PageMapping>)> = OnceCell::uninit();
     GOP_RANGE
-        .get_or_init(|| {
+        .get_or_init(|| unsafe {
             let fb_ptr = *gop.buffer.as_ptr() as usize;
 
             let fb_base = fb_ptr & !0xFFF;

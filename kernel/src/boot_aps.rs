@@ -6,17 +6,17 @@ use core::{
 
 use crate::{
     assembly::AP_TRAMPOLINE,
-    cpu_localstorage::{new_cpu, CPULocalStorageRW},
+    cpu_localstorage::{CPULocalStorageRW, new_cpu},
     gdt::CPULocalGDT,
     interrupts::IDT,
     ioapic::Madt,
-    lapic::{enable_localapic, LAPIC_ADDR},
+    lapic::{LAPIC_ADDR, enable_localapic},
     paging::{
+        KERNEL_LVL4, MemoryLoc, MemoryMappingFlags,
         page::{Page, Size4KB},
         page_allocator::{frame_alloc_exec, global_allocator},
         page_mapper::PageMapping,
         page_table::Mapper,
-        MemoryLoc, MemoryMappingFlags, KERNEL_LVL4,
     },
     scheduling::taskmanager::core_start_multitasking,
     time::spin_sleep_ms,
@@ -25,25 +25,29 @@ use crate::{
 /// It is assumed that 0x8000 is identity mapped before this point
 pub unsafe fn boot_aps(madt: &Madt) {
     if !frame_alloc_exec(|a| a.captured_0x8000()) {
-        warn!("WARNING: SINGLE CORE BOOT -- The physical memory region `0x8000` was not availble during initialization.");
+        warn!(
+            "WARNING: SINGLE CORE BOOT -- The physical memory region `0x8000` was not availble during initialization."
+        );
         return;
     }
 
     // Get current core id
     let bsp_addr = (unsafe { __cpuid(1) }.ebx >> 24) as u8;
 
-    let task = CPULocalStorageRW::get_current_task();
+    let task = unsafe { CPULocalStorageRW::get_current_task() };
 
     let cr3_addr = {
         let mut mem = task.process().memory.lock();
         let mut kernel_mem = KERNEL_LVL4.lock();
 
         // we need to set 0x8000 for the trampoline
-        mem.page_mapper.insert_mapping_at_set(
-            0x8000,
-            PageMapping::new_mmap(0x8000, 0x1000),
-            MemoryMappingFlags::WRITEABLE,
-        );
+        unsafe {
+            mem.page_mapper.insert_mapping_at_set(
+                0x8000,
+                PageMapping::new_mmap(0x8000, 0x1000),
+                MemoryMappingFlags::WRITEABLE,
+            )
+        };
         kernel_mem
             .identity_map(
                 global_allocator(),
@@ -144,7 +148,7 @@ pub unsafe fn boot_aps(madt: &Madt) {
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn ap_startup_f(core_id: u32) {
     let vaddr_base = MemoryLoc::PerCpuMem as u64 + 0x100_0000 * core_id as u64;
 

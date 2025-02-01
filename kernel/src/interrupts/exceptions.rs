@@ -1,7 +1,7 @@
 use x86_64::{
+    VirtAddr,
     registers::control::Cr2,
     structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode},
-    VirtAddr,
 };
 
 use crate::{
@@ -140,7 +140,7 @@ unsafe extern "x86-interrupt" fn page_fault_handler(
         kill_bad_task()
     }
 
-    let process = CPULocalStorageRW::get_current_task().process();
+    let process = unsafe { CPULocalStorageRW::get_current_task().process() };
     let mut mem = process.memory.lock();
     if mem
         .page_mapper

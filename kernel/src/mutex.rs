@@ -2,7 +2,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use lock_api::{GuardNoSend, RawMutex};
 
-use crate::cpu_localstorage::{is_ls_enabled, CPULocalStorageRW};
+use crate::cpu_localstorage::{CPULocalStorageRW, is_ls_enabled};
 
 pub type Spinlock<T> = lock_api::Mutex<RawSpinlock, T>;
 pub type SpinlockGuard<'a, T> = lock_api::MutexGuard<'a, RawSpinlock, T>;
@@ -53,7 +53,7 @@ unsafe impl RawMutex for RawSpinlock {
 
         if is_ls_enabled() {
             // Safety: we increased it when it was locked
-            CPULocalStorageRW::dec_hold_interrupts();
+            unsafe { CPULocalStorageRW::dec_hold_interrupts() };
         }
     }
 
