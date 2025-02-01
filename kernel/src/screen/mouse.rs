@@ -1,5 +1,6 @@
-use alloc::vec::Vec;
-use kernel_userspace::{input::InputServiceMessage, service::SimpleService};
+use kernel_userspace::{
+    backoff_sleep, channel::Channel, input::InputServiceMessage, process::get_handle,
+};
 
 use input::mouse::MousePacket;
 
@@ -27,14 +28,12 @@ pub const MOUSE_POINTER: &[u16; 16] = &[
 ];
 
 pub fn monitor_cursor_task() {
-    let mut mouse = SimpleService::with_name("INPUT:MOUSE");
+    let mouse = Channel::from_handle(backoff_sleep(|| get_handle("INPUT:MOUSE")));
 
     let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
 
-    let mut handles = Vec::new();
-
     loop {
-        let packet = mouse.recv_val(&mut handles).unwrap();
+        let (packet, _) = mouse.read_val::<0, _>(true).unwrap();
 
         match packet {
             InputServiceMessage::KeyboardEvent(_) => panic!(),

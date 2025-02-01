@@ -1,15 +1,15 @@
 use core::ptr::slice_from_raw_parts_mut;
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use kernel_userspace::{
-    channel::{ChannelCreate, ChannelRead, ChannelReadResult, ChannelSyscall, ChannelWrite},
-    interrupt::InterruptSyscall,
-    message::{MessageCreate, MessageGetSize, MessageRead, SyscallMessageAction},
-    num_traits::FromPrimitive,
-    object::{KernelReferenceID, ObjectSignal, ReferenceOperation, WaitPort},
-    port::{PortNotification, PortSyscall},
-    process::KernelProcessOperation,
-    syscall::SYSCALL_NUMBER,
+use kernel_sys::{
+    raw::{
+        syscall::SYSCALL_NUMBER,
+        types::{hid_t, pid_t, signals_t, sys_port_notification_t, tid_t, vaddr_t},
+    },
+    types::{
+        Hid, MapMemoryFlags, ObjectSignal, RawValue, SysPortNotification, SysPortNotificationValue,
+        SyscallResult,
+    },
 };
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
@@ -20,14 +20,12 @@ use crate::{
     message::KMessage,
     object::{KObject, KObjectSignal, SignalWaiter},
     paging::{
-        page_allocator::{frame_alloc_exec, global_allocator},
-        page_mapper::PageMapping,
-        page_table::Mapper,
-        AllocatedPage, GlobalPageAllocator, MemoryMappingFlags,
+        page_allocator::frame_alloc_exec, page_mapper::PageMapping, AllocatedPage,
+        GlobalPageAllocator, MemoryMappingFlags,
     },
     port::KPort,
     scheduling::{
-        process::{KernelValue, ThreadState},
+        process::{KernelValue, ProcessMemory, ProcessReferences, ThreadState},
         taskmanager::{self, enter_sched, kill_bad_task},
     },
     time::{uptime, SleptProcess, SLEPT_PROCESSES},
@@ -37,6 +35,7 @@ pub fn set_syscall_idt(idt: &mut InterruptDescriptorTable) {
     idt[SYSCALL_NUMBER]
         .set_handler_fn(wrapped_syscall_handler)
         .set_privilege_level(x86_64::PrivilegeLevel::Ring3);
+
     // .disable_interrupts(false);
 }
 
@@ -77,6 +76,16 @@ macro_rules! kpanic {
 }
 
 #[macro_export]
+macro_rules! kpanic2 {
+    ($($arg:tt)*) => {
+        {
+            error!("Panicked in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
+            return SyscallResult::SystemError;
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! kassert {
     ($x: expr) => {
         if !$x {
@@ -88,6 +97,22 @@ macro_rules! kassert {
         if !$x {
             error!("KAssert failed in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
             return Err(SyscallError::Error);
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! kassert2 {
+    ($x: expr) => {
+        if !$x {
+            error!("KAssert failed in {}:{}:{}.", file!(), line!(), column!());
+            return SyscallResult::SystemError;
+        }
+    };
+    ($x: expr, $($arg:tt)+) => {
+        if !$x {
+            error!("KAssert failed in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
+            return SyscallResult::SystemError;
         }
     };
 }
@@ -105,6 +130,24 @@ macro_rules! kunwrap {
                     column!()
                 );
                 return Err(SyscallError::Error);
+            }
+        }
+    };
+}
+
+#[macro_export]
+macro_rules! kunwrap2 {
+    ($x: expr) => {
+        match Unwraper::unwrap($x) {
+            Ok(r) => r,
+            Err(e) => {
+                error!(
+                    "KUnwrap failed in {}:{}:{} on {e:?}",
+                    file!(),
+                    line!(),
+                    column!()
+                );
+                return SyscallResult::SystemError;
             }
         }
     };
@@ -130,6 +173,26 @@ macro_rules! kenum_cast {
     };
 }
 
+#[macro_export]
+macro_rules! kenum_cast2 {
+    ($x: expr, $t: path) => {
+        match $x {
+            $t(v) => v,
+            _ => {
+                error!(
+                    "KEnum cast failed in {}:{}:{}, expected {} got {:?}.",
+                    file!(),
+                    line!(),
+                    column!(),
+                    stringify!($t),
+                    $x
+                );
+                return SyscallResult::SystemError;
+            }
+        }
+    };
+}
+
 /// Function used to ensure kernel doesn't call syscall while holding interrupts
 extern "C" fn bad_interrupts_held() {
     panic!("Interrupts should not be held when entering syscall.")
@@ -139,28 +202,49 @@ extern "C" fn bad_interrupts_held() {
 #[naked]
 pub unsafe extern "C" fn syscall_kernel_handler() {
     core::arch::naked_asm!(
+        // check interrupts
         "cmp qword ptr gs:0x32, 0",
-        "jne {}",
+        "jne {bad_interrupts_held}",
+
+        // save regs
         "push rbp",
         "push r15",
         "pushfq",
         "cli",
-        "mov al, 1",
-        "mov gs:0x9, al",
+
+        // set cpu context
+        "mov r11b, 1",
+        "mov gs:0x9, r11b",
         "mov r15, rsp",     // save caller rsp
         "mov rsp, gs:0x1A", // load kstack top
         "sti",
-        "call {}",
+
+        // check bounds of syscall
+        "cmp rax, {syscall_len}",
+        "jb 2f",
+        "mov rdi, rax",
+        "call {out_of_bounds}",
+
+        // call the syscall fn
+        "2:",
+        "lea r11, [rip+{syscall_fns}]",
+        "call [r11+rax*8]",
+
+        // set cpu context
         "cli",
         "mov cl, 2",
         "mov gs:0x9, cl", // set cpu context
+
+        // restore regs
         "mov rsp, r15",   // restore caller rip
         "popfq",
         "pop r15",
         "pop rbp",
         "ret",
-        sym bad_interrupts_held,
-        sym syscall_handler,
+        syscall_len = const SYSCALL_FNS.len(),
+        syscall_fns = sym SYSCALL_FNS,
+        out_of_bounds = sym out_of_bounds,
+        bad_interrupts_held = sym bad_interrupts_held,
     );
 }
 
@@ -169,13 +253,27 @@ pub unsafe extern "C" fn syscall_kernel_handler() {
 pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
     unsafe {
         core::arch::naked_asm!(
-            "mov al, 1",
-            "mov gs:0x9, al", // set cpu context
+            // set cpu context
+            "mov r11b, 1",
+            "mov gs:0x9, r11b",
             "sti",
-            "call {}",
+
+            // check bounds of syscall
+            "cmp rax, {syscall_len}",
+            "jb 2f",
+            "mov rdi, rax",
+            "call {out_of_bounds}",
+
+            // call the syscall fn
+            "2:",
+            "lea r11, [rip+{syscall_fns}]",
+            "call [r11+rax*8]",
+
+            // set cpu context
             "cli",
             "mov cl, 2",
-            "mov gs:0x9, cl", // set cpu context
+            "mov gs:0x9, cl",
+
             // clear scratch registers (we don't want leaks)
             "xor r11d, r11d",
             "xor r10d, r10d",
@@ -186,7 +284,9 @@ pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
             "xor edx,  edx",
             "xor ecx,  ecx",
             "iretq",
-            sym syscall_handler,
+            syscall_len = const SYSCALL_FNS.len(),
+            syscall_fns = sym SYSCALL_FNS,
+            out_of_bounds = sym out_of_bounds,
         );
     }
 }
@@ -195,300 +295,122 @@ pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
 #[naked]
 pub unsafe extern "C" fn syscall_sysret_handler() {
     core::arch::naked_asm!(
-        "mov al, 1",
-        "mov gs:0x9, al",
-        "mov r15, rsp", // save caller rsp
-        "mov r14, r11", // save caller flags
-        "mov r13, rcx", // save caller rip
-        "mov rcx, r10", // move arg3 to match sysv c calling convention
-        "mov rsp, gs:0x1A", // load kstack top
+        // set cpu context
+        "mov r12d, 1",
+        "mov gs:0x9, r12d",
+
+        // swap stack
+        "mov r12, rsp",
+        "mov rsp, gs:0x1A",
         "sti",
-        "call {}",
+
+        // save registers
+        "push r11", // save caller flags
+        "push rcx", // save caller rip
+
+        // move arg3 to match sysv c calling convention
+        "mov rcx, r10",
+
+        // check bounds of syscall
+        "cmp rax, {syscall_len}",
+        "jb 2f",
+        "mov rdi, rax",
+        "call {out_of_bounds}",
+
+        // call the syscall fn
+        "2:",
+        "lea r11, [rip+{syscall_fns}]",
+        "call [r11+rax*8]",
+
         // clear scratch registers (we don't want leaks)
-        "cli",
         "xor r10d, r10d",
         "xor r9d,  r9d",
         "xor r8d,  r8d",
         "xor edi,  edi",
         "xor esi,  esi",
+        "xor edx,  edx",
+
+        // set cpu context
+        "cli",
         "mov cl, 2",
-        "mov gs:0x9, cl", // set cpu context
-        "mov rcx, r13", // restore caller rip
-        "mov r11, r14", // restore caller flags
-        "mov rsp, r15", // restore caller rsp
+        "mov gs:0x9, cl",
+
+        // restore registers
+        "pop rcx",
+        "pop r11",
+        "mov rsp, r12",
         "sysretq",
-        sym syscall_handler,
+        syscall_len = const SYSCALL_FNS.len(),
+        syscall_fns = sym SYSCALL_FNS,
+        out_of_bounds = sym out_of_bounds,
     );
 }
 
-unsafe extern "C" fn syscall_handler(
-    number: usize,
-    arg1: usize,
-    arg2: usize,
-    arg3: usize,
-    arg4: usize,
-    _arg5: usize,
-) -> usize {
-    // Run syscalls without interrupts
-    // This means execution should not be interrupted
+// We read into this from asm
+#[allow(dead_code)]
+struct SyscallFn(pub *const ());
+
+unsafe impl Sync for SyscallFn {}
+
+static SYSCALL_FNS: [SyscallFn; 29] = [
+    // misc
+    SyscallFn(handle_sys_echo as *const ()),
+    SyscallFn(handle_sys_yield as *const ()),
+    SyscallFn(handle_sys_sleep as *const ()),
+    SyscallFn(handle_sys_exit as *const ()),
+    SyscallFn(handle_sys_map as *const ()),
+    SyscallFn(handle_sys_unmap as *const ()),
+    SyscallFn(handle_sys_read_args as *const ()),
+    SyscallFn(handle_sys_pid as *const ()),
+    // handle
+    SyscallFn(handle_sys_handle_drop as *const ()),
+    SyscallFn(handle_sys_handle_clone as *const ()),
+    // object
+    SyscallFn(handle_sys_object_type as *const ()),
+    SyscallFn(handle_sys_object_wait as *const ()),
+    SyscallFn(handle_sys_object_wait_port as *const ()),
+    // channel
+    SyscallFn(handle_sys_channel_create as *const ()),
+    SyscallFn(handle_sys_channel_read as *const ()),
+    SyscallFn(handle_sys_channel_write as *const ()),
+    // interrupt
+    SyscallFn(handle_sys_interrupt_create as *const ()),
+    SyscallFn(handle_sys_interrupt_wait as *const ()),
+    SyscallFn(handle_sys_interrupt_trigger as *const ()),
+    SyscallFn(handle_sys_interrupt_acknowledge as *const ()),
+    SyscallFn(handle_sys_interrupt_set_port as *const ()),
+    // port
+    SyscallFn(handle_sys_port_create as *const ()),
+    SyscallFn(handle_sys_port_wait as *const ()),
+    SyscallFn(handle_sys_port_push as *const ()),
+    // process
+    SyscallFn(handle_sys_process_spawn_thread as *const ()),
+    SyscallFn(handle_sys_process_exit_code as *const ()),
+    // message
+    SyscallFn(handle_sys_message_create as *const ()),
+    SyscallFn(handle_sys_message_size as *const ()),
+    SyscallFn(handle_sys_message_read as *const ()),
+];
+
+extern "C" fn out_of_bounds(number: usize) -> ! {
+    info!("Out of bounds syscall {number}");
+    kill_bad_task();
+}
+
+extern "C" fn handle_sys_echo(val: usize) -> usize {
+    info!("ECHO {val}");
+    val
+}
+
+unsafe extern "C" fn handle_sys_yield() {
     let thread = CPULocalStorageRW::get_current_task();
-    {
-        let mut sched = thread.sched().lock();
-        assert!(!sched.in_syscall);
-        if sched.killed {
-            enter_sched(&mut sched);
-            unreachable!("exit thread shouldn't return")
-        }
-        sched.in_syscall = true;
-    }
-    use kernel_userspace::syscall::*;
-    let res = match number {
-        YIELD_NOW => {
-            let mut sched = thread.sched().lock();
-            sched.in_syscall = false;
-            enter_sched(&mut sched);
-            return 0;
-        }
-        EXIT_THREAD => {
-            let mut sched = thread.sched().lock();
-            sched.in_syscall = false;
-            sched.killed = true;
-            enter_sched(&mut sched);
-            unreachable!("exit thread shouldn't return")
-        }
-        ECHO => echo_handler(arg1),
-        SPAWN_THREAD => taskmanager::spawn_thread(arg1, arg2),
-        SLEEP => sleep_handler(arg1),
-        MMAP_PAGE => mmap_page_handler(arg1, arg2),
-        MMAP_PAGE32 => mmap_page32_handler(),
-        UNMMAP_PAGE => {
-            // ! TODO: THIS IS VERY BAD
-            // Another thread can still write to the memory
-            unmmap_page_handler(arg1, arg2)
-        }
-        READ_ARGS => read_args_handler(arg1),
-        GET_PID => Ok(thread.process().pid.0 as usize),
-        MESSAGE => message_handler(arg1, arg2),
-        OBJECT => sys_reference_handler(arg1, arg2, arg3),
-        PROCESS => sys_process_handler(arg1, arg2),
-        CHANNEL => sys_channel_handler(arg1, arg2),
-        PORT => sys_port_handler(arg1, arg2, arg3),
-        INTERRUPT => sys_interrupt_handler(arg1, arg2, arg3, arg4),
-        _ => {
-            error!("Unknown syscall class: {}", number);
-            Err(SyscallError::Error)
-        }
-    };
-
-    thread.sched().lock().in_syscall = false;
-    match res {
-        Ok(r) => r,
-        Err(SyscallError::Error) => kill_bad_task(),
-    }
+    let mut sched = thread.sched().lock();
+    enter_sched(&mut sched);
 }
 
-fn echo_handler(arg1: usize) -> Result<usize, SyscallError> {
-    info!("Echoing: {}", arg1);
-    Ok(arg1)
-}
-
-unsafe fn read_args_handler(arg1: usize) -> Result<usize, SyscallError> {
-    let task = CPULocalStorageRW::get_current_task();
-
-    let proc = task.process();
-
-    if arg1 == 0 {
-        Ok(proc.args.len())
-    } else {
-        let bytes = &proc.args;
-        let buf = unsafe { &mut *slice_from_raw_parts_mut(arg1 as *mut u8, bytes.len()) };
-        buf.copy_from_slice(bytes);
-        Ok(arg1)
-    }
-}
-
-unsafe fn mmap_page_handler(arg1: usize, arg2: usize) -> Result<usize, SyscallError> {
-    kassert!(arg1 <= crate::paging::MemoryLoc::EndUserMem as usize);
-
-    let task = CPULocalStorageRW::get_current_task();
-
-    let mut memory = task.process().memory.lock();
-
-    let lazy_page = PageMapping::new_lazy((arg2 + 0xFFF) & !0xFFF);
-
-    if arg1 == 0 {
-        Ok(memory
-            .page_mapper
-            .insert_mapping(lazy_page, MemoryMappingFlags::all()))
-    } else {
-        kunwrap!(memory
-            .page_mapper
-            .insert_mapping_at(arg1, lazy_page, MemoryMappingFlags::all()));
-        Ok(arg1)
-    }
-}
-
-unsafe fn mmap_page32_handler() -> Result<usize, SyscallError> {
-    let task = CPULocalStorageRW::get_current_task();
-
-    let page = kunwrap!(frame_alloc_exec(|a| a.allocate_page_32bit()));
-
-    let r = page.get_address() as usize;
-
-    let mut memory = task.process().memory.lock();
-    unsafe {
-        memory
-            .page_mapper
-            .get_mapper_mut()
-            .identity_map(global_allocator(), page, MemoryMappingFlags::all())
-            .unwrap()
-            .flush();
-    }
-    memory
-        .owned32_pages
-        .push(AllocatedPage::from_raw(page, GlobalPageAllocator));
-    Ok(r)
-}
-
-unsafe fn unmmap_page_handler(arg1: usize, arg2: usize) -> Result<usize, SyscallError> {
-    kassert!(arg1 <= crate::paging::MemoryLoc::EndUserMem as usize);
-
-    let task = CPULocalStorageRW::get_current_task();
-
-    let mut memory = task.process().memory.lock();
-
-    unsafe {
-        kunwrap!(memory
-            .page_mapper
-            .free_mapping(arg1..(arg1 + arg2 + 0xFFF) & !0xFFF));
-        Ok(0)
-    }
-}
-
-unsafe fn sys_reference_handler(
-    arg1: usize,
-    arg2: usize,
-    arg3: usize,
-) -> Result<usize, SyscallError> {
-    let thread = CPULocalStorageRW::get_current_task();
-
-    let operation: ReferenceOperation = kunwrap!(FromPrimitive::from_usize(arg1));
-    let id = kunwrap!(KernelReferenceID::from_usize(arg2));
-
-    let mut refs = thread.process().references.lock();
-    match operation {
-        ReferenceOperation::Clone => {
-            let clonable = kunwrap!(refs.references().get(&id)).clone();
-            Ok(refs.add_value(clonable).0.get())
-        }
-        ReferenceOperation::Delete => {
-            kunwrap!(refs.references().remove(&id));
-            Ok(0)
-        }
-        ReferenceOperation::GetType => Ok(match refs.references().get(&id) {
-            Some(r) => r.object_type(),
-            None => kernel_userspace::object::KernelObjectType::None,
-        } as usize),
-        ReferenceOperation::Wait => {
-            let val = kunwrap!(refs.references().get(&id)).clone();
-
-            let mask = ObjectSignal::from_bits_truncate(arg3 as u64);
-
-            let waiter = |signals: &mut KObjectSignal| {
-                if signals.signal_status().intersects(mask) {
-                    Ok(signals.signal_status())
-                } else {
-                    let mut sched = thread.sched().lock();
-                    sched.state = ThreadState::Sleeping;
-                    signals.wait(SignalWaiter {
-                        ty: crate::object::SignalWaiterType::One(thread.thread()),
-                        mask,
-                    });
-                    Err(sched)
-                }
-            };
-
-            let res = match &val {
-                KernelValue::Channel(v) => v.signals(waiter),
-                KernelValue::Process(v) => v.signals(waiter),
-                _ => kpanic!("object not signalable"),
-            };
-
-            match res {
-                Ok(val) => Ok(val.bits() as usize),
-                Err(mut status) => {
-                    drop(refs);
-                    enter_sched(&mut status);
-                    Ok(match val {
-                        KernelValue::Channel(v) => v.signals(|w| w.signal_status().bits() as usize),
-                        KernelValue::Process(v) => v.signals(|w| w.signal_status().bits() as usize),
-                        _ => kpanic!("object not signalable"),
-                    })
-                }
-            }
-        }
-        ReferenceOperation::WaitPort => {
-            let val = kunwrap!(refs.references().get(&id)).clone();
-
-            let wait = &*(arg3 as *const WaitPort);
-
-            let port = kunwrap!(refs.references().get(&wait.port_handle)).clone();
-            let port = kenum_cast!(port, KernelValue::Port);
-
-            let mask = ObjectSignal::from_bits_truncate(wait.mask);
-
-            let waiter = |signals: &mut KObjectSignal| {
-                if signals.signal_status().intersects(mask) {
-                    port.notify(PortNotification {
-                        key: wait.key,
-                        ty: kernel_userspace::port::PortNotificationType::SignalOne {
-                            trigger: mask,
-                            signals: signals.signal_status(),
-                        },
-                    });
-                } else {
-                    signals.wait(SignalWaiter {
-                        ty: crate::object::SignalWaiterType::Port {
-                            port,
-                            key: wait.key,
-                        },
-                        mask: mask,
-                    });
-                }
-            };
-
-            match &val {
-                KernelValue::Channel(v) => v.signals(waiter),
-                KernelValue::Process(v) => v.signals(waiter),
-                _ => kpanic!("object not signalable"),
-            };
-
-            Ok(0)
-        }
-    }
-}
-
-unsafe fn sys_process_handler(arg1: usize, arg2: usize) -> Result<usize, SyscallError> {
-    let thread = CPULocalStorageRW::get_current_task();
-
-    let operation: KernelProcessOperation = kunwrap!(FromPrimitive::from_usize(arg1));
-    let id = kunwrap!(KernelReferenceID::from_usize(arg2));
-    let proc = kunwrap!(thread.process().get_value(id));
-
-    let proc = kenum_cast!(proc, KernelValue::Process);
-
-    match operation {
-        KernelProcessOperation::GetExitCode => Ok(*proc.exit_status.lock() as usize),
-        KernelProcessOperation::Kill => {
-            proc.kill_threads();
-            Ok(0)
-        }
-    }
-}
-
-unsafe fn sleep_handler(arg1: usize) -> Result<usize, SyscallError> {
+unsafe extern "C" fn handle_sys_sleep(ms: u64) -> u64 {
     let start = uptime();
-    let time = start + arg1 as u64;
+    let time = start + ms;
     let thread = CPULocalStorageRW::get_current_task();
 
     let mut sched = thread.sched().lock();
@@ -502,229 +424,517 @@ unsafe fn sleep_handler(arg1: usize) -> Result<usize, SyscallError> {
         }));
 
     enter_sched(&mut sched);
-    Ok((uptime() - start) as usize)
+    uptime() - start
 }
 
-unsafe fn message_handler(arg1: usize, arg2: usize) -> Result<usize, SyscallError> {
-    let action: SyscallMessageAction = kunwrap!(FromPrimitive::from_usize(arg1));
+unsafe extern "C" fn handle_sys_exit() -> ! {
     let thread = CPULocalStorageRW::get_current_task();
+    let mut sched = thread.sched().lock();
+    sched.state = ThreadState::Killed;
+    enter_sched(&mut sched);
+    unreachable!("exit thread shouldn't return")
+}
 
-    match action {
-        SyscallMessageAction::Create => unsafe {
-            let msg_create = &mut *(arg2 as *mut MessageCreate);
-            let req = &msg_create.before;
-            let data: Box<[u8]> = core::slice::from_raw_parts(req.0, req.1).into();
-            let msg = Arc::new(KMessage { data });
+unsafe extern "C" fn handle_sys_map(
+    mut hint: vaddr_t,
+    length: usize,
+    flags: u32,
+    result: *mut vaddr_t,
+) -> SyscallResult {
+    kassert2!(hint as usize <= crate::paging::MemoryLoc::EndUserMem as usize);
 
-            msg_create.after = thread.process().add_value(msg.into());
-        },
-        SyscallMessageAction::GetSize => unsafe {
-            let msg_size = &mut *(arg2 as *mut MessageGetSize);
+    let task = CPULocalStorageRW::get_current_task();
 
-            let msg = kunwrap!(thread.process().get_value(msg_size.before));
-            let msg = kenum_cast!(msg, KernelValue::Message);
+    let memory: &mut ProcessMemory = &mut task.process().memory.lock();
 
-            msg_size.after = msg.data.len();
-        },
-        SyscallMessageAction::Read => unsafe {
-            let msg_read = &mut *(arg2 as *mut MessageRead);
+    let flags = MapMemoryFlags::from_bits_truncate(flags);
 
-            let loc = core::slice::from_raw_parts_mut(msg_read.ptr.0, msg_read.ptr.1);
+    let mapping = if flags.contains(MapMemoryFlags::ALLOC_32BITS) {
+        kassert2!(length <= 0x1000);
+        let page = frame_alloc_exec(|a| a.allocate_page_32bit()).unwrap();
 
-            let msg = kunwrap!(thread.process().get_value(msg_read.id));
-            let msg = kenum_cast!(msg, KernelValue::Message);
+        // when alloc 32 bit we identity map so userspace knows the addr
+        hint = page.get_address() as _;
 
-            let data = &msg.data;
+        PageMapping::new_lazy_prealloc(Box::new([Some(AllocatedPage::from_raw(
+            page,
+            GlobalPageAllocator,
+        ))]))
+    } else if flags.contains(MapMemoryFlags::PREALLOC) {
+        PageMapping::new_lazy_filled((length + 0xFFF) & !0xFFF)
+    } else {
+        PageMapping::new_lazy((length + 0xFFF) & !0xFFF)
+    };
 
-            kassert!(
-                data.len() == loc.len(),
-                "Data and loc len should be same instead was: {} {}",
-                data.len(),
-                loc.len()
-            );
+    let mut map_flags = MemoryMappingFlags::USERSPACE;
 
-            loc.copy_from_slice(data);
-        },
+    if flags.contains(MapMemoryFlags::WRITEABLE) {
+        map_flags |= MemoryMappingFlags::WRITEABLE;
     }
 
-    Ok(0)
+    if hint.is_null() {
+        let addr = memory.page_mapper.insert_mapping(mapping, map_flags);
+        *result = addr as *mut ();
+    } else {
+        match memory
+            .page_mapper
+            .insert_mapping_at(hint as usize, mapping, map_flags)
+        {
+            Some(()) => *result = hint,
+            None => return SyscallResult::BadInputPointer,
+        }
+    }
+
+    SyscallResult::Ok
 }
 
-unsafe fn sys_channel_handler(syscall: usize, arg2: usize) -> Result<usize, SyscallError> {
-    let action = kunwrap!(ChannelSyscall::from_usize(syscall));
+unsafe extern "C" fn handle_sys_unmap(address: vaddr_t, length: usize) -> SyscallResult {
+    kassert2!(address as usize <= crate::paging::MemoryLoc::EndUserMem as usize);
 
-    let thread = CPULocalStorageRW::get_current_task();
+    let task = CPULocalStorageRW::get_current_task();
 
-    match action {
-        ChannelSyscall::Create => {
-            let create = &mut *(arg2 as *mut ChannelCreate);
+    let memory: &mut ProcessMemory = &mut task.process().memory.lock();
 
-            let (left, right) = channel_create();
-
-            let left = thread.process().add_value(left.into());
-            let right = thread.process().add_value(right.into());
-
-            create.left = Some(left);
-            create.right = Some(right);
-            Ok(1)
+    match memory
+        .page_mapper
+        .free_mapping(address as usize..(address as usize + length + 0xFFF) & !0xFFF)
+    {
+        Ok(()) => SyscallResult::Ok,
+        Err(err) => {
+            info!("Error unmapping: {address:?}-{length} {err:?}");
+            SyscallResult::BadInputPointer
         }
-        ChannelSyscall::Read => {
-            let read = &mut *(arg2 as *mut ChannelRead);
-            let handle = kunwrap!(thread.process().get_value(read.handle));
+    }
+}
 
-            let chan = kenum_cast!(handle, KernelValue::Channel);
+unsafe extern "C" fn handle_sys_read_args(buffer: *mut u8, len: usize) -> usize {
+    let task = CPULocalStorageRW::get_current_task();
 
-            match chan.read(read.data_len, read.handles_len) {
-                Ok(ok) => {
-                    read.data_len = ok.data.len();
-                    let data_ptr = core::slice::from_raw_parts_mut(read.data, ok.data.len());
-                    data_ptr.copy_from_slice(&ok.data);
+    let proc = task.process();
+    let bytes = &proc.args;
 
-                    if let Some(h) = ok.handles {
-                        read.handles_len = h.len();
-                        let data_ptr: &mut [Option<KernelReferenceID>] =
-                            core::slice::from_raw_parts_mut(read.handles.cast(), h.len());
+    if buffer.is_null() || len != bytes.len() {
+        return bytes.len();
+    }
+    let buf = unsafe { &mut *slice_from_raw_parts_mut(buffer, len) };
+    buf.copy_from_slice(bytes);
+    usize::MAX
+}
 
-                        let mut i = 0;
-                        for handle in h {
-                            let id = thread.process().add_value(handle);
-                            data_ptr[i] = Some(id);
-                            i += 1;
-                        }
-                    } else {
-                        read.handles_len = 0;
-                    }
-                    Ok(ChannelReadResult::Ok as usize)
-                }
-                Err(ReadError::Empty) => Ok(ChannelReadResult::Empty as usize),
-                Err(ReadError::Size {
-                    min_bytes,
-                    min_handles,
-                }) => {
-                    read.data_len = min_bytes;
-                    read.handles_len = min_handles;
-                    Ok(ChannelReadResult::Size as usize)
-                }
-                Err(ReadError::Closed) => Ok(ChannelReadResult::Closed as usize),
+unsafe extern "C" fn handle_sys_pid() -> pid_t {
+    CPULocalStorageRW::get_current_task()
+        .process()
+        .pid
+        .into_raw()
+}
+
+// handle
+
+unsafe extern "C" fn handle_sys_handle_drop(handle: hid_t) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+    let refs: &mut ProcessReferences = &mut thread.process().references.lock();
+
+    let handle = kunwrap2!(Hid::from_raw(handle));
+
+    match refs.references().remove(&handle) {
+        Some(_) => SyscallResult::Ok,
+        None => SyscallResult::UnknownHandle,
+    }
+}
+
+unsafe extern "C" fn handle_sys_handle_clone(handle: hid_t, cloned: *mut hid_t) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+    let refs: &mut ProcessReferences = &mut thread.process().references.lock();
+
+    let handle = kunwrap2!(Hid::from_raw(handle));
+
+    match refs.references().get(&handle).cloned() {
+        Some(h) => {
+            let new = refs.add_value(h);
+            *cloned = new.0.get();
+            SyscallResult::Ok
+        }
+        None => SyscallResult::UnknownHandle,
+    }
+}
+
+// object
+
+unsafe extern "C" fn handle_sys_object_type(handle: hid_t, ty: *mut usize) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+    let refs: &mut ProcessReferences = &mut thread.process().references.lock();
+
+    let handle = kunwrap2!(Hid::from_raw(handle));
+
+    match refs.references().get(&handle) {
+        Some(h) => {
+            *ty = h.object_type() as usize;
+            SyscallResult::Ok
+        }
+        None => SyscallResult::UnknownHandle,
+    }
+}
+unsafe extern "C" fn handle_sys_object_wait(
+    handle: hid_t,
+    on: signals_t,
+    result: *mut signals_t,
+) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+    let mut refs = thread.process().references.lock();
+
+    let handle = kunwrap2!(Hid::from_raw(handle));
+
+    let Some(val) = refs.references().get(&handle).cloned() else {
+        return SyscallResult::UnknownHandle;
+    };
+
+    let mask = ObjectSignal::from_bits_truncate(on);
+
+    let waiter = |signals: &mut KObjectSignal| {
+        if signals.signal_status().intersects(mask) {
+            Ok(signals.signal_status())
+        } else {
+            let mut sched = thread.sched().lock();
+            sched.state = ThreadState::Sleeping;
+            signals.wait(SignalWaiter {
+                ty: crate::object::SignalWaiterType::One(thread.thread()),
+                mask,
+            });
+            Err(sched)
+        }
+    };
+
+    let res = match &val {
+        KernelValue::Channel(v) => v.signals(waiter),
+        KernelValue::Process(v) => v.signals(waiter),
+        _ => kpanic2!("object not signalable"),
+    };
+
+    match res {
+        Ok(val) => *result = val.bits(),
+        Err(mut status) => {
+            drop(refs);
+            enter_sched(&mut status);
+            *result = match val {
+                KernelValue::Channel(v) => v.signals(|w| w.signal_status().bits()),
+                KernelValue::Process(v) => v.signals(|w| w.signal_status().bits()),
+                _ => kpanic2!("object not signalable"),
             }
         }
-        ChannelSyscall::Write => {
-            let write = &mut *(arg2 as *mut ChannelWrite);
-            let handle = kunwrap!(thread.process().get_value(write.handle));
+    }
+    SyscallResult::Ok
+}
 
-            let chan = kenum_cast!(handle, KernelValue::Channel);
-            let data = core::slice::from_raw_parts(write.data, write.data_len);
+unsafe extern "C" fn handle_sys_object_wait_port(
+    handle: hid_t,
+    port: hid_t,
+    on: signals_t,
+    key: u64,
+) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+    let refs: &mut ProcessReferences = &mut thread.process().references.lock();
 
-            let handles = if !write.handles.is_null() && write.handles_len > 0 {
-                let handles: &[Option<KernelReferenceID>] =
-                    core::slice::from_raw_parts(write.handles.cast(), write.handles_len);
-                let mut handles_res = Vec::with_capacity(write.handles_len);
-                let mut refs = thread.process().references.lock();
-                for h in handles {
-                    match h {
-                        Some(r) => handles_res.push(kunwrap!(refs.references().get(r)).clone()),
-                        None => kpanic!("null ref not allowed"),
-                    }
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let port = kunwrap2!(Hid::from_raw(port));
+
+    let refs = refs.references();
+    let Some(handle) = refs.get(&handle) else {
+        return SyscallResult::UnknownHandle;
+    };
+
+    let Some(port) = refs.get(&port) else {
+        return SyscallResult::UnknownHandle;
+    };
+
+    let mask = ObjectSignal::from_bits_truncate(on);
+
+    let port = kenum_cast2!(port, KernelValue::Port);
+
+    let waiter = |signals: &mut KObjectSignal| {
+        if signals.signal_status().intersects(mask) {
+            port.notify(SysPortNotification {
+                key: key,
+                value: SysPortNotificationValue::SignalOne {
+                    trigger: mask,
+                    signals: signals.signal_status(),
+                },
+            });
+        } else {
+            signals.wait(SignalWaiter {
+                ty: crate::object::SignalWaiterType::Port {
+                    port: port.clone(),
+                    key: key,
+                },
+                mask: mask,
+            });
+        }
+    };
+
+    match &handle {
+        KernelValue::Channel(v) => v.signals(waiter),
+        KernelValue::Process(v) => v.signals(waiter),
+        _ => kpanic2!("object not signalable"),
+    };
+
+    SyscallResult::Ok
+}
+
+// channel
+
+unsafe extern "C" fn handle_sys_channel_create(left: *mut hid_t, right: *mut hid_t) {
+    let thread = CPULocalStorageRW::get_current_task();
+    let (l, r) = channel_create();
+
+    let l = thread.process().add_value(l.into());
+    let r = thread.process().add_value(r.into());
+
+    *left = l.into_raw();
+    *right = r.into_raw();
+}
+
+unsafe extern "C" fn handle_sys_channel_read(
+    handle: hid_t,
+    data: *mut u8,
+    data_len: *mut usize,
+    handles: *mut hid_t,
+    handles_len: *mut usize,
+) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let handle = kunwrap2!(thread.process().get_value(handle));
+    let chan = kenum_cast2!(handle, KernelValue::Channel);
+
+    match chan.read(*data_len, *handles_len) {
+        Ok(ok) => {
+            *data_len = ok.data.len();
+            let data_ptr = core::slice::from_raw_parts_mut(data, ok.data.len());
+            data_ptr.copy_from_slice(&ok.data);
+
+            if let Some(h) = ok.handles {
+                *handles_len = h.len();
+                let data_ptr: &mut [hid_t] = core::slice::from_raw_parts_mut(handles, h.len());
+
+                let mut i = 0;
+                for handle in h {
+                    let id = thread.process().add_value(handle);
+                    data_ptr[i] = id.into_raw();
+                    i += 1;
                 }
-                Some(handles_res.into_boxed_slice())
             } else {
-                None
-            };
-
-            let msg = ChannelMessage {
-                data: data.into(),
-                handles,
-            };
-            match chan.send(msg) {
-                Some(()) => Ok(1),
-                None => Ok(0),
+                *handles_len = 0;
             }
+            SyscallResult::Ok
         }
+        Err(ReadError::Empty) => SyscallResult::ChannelEmpty,
+        Err(ReadError::Size {
+            min_bytes,
+            min_handles,
+        }) => {
+            *data_len = min_bytes;
+            *handles_len = min_handles;
+            SyscallResult::ChannelBufferTooSmall
+        }
+        Err(ReadError::Closed) => SyscallResult::ChannelClosed,
     }
 }
 
-unsafe fn sys_port_handler(
-    syscall: usize,
-    arg1: usize,
-    arg2: usize,
-) -> Result<usize, SyscallError> {
-    let action = kunwrap!(PortSyscall::from_usize(syscall));
+unsafe extern "C" fn handle_sys_channel_write(
+    handle: hid_t,
+    data: *const u8,
+    data_len: usize,
+    handles: *const hid_t,
+    handles_len: usize,
+) -> SyscallResult {
     let thread = CPULocalStorageRW::get_current_task();
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let handle = kunwrap2!(thread.process().get_value(handle));
+    let chan = kenum_cast2!(handle, KernelValue::Channel);
 
-    match action {
-        PortSyscall::Create => {
-            let port = KPort::new();
-            let handle = thread.process().add_value(Arc::new(port).into());
-            Ok(handle.0.get())
-        }
-        PortSyscall::Wait => {
-            let handle = kunwrap!(KernelReferenceID::from_usize(arg1));
-            let handle = kunwrap!(thread.process().get_value(handle));
+    let data = core::slice::from_raw_parts(data, data_len);
 
-            let port = kenum_cast!(handle, KernelValue::Port);
-            let v = port.wait();
-            (arg2 as *mut PortNotification).write(v);
-            Ok(0)
+    let handles = if !handles.is_null() && handles_len > 0 {
+        let handles: &[hid_t] = core::slice::from_raw_parts(handles, handles_len);
+        let mut handles_res = Vec::with_capacity(handles_len);
+        let mut refs = thread.process().references.lock();
+        for h in handles {
+            let r = kunwrap2!(Hid::from_raw(*h));
+            handles_res.push(kunwrap2!(refs.references().get(&r)).clone());
         }
-        PortSyscall::Push => {
-            let handle = kunwrap!(KernelReferenceID::from_usize(arg1));
-            let handle = kunwrap!(thread.process().get_value(handle));
+        Some(handles_res.into_boxed_slice())
+    } else {
+        None
+    };
 
-            let port = kenum_cast!(handle, KernelValue::Port);
-            let v = (arg2 as *const PortNotification).read();
-            port.notify(v);
-            Ok(0)
-        }
+    let msg = ChannelMessage {
+        data: data.into(),
+        handles,
+    };
+    match chan.send(msg) {
+        Some(()) => SyscallResult::Ok,
+        None => SyscallResult::ChannelFull,
     }
 }
 
-unsafe fn sys_interrupt_handler(
-    syscall: usize,
-    handle: usize,
-    port: usize,
-    key: usize,
-) -> Result<usize, SyscallError> {
-    let action = kunwrap!(InterruptSyscall::from_usize(syscall));
-
+unsafe extern "C" fn handle_sys_interrupt_create() -> hid_t {
     let thread = CPULocalStorageRW::get_current_task();
 
-    match action {
-        InterruptSyscall::Create => {
-            let interrupt = KInterruptHandle::new();
-            let id = thread.process().add_value(Arc::new(interrupt).into());
-            Ok(id.0.get())
-        }
-        InterruptSyscall::Trigger => {
-            let id = kunwrap!(KernelReferenceID::from_usize(handle));
-            let int = kunwrap!(thread.process().get_value(id));
-            let int = kenum_cast!(int, KernelValue::Interrupt);
-            int.trigger();
-            Ok(0)
-        }
-        InterruptSyscall::SetPort => {
-            let id = kunwrap!(KernelReferenceID::from_usize(handle));
-            let int = kunwrap!(thread.process().get_value(id));
-            let int = kenum_cast!(int, KernelValue::Interrupt);
+    let interrupt = KInterruptHandle::new();
+    let id = thread.process().add_value(Arc::new(interrupt).into());
+    id.0.get()
+}
 
-            let id = kunwrap!(KernelReferenceID::from_usize(port));
-            let port = kunwrap!(thread.process().get_value(id));
-            let port = kenum_cast!(port, KernelValue::Port);
+unsafe extern "C" fn handle_sys_interrupt_wait(handle: hid_t) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
 
-            int.set_port(port, key as u64);
-            Ok(0)
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let int = kunwrap2!(thread.process().get_value(handle));
+    let int = kenum_cast2!(int, KernelValue::Interrupt);
+    int.wait()
+}
+
+unsafe extern "C" fn handle_sys_interrupt_trigger(handle: hid_t) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let int = kunwrap2!(thread.process().get_value(handle));
+    let int = kenum_cast2!(int, KernelValue::Interrupt);
+    int.trigger();
+    SyscallResult::Ok
+}
+
+unsafe extern "C" fn handle_sys_interrupt_acknowledge(handle: hid_t) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let int = kunwrap2!(thread.process().get_value(handle));
+    let int = kenum_cast2!(int, KernelValue::Interrupt);
+    int.ack();
+    SyscallResult::Ok
+}
+
+unsafe extern "C" fn handle_sys_interrupt_set_port(
+    handle: hid_t,
+    port: hid_t,
+    key: u64,
+) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let int = kunwrap2!(Hid::from_raw(handle));
+    let int = kunwrap2!(thread.process().get_value(int));
+    let int = kenum_cast2!(int, KernelValue::Interrupt);
+
+    let port = kunwrap2!(Hid::from_raw(port));
+    let port = kunwrap2!(thread.process().get_value(port));
+    let port = kenum_cast2!(port, KernelValue::Port);
+    int.set_port(port, key);
+    SyscallResult::Ok
+}
+
+// port
+
+unsafe extern "C" fn handle_sys_port_create() -> hid_t {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let interrupt = KPort::new();
+    let id = thread.process().add_value(Arc::new(interrupt).into());
+    id.0.get()
+}
+
+unsafe extern "C" fn handle_sys_port_wait(
+    handle: hid_t,
+    result: *mut sys_port_notification_t,
+) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let handle = kunwrap2!(thread.process().get_value(handle));
+    let port = kenum_cast2!(handle, KernelValue::Port);
+
+    *result = port.wait().into_raw();
+
+    SyscallResult::Ok
+}
+
+unsafe extern "C" fn handle_sys_port_push(
+    handle: hid_t,
+    value: *const sys_port_notification_t,
+) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let handle = kunwrap2!(thread.process().get_value(handle));
+    let port = kenum_cast2!(handle, KernelValue::Port);
+
+    let value = kunwrap2!(SysPortNotification::from_raw(*value));
+
+    port.notify(value);
+
+    SyscallResult::Ok
+}
+
+// process
+
+unsafe extern "C" fn handle_sys_process_spawn_thread(func: *const (), arg: *const ()) -> tid_t {
+    taskmanager::spawn_thread(func as usize, arg as usize).into_raw()
+}
+
+unsafe extern "C" fn handle_sys_process_exit_code(
+    handle: hid_t,
+    exit: *mut usize,
+) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let handle = kunwrap2!(thread.process().get_value(handle));
+    let proc = kenum_cast2!(handle, KernelValue::Process);
+    let status = *proc.exit_status.lock();
+    match status {
+        Some(val) => {
+            *exit = val;
+            SyscallResult::Ok
         }
-        InterruptSyscall::Acknowledge => {
-            let id = kunwrap!(KernelReferenceID::from_usize(handle));
-            let int = kunwrap!(thread.process().get_value(id));
-            let int = kenum_cast!(int, KernelValue::Interrupt);
-            int.ack();
-            Ok(0)
-        }
-        InterruptSyscall::Wait => {
-            let id = kunwrap!(KernelReferenceID::from_usize(handle));
-            let int = kunwrap!(thread.process().get_value(id));
-            let int = kenum_cast!(int, KernelValue::Interrupt);
-            int.wait()
-        }
+        None => SyscallResult::ProcessStillRunning,
     }
+}
+
+// message
+
+unsafe extern "C" fn handle_sys_message_create(data: *const u8, len: usize) -> hid_t {
+    let thread = CPULocalStorageRW::get_current_task();
+
+    let data: Box<[u8]> = core::slice::from_raw_parts(data, len).into();
+    let msg = Arc::new(KMessage { data });
+
+    thread.process().add_value(msg.into()).into_raw()
+}
+
+unsafe extern "C" fn handle_sys_message_size(handle: hid_t, size: *mut usize) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let handle = kunwrap2!(thread.process().get_value(handle));
+    let message = kenum_cast2!(handle, KernelValue::Message);
+    *size = message.data.len();
+    SyscallResult::Ok
+}
+
+unsafe extern "C" fn handle_sys_message_read(
+    handle: hid_t,
+    buffer: *mut u8,
+    buf_len: usize,
+) -> SyscallResult {
+    let thread = CPULocalStorageRW::get_current_task();
+    let handle = kunwrap2!(Hid::from_raw(handle));
+    let handle = kunwrap2!(thread.process().get_value(handle));
+    let message = kenum_cast2!(handle, KernelValue::Message);
+
+    kassert2!(
+        message.data.len() == buf_len,
+        "Data and loc len should be same instead was: {} {}",
+        message.data.len(),
+        buf_len
+    );
+
+    let loc = core::slice::from_raw_parts_mut(buffer, buf_len);
+    loc.copy_from_slice(&message.data);
+    SyscallResult::Ok
 }

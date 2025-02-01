@@ -1,10 +1,12 @@
 use core::{
     mem::{size_of, MaybeUninit},
     pin::Pin,
+    time::Duration,
 };
 
 use alloc::boxed::Box;
-use kernel_userspace::{disk::ata::ATADiskIdentify, syscall::sleep};
+use kernel_sys::syscall::sys_sleep;
+use kernel_userspace::disk::ata::ATADiskIdentify;
 
 use crate::{
     driver::disk::{
@@ -99,7 +101,7 @@ impl Port {
                     return slot;
                 }
             }
-            sleep(10);
+            sys_sleep(Duration::from_millis(10));
         }
     }
 

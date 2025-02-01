@@ -1,0 +1,12 @@
+[package]
+name = "kernel_sys"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kernel_syscall = { path = "kernel_syscall" }
+
+bitflags = { version = "2.6.0", default-features = false }
+num-derive = { version = "0.4.2" }
+num-traits = { version = "0.2.18", default-features = false }
+heapless = "0.8.0"

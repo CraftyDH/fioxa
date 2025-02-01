@@ -5,8 +5,8 @@ use core::{fmt::Debug, ops::ControlFlow, sync::atomic::AtomicU64};
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use conquer_once::spin::Lazy;
+use kernel_sys::types::SyscallResult;
 use kernel_userspace::{
-    channel::{channel_read_rs, channel_write_rs},
     fs::{
         FSServiceError, FSServiceMessage, FSServiceMessageResp, StatResponse, StatResponseFile,
         StatResponseFolder,
@@ -211,17 +211,11 @@ pub fn file_handler() {
         "FS",
         || (),
         |handle, ()| {
-            let mut handles_buffer = Vec::new();
-            match channel_read_rs(handle.id(), &mut buffer, &mut handles_buffer) {
-                kernel_userspace::channel::ChannelReadResult::Ok => (),
-                kernel_userspace::channel::ChannelReadResult::Empty => {
-                    return ControlFlow::Continue(());
-                }
-                kernel_userspace::channel::ChannelReadResult::Size => {
-                    error!("Too large fs message");
-                    return ControlFlow::Break(());
-                }
-                kernel_userspace::channel::ChannelReadResult::Closed => {
+            match handle.read::<0>(&mut buffer, false, false) {
+                Ok(_) => (),
+                Err(SyscallResult::ChannelEmpty) => return ControlFlow::Break(()),
+                err => {
+                    error!("Error recv msg: {err:?}");
                     return ControlFlow::Break(());
                 }
             }
@@ -238,13 +232,13 @@ pub fn file_handler() {
                 Ok((a, b)) => {
                     let m = serialize(&Ok::<_, FSServiceError>(a), &mut buffer);
                     match b {
-                        Some(h) => channel_write_rs(handle.id(), &m, &[h.kref().id()]),
-                        None => channel_write_rs(handle.id(), &m, &[]),
+                        Some(h) => handle.write(&m, &[**h.handle()]).assert_ok(),
+                        None => handle.write(&m, &[]).assert_ok(),
                     };
                 }
                 Err(e) => {
                     let m = serialize(&Err::<FSServiceMessageResp, _>(e), &mut buffer);
-                    channel_write_rs(handle.id(), &m, &[]);
+                    handle.write(&m, &[]).assert_ok()
                 }
             }
 

@@ -1,4 +1,4 @@
-use core::{mem::MaybeUninit, u64};
+use core::u64;
 
 use alloc::{
     collections::btree_map::BTreeMap,
@@ -7,12 +7,11 @@ use alloc::{
     vec::Vec,
 };
 use hashbrown::HashMap;
+use kernel_sys::types::{
+    ObjectSignal, SysPortNotification, SysPortNotificationValue, SyscallResult,
+};
 use kernel_userspace::{
-    channel::{channel_create_rs, channel_read, channel_write_rs, ChannelRead, ChannelReadResult},
-    object::{object_wait_port_rs, KernelReference, KernelReferenceID, ObjectSignal},
-    port::{port_create, port_wait, PortNotification, PortNotificationType},
-    process::InitHandleMessage,
-    service::deserialize,
+    channel::Channel, port::Port, process::InitHandleMessage, service::deserialize,
 };
 
 use crate::{port::KPort, scheduling::process::Thread};
@@ -59,9 +58,9 @@ impl KObjectSignal {
             match waiter.ty {
                 SignalWaiterType::One(thread) => thread.wake(),
                 SignalWaiterType::Port { port, key } => {
-                    port.notify(PortNotification {
+                    port.notify(SysPortNotification {
                         key,
-                        ty: PortNotificationType::SignalOne {
+                        value: SysPortNotificationValue::SignalOne {
                             trigger: waiter.mask,
                             signals: new,
                         },
@@ -86,42 +85,33 @@ pub trait KObject {
     fn signals<T>(&self, f: impl FnOnce(&mut KObjectSignal) -> T) -> T;
 }
 
-pub fn init_handle_new_proc(channels: Vec<KernelReference>) {
-    let port_handle = KernelReference::from_id(port_create());
+pub fn init_handle_new_proc(channels: Vec<Channel>) {
+    let port_handle = Port::new();
 
-    let mut chans: BTreeMap<u64, KernelReference> = BTreeMap::new();
+    let mut chans: BTreeMap<u64, Channel> = BTreeMap::new();
 
     for (i, chan) in channels.into_iter().enumerate() {
-        object_wait_port_rs(
-            chan.id(),
-            port_handle.id(),
-            ObjectSignal::READABLE,
-            (i + 10) as u64,
-        );
+        chan.handle()
+            .wait_port(&port_handle, ObjectSignal::READABLE, (i + 10) as u64)
+            .assert_ok();
 
         chans.insert((i + 10) as u64, chan);
     }
 
-    let mut handles: HashMap<String, KernelReference> = HashMap::new();
+    let mut handles: HashMap<String, Channel> = HashMap::new();
 
-    let mut notification = PortNotification {
-        key: 0,
-        ty: PortNotificationType::User(Default::default()),
-    };
     loop {
-        port_wait(port_handle.id(), &mut notification);
-        match notification.ty {
-            PortNotificationType::SignalOne { .. } => {
-                let chan = chans.get(&notification.key).unwrap().id();
-                if work_on_chan(chan, &mut handles, &mut chans, &port_handle) {
-                    object_wait_port_rs(
-                        chan,
-                        port_handle.id(),
-                        ObjectSignal::READABLE,
-                        notification.key,
-                    );
-                } else {
-                    chans.remove(&notification.key);
+        let notification = port_handle.wait().unwrap();
+        match notification.value {
+            SysPortNotificationValue::SignalOne { .. } => {
+                let chan = chans.remove(&notification.key).unwrap();
+                if work_on_chan(&chan, &mut handles, &mut chans, &port_handle) {
+                    let key = chans.last_key_value().unwrap().0 + 1;
+
+                    chan.handle()
+                        .wait_port(&port_handle, ObjectSignal::READABLE, key)
+                        .assert_ok();
+                    assert!(chans.insert(key, chan).is_none());
                 }
             }
             _ => panic!("bad channel handle passed"),
@@ -130,36 +120,22 @@ pub fn init_handle_new_proc(channels: Vec<KernelReference>) {
 }
 
 fn work_on_chan(
-    chan: KernelReferenceID,
-    refs: &mut HashMap<String, KernelReference>,
-    chans: &mut BTreeMap<u64, KernelReference>,
-    port_handle: &KernelReference,
+    chan: &Channel,
+    refs: &mut HashMap<String, Channel>,
+    chans: &mut BTreeMap<u64, Channel>,
+    port_handle: &Port,
 ) -> bool {
     let mut data = Vec::with_capacity(100);
-    let mut handles: MaybeUninit<KernelReferenceID> = MaybeUninit::uninit();
 
     loop {
-        let mut read = ChannelRead {
-            handle: chan,
-            data: data.as_mut_ptr(),
-            data_len: data.capacity(),
-            handles: handles.as_mut_ptr().cast(),
-            handles_len: 1,
+        let mut handles = match chan.read::<1>(&mut data, true, false) {
+            Ok(h) => h,
+            Err(SyscallResult::ChannelEmpty) => return true,
+            Err(e) => {
+                warn!("error recv: {e:?}");
+                return false;
+            }
         };
-        match channel_read(&mut read) {
-            ChannelReadResult::Ok => {
-                unsafe { data.set_len(read.data_len) };
-            }
-            ChannelReadResult::Empty => return true,
-            ChannelReadResult::Size => {
-                if read.data_len > 0x1000 {
-                    error!("got very large data {}", read.data_len);
-                    return false;
-                }
-                data.reserve(read.data_len - data.len());
-            }
-            ChannelReadResult::Closed => return false,
-        }
 
         let Ok(msg) = deserialize::<InitHandleMessage>(&data) else {
             warn!("bad message");
@@ -169,33 +145,37 @@ fn work_on_chan(
         match msg {
             InitHandleMessage::GetHandle(h) => match refs.get(h) {
                 Some(handle) => {
-                    let (left, right) = channel_create_rs();
+                    let (left, right) = Channel::new();
 
-                    channel_write_rs(handle.id(), &[true as u8], &[left.id()]);
-                    channel_write_rs(chan, &[true as u8], &[right.id()]);
+                    handle.write(&[true as u8], &[**left.handle()]).assert_ok();
+                    chan.write(&[true as u8], &[**right.handle()]).assert_ok();
                 }
                 None => {
-                    channel_write_rs(chan, &[false as u8], &[]);
+                    chan.write(&[false as u8], &[]).assert_ok();
                 }
             },
             InitHandleMessage::PublishHandle(name) => {
-                if read.handles_len != 1 {
+                if handles.len() != 1 {
                     warn!("bad handles len");
                     return false;
                 }
 
-                let publisher = unsafe { handles.assume_init() };
-                let old = refs.insert(name.to_string(), KernelReference::from_id(publisher));
+                let old = refs.insert(
+                    name.to_string(),
+                    Channel::from_handle(handles.pop().unwrap()),
+                );
 
-                channel_write_rs(chan, &[old.is_some() as u8], &[]);
+                chan.write(&[old.is_some() as u8], &[]).assert_ok();
             }
             InitHandleMessage::Clone => {
-                let id = chans.last_key_value().unwrap().0 + 1;
-                let (left, right) = channel_create_rs();
-                assert!(chans.insert(id, left).is_none());
-                object_wait_port_rs(chan, port_handle.id(), ObjectSignal::READABLE, id);
+                let key = chans.last_key_value().unwrap().0 + 1;
+                let (left, right) = Channel::new();
+                left.handle()
+                    .wait_port(port_handle, ObjectSignal::READABLE, key)
+                    .assert_ok();
+                assert!(chans.insert(key, left).is_none());
 
-                channel_write_rs(chan, &[true as u8], &[right.id()]);
+                chan.write(&[true as u8], &[**right.handle()]).assert_ok();
             }
         }
     }

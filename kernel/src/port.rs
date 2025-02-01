@@ -1,5 +1,5 @@
 use alloc::{collections::vec_deque::VecDeque, sync::Arc};
-use kernel_userspace::port::PortNotification;
+use kernel_sys::types::SysPortNotification;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
@@ -15,7 +15,7 @@ pub struct KPort {
 }
 
 pub struct KPortInner {
-    queue: VecDeque<PortNotification>,
+    queue: VecDeque<SysPortNotification>,
     waiters: VecDeque<Arc<Thread>>,
 }
 
@@ -29,7 +29,7 @@ impl KPort {
         }
     }
 
-    pub fn wait(&self) -> PortNotification {
+    pub fn wait(&self) -> SysPortNotification {
         loop {
             let mut this = self.inner.lock();
             if let Some(n) = this.queue.pop_front() {
@@ -46,7 +46,7 @@ impl KPort {
         }
     }
 
-    pub fn notify(&self, notif: PortNotification) {
+    pub fn notify(&self, notif: SysPortNotification) {
         let mut this = self.inner.lock();
         this.queue.push_back(notif);
         if let Some(t) = this.waiters.pop_front() {

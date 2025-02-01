@@ -3,8 +3,9 @@ use core::{any::type_name, fmt::Write};
 use alloc::{boxed::Box, collections::BTreeMap, fmt, sync::Arc};
 
 use conquer_once::spin::Lazy;
-use kernel_userspace::{
-    ids::ProcessID, object::ObjectSignal, process::ProcessExit, syscall::thread_bootstraper,
+use kernel_sys::{
+    syscall::sys_thread_bootstraper,
+    types::{ObjectSignal, Pid, Tid},
 };
 
 use crate::{
@@ -13,12 +14,12 @@ use crate::{
     gdt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR},
     mutex::{Spinlock, SpinlockGuard},
     scheduling::process::ThreadState,
-    syscall::{syscall_sysret_handler, SyscallError},
+    syscall::syscall_sysret_handler,
 };
 
 use super::process::{Process, ProcessBuilder, ProcessMemory, Thread, ThreadSched};
 
-pub type ProcessesListType = BTreeMap<ProcessID, Arc<Process>>;
+pub type ProcessesListType = BTreeMap<Pid, Arc<Process>>;
 pub static PROCESSES: Lazy<Spinlock<ProcessesListType>> =
     Lazy::new(|| Spinlock::new(BTreeMap::new()));
 
@@ -152,10 +153,7 @@ unsafe extern "C" fn scheduler() {
         let task = SCHEDULER.lock().pop_thread();
         if let Some(task) = task {
             let mut sched = task.sched().lock();
-            if !sched.in_syscall && sched.killed {
-                exit_thread_inner(&task, &mut sched);
-                continue;
-            }
+
             assert_eq!(sched.state, ThreadState::Runnable);
 
             sched_run_tick(&task, &mut sched);
@@ -174,6 +172,9 @@ unsafe extern "C" fn scheduler() {
                     sched.state = ThreadState::Runnable;
                     drop(sched);
                     SCHEDULER.lock().queue_thread(task);
+                }
+                ThreadState::Killed => {
+                    exit_thread_inner(&task, &mut sched);
                 }
                 ThreadState::Sleeping => (),
             }
@@ -199,14 +200,13 @@ pub fn kill_bad_task() -> ! {
 
         if CPULocalStorageRW::get_context() == 0 {
             panic!("Cannot kill in context 0");
+        } else if CPULocalStorageRW::get_context() == 1 {
+            error!("Killing bad task in syscall");
         }
 
         let mut sched = CPULocalStorageRW::get_current_task().sched().lock();
-        sched.killed = true;
-        if sched.in_syscall {
-            error!("Killing bad task in syscall");
-            sched.in_syscall = false;
-        }
+        sched.state = ThreadState::Killed;
+
         enter_sched(&mut sched);
         unreachable!("exit thread shouldn't return");
     }
@@ -222,7 +222,7 @@ pub fn exit_thread_inner(thread: &Thread, sched: &mut ThreadSched) {
 
     if t.threads.is_empty() {
         drop(t);
-        *p.exit_status.lock() = ProcessExit::Exited;
+        *p.exit_status.lock() = Some(1);
         p.signals
             .lock()
             .set_signal(ObjectSignal::PROCESS_EXITED, true);
@@ -237,12 +237,16 @@ where
     let boxed_func: Box<dyn Fn()> = Box::new(func);
     let raw = Box::into_raw(Box::new(boxed_func)) as usize;
 
-    ProcessBuilder::new(ProcessMemory::new(), thread_bootstraper as *const u64, raw)
-        .privilege(super::process::ProcessPrivilege::KERNEL)
-        .name(type_name::<F>())
+    ProcessBuilder::new(
+        ProcessMemory::new(),
+        sys_thread_bootstraper as *const u64,
+        raw,
+    )
+    .privilege(super::process::ProcessPrivilege::KERNEL)
+    .name(type_name::<F>())
 }
 
-pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Result<usize, SyscallError> {
+pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Tid {
     let thread = CPULocalStorageRW::get_current_task();
 
     // TODO: Validate r8 is a valid entrypoint
@@ -250,9 +254,9 @@ pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Result<usize, SyscallErr
     match thread {
         Some(thread) => {
             // Return process id as successful result;
-            let res = thread.tid().0 as usize;
+            let tid = thread.tid();
             SCHEDULER.lock().queue_thread(thread);
-            Ok(res)
+            tid
         }
         // process has been killed
         None => todo!(),

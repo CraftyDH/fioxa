@@ -7,7 +7,9 @@ edition = "2021"
 
 [dependencies]
 bootloader = {path = "../bootloader"}
-kernel_userspace = { path = "../kernel_userspace", features = ["kernel"] }
+kernel_sys = { path = "../kernel_sys" }
+kernel_syscall = { path = "../kernel_sys/kernel_syscall", features = ["kernel"] }
+kernel_userspace = { path = "../kernel_userspace" }
 input = {path = "../input"}
 
 acpi = "5.1"

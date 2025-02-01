@@ -12,11 +12,7 @@ use alloc::{
 };
 use conquer_once::spin::Lazy;
 use hashbrown::HashMap;
-use kernel_userspace::{
-    ids::{ProcessID, ThreadID},
-    object::{KernelObjectType, KernelReferenceID, ObjectSignal},
-    process::ProcessExit,
-};
+use kernel_sys::types::{Hid, KernelObjectType, Pid, RawValue, Tid};
 use x86_64::{
     structures::{gdt::SegmentSelector, idt::InterruptStackFrameValue},
     VirtAddr,
@@ -50,9 +46,9 @@ pub const KSTACK_SIZE: u64 = 0x10000;
 
 pub const THREAD_TEMP_COUNT: usize = 8;
 
-fn generate_next_process_id() -> ProcessID {
-    static PID: AtomicU64 = AtomicU64::new(0);
-    ProcessID(PID.fetch_add(1, Ordering::Relaxed))
+fn generate_next_process_id() -> Pid {
+    static PID: AtomicU64 = AtomicU64::new(1);
+    Pid::from_raw(PID.fetch_add(1, Ordering::Relaxed)).unwrap()
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -78,13 +74,13 @@ impl ProcessPrivilege {
 }
 
 pub struct Process {
-    pub pid: ProcessID,
+    pub pid: Pid,
     pub threads: Spinlock<ProcessThreads>,
     pub privilege: ProcessPrivilege,
     pub args: Vec<u8>,
     pub memory: Spinlock<ProcessMemory>,
     pub references: Spinlock<ProcessReferences>,
-    pub exit_status: Spinlock<ProcessExit>,
+    pub exit_status: Spinlock<Option<usize>>,
     pub signals: Spinlock<KObjectSignal>,
     pub name: &'static str,
 }
@@ -92,7 +88,7 @@ pub struct Process {
 #[derive(Default)]
 pub struct ProcessThreads {
     thread_next_id: u64,
-    pub threads: BTreeMap<ThreadID, Arc<Thread>>,
+    pub threads: BTreeMap<Tid, Arc<Thread>>,
 }
 
 pub struct ProcessMemory {
@@ -139,7 +135,7 @@ impl ProcessMemory {
 }
 
 pub struct ProcessReferences {
-    references: HashMap<KernelReferenceID, KernelValue>,
+    references: HashMap<Hid, KernelValue>,
     next_id: usize,
 }
 
@@ -151,7 +147,7 @@ impl ProcessReferences {
         }
     }
 
-    pub fn from_refs(refs_to_clone: &[KernelReferenceID]) -> Self {
+    pub fn from_refs(refs_to_clone: &[Hid]) -> Self {
         let mut refs = ProcessReferences::new();
 
         unsafe {
@@ -170,12 +166,12 @@ impl ProcessReferences {
         refs
     }
 
-    pub fn references(&mut self) -> &mut HashMap<KernelReferenceID, KernelValue> {
+    pub fn references(&mut self) -> &mut HashMap<Hid, KernelValue> {
         &mut self.references
     }
 
-    pub fn add_value(&mut self, value: KernelValue) -> KernelReferenceID {
-        let id = KernelReferenceID(NonZeroUsize::new(self.next_id).unwrap());
+    pub fn add_value(&mut self, value: KernelValue) -> Hid {
+        let id = Hid(NonZeroUsize::new(self.next_id).unwrap());
         self.next_id += 1;
         assert!(self.references.insert(id, value).is_none());
         id
@@ -203,33 +199,18 @@ impl Process {
             memory: Spinlock::new(memory),
             threads: Default::default(),
             references: Spinlock::new(references),
-            exit_status: Spinlock::new(ProcessExit::NotExitedYet),
+            exit_status: Spinlock::new(None),
             signals: Default::default(),
             name,
         })
     }
 
-    pub fn add_value(&self, value: KernelValue) -> KernelReferenceID {
+    pub fn add_value(&self, value: KernelValue) -> Hid {
         self.references.lock().add_value(value)
     }
 
-    pub fn get_value(&self, id: KernelReferenceID) -> Option<KernelValue> {
+    pub fn get_value(&self, id: Hid) -> Option<KernelValue> {
         self.references.lock().references.get(&id).cloned()
-    }
-
-    pub fn kill_threads(&self) {
-        let threads = self.threads.lock();
-        for t in &threads.threads {
-            t.1.sched().lock().killed = true;
-        }
-        if threads.threads.is_empty() {
-            drop(threads);
-            *self.exit_status.lock() = ProcessExit::Exited;
-            self.signals
-                .lock()
-                .set_signal(ObjectSignal::PROCESS_EXITED, true);
-            PROCESSES.lock().remove(&self.pid);
-        }
     }
 }
 
@@ -334,23 +315,21 @@ impl ProcessBuilder {
 }
 
 // Returns null if unknown process
-pub fn share_kernel_value(value: KernelValue, proc: ProcessID) -> Option<KernelReferenceID> {
+pub fn share_kernel_value(value: KernelValue, proc: Pid) -> Option<Hid> {
     PROCESSES.lock().get(&proc).map(|p| p.add_value(value))
 }
 
 impl ProcessThreads {
-    fn get_next_id(&mut self) -> ThreadID {
-        let tid = ThreadID(self.thread_next_id);
+    fn get_next_id(&mut self) -> Tid {
         self.thread_next_id += 1;
-        tid
+        Tid::from_raw(self.thread_next_id).unwrap()
     }
 }
 
 pub struct Thread {
     weak_self: Weak<Thread>,
     process: Arc<Process>,
-    tid: ThreadID,
-
+    tid: Tid,
     sched_global: ThreadSchedGlobal,
     sched: Spinlock<ThreadSched>,
 }
@@ -371,7 +350,7 @@ impl Thread {
         let tid = threads.get_next_id();
 
         // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
-        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.0;
+        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.into_raw();
 
         let stack = match process.privilege {
             ProcessPrivilege::KERNEL => PageMapping::new_lazy_filled(STACK_SIZE as usize),
@@ -385,7 +364,7 @@ impl Thread {
             .insert_mapping_at_set(stack_base as usize, stack, MemoryMappingFlags::all())
             .unwrap();
 
-        let kstack_base = KSTACK_ADDR + (KSTACK_SIZE + 0x1000) * tid.0;
+        let kstack_base = KSTACK_ADDR + (KSTACK_SIZE + 0x1000) * tid.into_raw();
         let kstack_top = (kstack_base + KSTACK_SIZE) as usize;
         let stack = PageMapping::new_lazy_filled(KSTACK_SIZE as usize);
         let kstack_ptr_for_start = stack.base_top_stack();
@@ -420,8 +399,6 @@ impl Thread {
                     ip: start_new_task as usize,
                 }),
                 kstack_top: VirtAddr::from_ptr(kstack_top as *const ()),
-                in_syscall: false,
-                killed: false,
                 cr3_page: unsafe {
                     process
                         .memory
@@ -446,7 +423,7 @@ impl Thread {
         &self.process
     }
 
-    pub fn tid(&self) -> ThreadID {
+    pub fn tid(&self) -> Tid {
         self.tid
     }
 
@@ -462,7 +439,7 @@ impl Thread {
     pub fn wake(&self) {
         let mut s = self.sched.lock();
         match s.state {
-            ThreadState::Zombie | ThreadState::Runnable => (),
+            ThreadState::Zombie | ThreadState::Runnable | ThreadState::Killed => (),
             ThreadState::Sleeping => {
                 s.state = ThreadState::Runnable;
                 drop(s);
@@ -491,8 +468,6 @@ pub struct ThreadSched {
     pub state: ThreadState,
     pub task_state: Option<SavedTaskState>,
     pub kstack_top: VirtAddr,
-    pub in_syscall: bool,
-    pub killed: bool,
     pub cr3_page: u64,
 }
 
@@ -501,6 +476,7 @@ pub enum ThreadState {
     Zombie,
     Runnable,
     Sleeping,
+    Killed,
 }
 
 impl ThreadSched {
@@ -575,7 +551,7 @@ impl Into<KernelValue> for Arc<KInterruptHandle> {
 
 impl Drop for Thread {
     fn drop(&mut self) {
-        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.tid.0;
+        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.tid.into_raw() as u64;
 
         unsafe {
             self.process

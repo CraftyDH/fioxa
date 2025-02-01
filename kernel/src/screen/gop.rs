@@ -5,9 +5,10 @@ use bootloader::gop::GopInfo;
 use conquer_once::spin::OnceCell;
 use core::fmt::Write;
 use core::ops::ControlFlow;
-use kernel_userspace::channel::{channel_read_rs, channel_write_rs};
+use core::time::Duration;
+use kernel_sys::syscall::{sys_process_spawn_thread, sys_sleep};
+use kernel_sys::types::SyscallResult;
 use kernel_userspace::service::Service;
-use kernel_userspace::syscall::{sleep, spawn_thread};
 
 #[derive(Clone, Copy)]
 pub struct Pos {
@@ -103,21 +104,14 @@ use super::psf1::PSF1Font;
 
 pub fn monitor_stdout_task() {
     let mut data_buf = Vec::with_capacity(0x1000);
-    let mut empty = Vec::new();
     let mut service = Service::new(
         "STDOUT",
         || (),
         |handle, ()| {
-            match channel_read_rs(handle.id(), &mut data_buf, &mut empty) {
-                kernel_userspace::channel::ChannelReadResult::Ok => (),
-                kernel_userspace::channel::ChannelReadResult::Empty => {
-                    return ControlFlow::Continue(());
-                }
-                kernel_userspace::channel::ChannelReadResult::Size => {
-                    warn!("too big message");
-                    return ControlFlow::Break(());
-                }
-                kernel_userspace::channel::ChannelReadResult::Closed => {
+            match handle.read::<0>(&mut data_buf, false, false) {
+                Ok(_) => (),
+                e => {
+                    warn!("error recv {e:?}");
                     return ControlFlow::Break(());
                 }
             };
@@ -126,8 +120,14 @@ pub fn monitor_stdout_task() {
                 let mut w = WRITER.get().unwrap().lock();
                 w.write_str(&s).unwrap();
             });
-            channel_write_rs(handle.id(), &[], &[]);
-            ControlFlow::Continue(())
+            match handle.write(&[], &[]) {
+                SyscallResult::Ok => ControlFlow::Continue(()),
+                SyscallResult::ChannelClosed | SyscallResult::ChannelFull => ControlFlow::Break(()),
+                e => {
+                    warn!("error send {e:?}");
+                    return ControlFlow::Break(());
+                }
+            }
         },
     );
     service.run();
@@ -139,7 +139,7 @@ fn redraw_screen_task() {
     loop {
         writer.lock().redraw_if_needed();
         // rate limit redraw
-        sleep(16);
+        sys_sleep(Duration::from_millis(16));
     }
 }
 
@@ -155,7 +155,7 @@ pub fn gop_entry() {
             .unwrap();
     });
 
-    spawn_thread(monitor_cursor_task);
-    spawn_thread(redraw_screen_task);
+    sys_process_spawn_thread(monitor_cursor_task);
+    sys_process_spawn_thread(redraw_screen_task);
     monitor_stdout_task();
 }

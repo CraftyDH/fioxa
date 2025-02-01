@@ -3,9 +3,11 @@
 
 use alloc::vec::Vec;
 use kernel_userspace::{
+    channel::Channel,
     net::{ArpResponse, IPAddr, NotSameSubnetError},
-    service::{deserialize, serialize, SimpleService},
-    syscall::{exit, read_args},
+    process::get_handle,
+    service::{deserialize, serialize},
+    sys::syscall::{sys_exit, sys_read_args_string},
 };
 
 extern crate alloc;
@@ -15,7 +17,7 @@ extern crate userspace_slaballoc;
 
 #[export_name = "_start"]
 pub extern "C" fn main() {
-    let args = read_args();
+    let args = sys_read_args_string();
 
     let mut args = args.split_whitespace();
 
@@ -41,14 +43,14 @@ pub extern "C" fn main() {
         }
         _ => println!("Unknown cmd"),
     }
-    exit()
+    sys_exit()
 }
 
 pub fn lookup_ip(ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
-    let mut networking = SimpleService::with_name("NETWORKING");
+    let networking = Channel::from_handle(get_handle("NETWORKING").unwrap());
     let mut buf = Vec::new();
     serialize(&kernel_userspace::net::Networking::ArpRequest(ip), &mut buf);
-    networking.call(&mut buf, &mut Vec::new()).unwrap();
+    networking.call::<0>(&mut buf, &[]).unwrap();
 
     match deserialize(&buf).unwrap() {
         ArpResponse::Mac(mac) => return Ok(Some(mac)),
@@ -60,5 +62,5 @@ pub fn lookup_ip(ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
 #[panic_handler]
 fn panic(i: &core::panic::PanicInfo) -> ! {
     println!("{}", i);
-    exit()
+    sys_exit()
 }

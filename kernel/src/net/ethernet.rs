@@ -5,12 +5,13 @@ use core::{
 };
 
 use alloc::vec::Vec;
+use kernel_sys::{syscall::sys_process_spawn_thread, types::SyscallResult};
 use kernel_userspace::{
-    channel::{channel_create_rs, channel_read_rs, channel_write_rs},
+    backoff_sleep,
+    channel::Channel,
     net::{ArpResponse, IPAddr, Networking, NotSameSubnetError},
-    object::KernelReference,
-    service::{deserialize, serialize, Service, SimpleService},
-    syscall::spawn_thread,
+    process::get_handle,
+    service::{deserialize, serialize, Service},
 };
 use modular_bitfield::{bitfield, specifiers::B48};
 
@@ -69,7 +70,7 @@ const IP_ADDR: IPAddr = IPAddr::V4(10, 0, 2, 15);
 const SUBNET: u32 = 0xFF0000;
 
 pub fn send_arp(
-    service: &mut SimpleService,
+    service: &mut Channel,
     mac_addr: u64,
     ip: IPAddr,
 ) -> Result<(), NotSameSubnetError> {
@@ -98,43 +99,40 @@ pub fn send_arp(
         &mut buffer,
     );
 
-    let mut handles = Vec::new();
-    service.call(&mut buffer, &mut handles).unwrap();
+    service.call::<0>(&mut buffer, &[]).unwrap();
 
     Ok(())
 }
 
 pub fn userspace_networking_main() {
-    let mut pcnet = SimpleService::with_name("PCNET");
+    let mut pcnet = Channel::from_handle(backoff_sleep(|| get_handle("PCNET")));
 
     let mut buffer = Vec::with_capacity(100);
 
     serialize(&kernel_userspace::net::PhysicalNet::MacAddrGet, &mut buffer);
-    pcnet.call(&mut buffer, &mut Vec::new()).unwrap();
+    pcnet.call::<0>(&mut buffer, &[]).unwrap();
     let mac: u64 = deserialize(&buffer).unwrap();
 
-    let (listen_chan, listen_chan_right) = channel_create_rs();
+    let (listen_chan, listen_chan_right) = Channel::new();
 
     serialize(
         &kernel_userspace::net::PhysicalNet::ListenToPackets,
         &mut buffer,
     );
-    let mut handles = Vec::new();
-    handles.push(listen_chan_right.id());
-    pcnet.call(&mut buffer, &mut handles).unwrap();
+    pcnet
+        .call::<0>(&mut buffer, &[**listen_chan_right.handle()])
+        .unwrap();
 
-    spawn_thread(move || monitor_packets(listen_chan));
+    sys_process_spawn_thread(move || monitor_packets(listen_chan));
 
     Service::new(
         "NETWORKING",
         || (),
         |handle, ()| {
-            match channel_read_rs(handle.id(), &mut buffer, &mut Vec::new()) {
-                kernel_userspace::channel::ChannelReadResult::Ok => (),
-                kernel_userspace::channel::ChannelReadResult::Closed => {
-                    return ControlFlow::Break(())
-                }
-                e => {
+            match handle.read::<0>(&mut buffer, false, false) {
+                Ok(_) => (),
+                Err(SyscallResult::ChannelClosed) => return ControlFlow::Break(()),
+                Err(e) => {
                     warn!("{e:?}");
                     return ControlFlow::Break(());
                 }
@@ -150,7 +148,7 @@ pub fn userspace_networking_main() {
                     };
 
                     serialize(&resp, &mut buffer);
-                    channel_write_rs(handle.id(), &buffer, &[]);
+                    handle.write(&buffer, &[]).assert_ok();
                 }
                 Err(e) => {
                     warn!("Bad message: {e:?}");
@@ -164,13 +162,10 @@ pub fn userspace_networking_main() {
     .run();
 }
 
-pub fn monitor_packets(socket: KernelReference) {
-    let mut buffer = Vec::with_capacity(2048);
+pub fn monitor_packets(channel: Channel) {
+    let mut buffer = Vec::new();
     loop {
-        match channel_read_rs(socket.id(), &mut buffer, &mut Vec::new()) {
-            kernel_userspace::channel::ChannelReadResult::Ok => (),
-            e => panic!("{e:?}"),
-        };
+        channel.read::<0>(&mut buffer, true, true).unwrap();
 
         assert!(buffer.len() > size_of::<EthernetFrameHeader>());
 

@@ -3,7 +3,7 @@ use alloc::{
     collections::vec_deque::VecDeque,
     sync::{Arc, Weak},
 };
-use kernel_userspace::object::ObjectSignal;
+use kernel_sys::types::ObjectSignal;
 
 use crate::{
     mutex::Spinlock,

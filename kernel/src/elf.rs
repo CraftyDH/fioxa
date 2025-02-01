@@ -1,12 +1,11 @@
 use alloc::vec::Vec;
+use kernel_sys::{syscall::sys_process_spawn_thread, types::SyscallResult};
 use kernel_userspace::{
-    channel::{channel_create_rs, channel_read_rs, channel_write_rs, ChannelReadResult},
+    channel::Channel,
     elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
+    handle::Handle,
     message::MessageHandle,
-    object::{delete_reference, KernelReference},
-    process::publish_handle,
     service::serialize,
-    syscall::spawn_thread,
 };
 use x86_64::{align_down, align_up};
 
@@ -104,58 +103,52 @@ pub fn load_elf<'a>(data: &'a [u8]) -> Result<ProcessBuilder, LoadElfError<'a>> 
 }
 
 pub fn elf_new_process_loader() {
-    let (service, sright) = channel_create_rs();
-    publish_handle("ELF_LOADER", sright.id());
+    let (service, sright) = Channel::new();
+    sright.handle().publish("ELF_LOADER");
 
     let mut data = Vec::with_capacity(100);
-    let mut handles = Vec::with_capacity(1);
     loop {
-        match channel_read_rs(service.id(), &mut data, &mut handles) {
-            ChannelReadResult::Ok => (),
-            _ => todo!(),
-        };
-        let handle = KernelReference::from_id(handles[0]);
-        spawn_thread({
+        let mut handles = service.read::<1>(&mut data, false, true).unwrap();
+        let handle = Channel::from_handle(handles.pop().unwrap());
+
+        sys_process_spawn_thread({
             move || {
                 let mut data = Vec::with_capacity(100);
-                let mut handles = Vec::with_capacity(2);
-                match channel_read_rs(handle.id(), &mut data, &mut handles) {
-                    ChannelReadResult::Ok => (),
-                    ChannelReadResult::Closed => return,
-                    e => {
+                let handles = match handle.read::<2>(&mut data, false, true) {
+                    Ok(h) => h,
+                    Err(SyscallResult::ChannelClosed) => return,
+                    Err(e) => {
                         warn!("{e:?}");
                         return;
                     }
                 };
-                if handles.len() == 0 {
+
+                let Ok([elf, arg]) = handles.into_array::<2>() else {
                     warn!("wrong args");
                     return;
-                }
+                };
 
-                let elf = MessageHandle::from_kref(KernelReference::from_id(handles[0])).read_vec();
+                let elf = MessageHandle::from_handle(elf).read_vec();
 
                 let process = match load_elf(&elf) {
                     Ok(p) => p,
                     Err(err) => {
                         let msg = serialize(&err, &mut data);
-                        channel_write_rs(handle.id(), msg, &[]);
+                        handle.write(msg, &[]).assert_ok();
                         return;
                     }
                 };
 
                 let process = process
-                    .references(ProcessReferences::from_refs(&handles[1..]))
+                    .references(ProcessReferences::from_refs(&[*arg]))
+                    .args(data)
                     .build();
-
-                for r in &handles[1..] {
-                    delete_reference(*r);
-                }
 
                 let proc = with_held_interrupts(|| unsafe {
                     let thread = CPULocalStorageRW::get_current_task();
-                    KernelReference::from_id(thread.process().add_value(process.into()))
+                    Handle::from_id(thread.process().add_value(process.into()))
                 });
-                channel_write_rs(handle.id(), &[], &[proc.id()]);
+                handle.write(&[], &[*proc]).assert_ok();
             }
         });
     }

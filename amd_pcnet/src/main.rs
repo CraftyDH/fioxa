@@ -12,26 +12,27 @@ use core::{
     iter::Cycle,
     mem::size_of,
     ops::{ControlFlow, Range},
+    ptr::null_mut,
     slice,
 };
 
 use alloc::{sync::Arc, vec::Vec};
+use kernel_sys::{
+    syscall::{sys_exit, sys_map, sys_process_spawn_thread, sys_yield},
+    types::{Hid, KernelObjectType, MapMemoryFlags, SyscallResult},
+};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 use kernel_userspace::{
     backoff_sleep,
-    channel::{
-        channel_read_resize, channel_read_rs, channel_write_rs, channel_write_val,
-        ChannelReadResult,
-    },
-    interrupt::interrupt_wait,
+    channel::Channel,
+    handle::Handle,
+    interrupt::Interrupt,
     net::PhysicalNet,
-    object::{get_type, KernelObjectType, KernelReference, KernelReferenceID},
     pci::PCIDevice,
     process::get_handle,
-    service::{deserialize, serialize, Service, SimpleService},
-    syscall::{exit, mmap_page32, spawn_thread, yield_now},
+    service::{deserialize, serialize, Service},
     INT_PCI,
 };
 
@@ -61,9 +62,12 @@ struct BufferDescriptor {
 
 #[export_name = "_start"]
 pub extern "C" fn main() {
-    let pci_ref = KernelReferenceID::from_usize(2).unwrap();
-    assert_eq!(get_type(pci_ref), KernelObjectType::Channel);
-    let pci_device = SimpleService::new(KernelReference::from_id(pci_ref));
+    let pci_ref = unsafe { Handle::from_id(Hid::from_usize(2).unwrap()) };
+    assert_eq!(
+        kernel_sys::syscall::sys_object_type(*pci_ref).unwrap(),
+        KernelObjectType::Channel
+    );
+    let pci_device = Channel::from_handle(pci_ref);
 
     let pcnet = Arc::new(Mutex::new(
         PCNET::new(PCIDevice {
@@ -72,72 +76,65 @@ pub extern "C" fn main() {
         .unwrap(),
     ));
 
-    spawn_thread({
+    sys_process_spawn_thread({
         let pcnet = pcnet.clone();
         move || {
-            let interrupts = backoff_sleep(|| get_handle("INTERRUPTS"));
+            let interrupts = Channel::from_handle(backoff_sleep(|| get_handle("INTERRUPTS")));
 
-            channel_write_val(interrupts, &INT_PCI, &[]);
+            let (_, mut handles) = interrupts.call_val::<1, _, ()>(&INT_PCI, &[]).unwrap();
+            let pci_ev = Interrupt::from_handle(handles.pop().unwrap());
 
-            let mut handles_buffer = Vec::with_capacity(1);
-
-            match channel_read_rs(interrupts, &mut Vec::new(), &mut handles_buffer) {
-                ChannelReadResult::Ok => (),
-                _ => panic!(),
-            }
-            let pci_ev = handles_buffer[0];
             loop {
-                interrupt_wait(pci_ev);
+                pci_ev.wait().assert_ok();
                 pcnet.lock().interrupt_handler();
             }
         }
     });
 
     let mut buffer = Vec::new();
-    let mut handles_buffer = Vec::new();
     Service::new(
         "PCNET",
         || (),
         |handle, ()| {
-            match channel_read_resize(handle.id(), &mut buffer, &mut handles_buffer) {
-                ChannelReadResult::Ok => (),
+            let mut handles = match handle.read::<1>(&mut buffer, true, false) {
+                Ok(h) => h,
                 e => {
                     println!("Error: {e:?}");
                     return ControlFlow::Break(());
                 }
-            }
+            };
 
             match deserialize(&buffer).unwrap() {
                 PhysicalNet::MacAddrGet => {
-                    if !handles_buffer.is_empty() {
+                    if !handles.is_empty() {
                         println!("Bad amount of handles");
                         return ControlFlow::Break(());
                     }
                     let resp = pcnet.lock().read_mac_addr();
                     let resp = serialize(&resp, &mut buffer);
-                    channel_write_rs(handle.id(), &resp, &[]);
+                    handle.write(&resp, &[]).assert_ok();
                 }
                 PhysicalNet::SendPacket(packet) => {
-                    if !handles_buffer.is_empty() {
+                    if !handles.is_empty() {
                         println!("Bad amount of handles");
                         return ControlFlow::Break(());
                     }
                     // Keep trying to send
                     while pcnet.lock().send_packet(packet).is_err() {
-                        yield_now()
+                        sys_yield()
                     }
-                    channel_write_rs(handle.id(), &[], &[]);
+                    handle.write(&[], &[]).assert_ok();
                 }
                 PhysicalNet::ListenToPackets => {
-                    if handles_buffer.len() != 1 {
+                    if handles.len() != 1 {
                         println!("Bad amount of handles");
                         return ControlFlow::Break(());
                     }
                     pcnet
                         .lock()
                         .listeners
-                        .push(KernelReference::from_id(handles_buffer[0]));
-                    channel_write_rs(handle.id(), &[], &[]);
+                        .push(Channel::from_handle(handles.pop().unwrap()));
+                    handle.write(&[], &[]).assert_ok();
                 }
             };
             ControlFlow::Continue(())
@@ -187,7 +184,7 @@ impl PCNETIOPort {
             reset_port_16.read();
         }
         // We need to wait 1ms
-        yield_now();
+        sys_yield();
         // 32 bit mode
         let mut data_register: Port<u32> = Port::new(self.0 + 0x10);
         unsafe {
@@ -225,7 +222,18 @@ pub struct PCNET<'b> {
     recv_buffer_desc: &'b mut [BufferDescriptor],
     revc_buffer_pos: Cycle<Range<usize>>,
     owned_pages: Vec<u32>,
-    listeners: Vec<KernelReference>,
+    listeners: Vec<Channel>,
+}
+
+fn mmap_page32() -> u32 {
+    unsafe {
+        sys_map(
+            null_mut(),
+            0x1000,
+            MapMemoryFlags::WRITEABLE | MapMemoryFlags::ALLOC_32BITS,
+        )
+        .unwrap() as u32
+    }
 }
 
 impl PCNET<'_> {
@@ -255,9 +263,7 @@ impl PCNET<'_> {
         let mut owned_pages = Vec::new();
 
         let (init_block, send_buffer_desc, recv_buffer_desc) = unsafe {
-            // Allocate page below 4gb location.
-            // let buffer = frame_alloc_exec(|m| m.request_32bit_reserved_page()).unwrap();
-            // ident_map_curr_process(*buffer, true);
+            // Allocate (identity mapped) page below 4gb location.
             let buffer = mmap_page32();
 
             let buffer_start = buffer;
@@ -335,7 +341,7 @@ impl PCNET<'_> {
         this.io.write_csr_32(0, 1);
         while this.io.read_csr_32(0) & (1 << 7) == 0 {
             println!("... {}", this.io.read_csr_32(0));
-            yield_now();
+            sys_yield();
         }
         assert!(this.io.read_csr_32(0) == 0b110000001); // IDON + INTR + INIT
 
@@ -435,7 +441,7 @@ impl PCNET<'_> {
                     let packet =
                         unsafe { slice::from_raw_parts(buffer_desc.address as *const u8, size) };
                     self.listeners
-                        .retain(|l| channel_write_rs(l.id(), packet, &[]));
+                        .retain(|l| l.write(packet, &[]) == SyscallResult::Ok);
                 }
                 buffer_desc.flags = 0x80000000 | BUFFER_SIZE_MASK;
                 buffer_desc.flags_2 = 0;
@@ -447,5 +453,5 @@ impl PCNET<'_> {
 #[panic_handler]
 fn panic(i: &core::panic::PanicInfo) -> ! {
     println!("{}", i);
-    exit()
+    sys_exit()
 }

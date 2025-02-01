@@ -1,8 +1,7 @@
 #![no_std]
 #![feature(fn_traits)]
 #![feature(box_into_inner)]
-
-use syscall::sleep;
+#![feature(try_trait_v2)]
 
 #[macro_use]
 extern crate alloc;
@@ -11,18 +10,21 @@ pub mod channel;
 pub mod disk;
 pub mod elf;
 pub mod fs;
-pub mod ids;
+pub mod handle;
 pub mod input;
 pub mod interrupt;
 pub mod message;
 pub mod net;
-pub mod object;
 pub mod pci;
 pub mod port;
 pub mod process;
 pub mod service;
-pub mod syscall;
 
+pub use kernel_sys as sys;
+
+use core::time::Duration;
+
+use kernel_sys::syscall::sys_sleep;
 pub use num_derive;
 pub use num_traits;
 
@@ -33,7 +35,7 @@ pub fn backoff_sleep<R>(mut f: impl FnMut() -> Option<R>) -> R {
         if let Some(r) = f() {
             return r;
         }
-        sleep(time);
+        sys_sleep(Duration::from_millis(time));
         // max at 10ms
         time = 10.max(time + 1);
     }

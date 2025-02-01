@@ -131,7 +131,7 @@ impl PageMapperManager {
         let end = base + mapping.size;
 
         for (r, ..) in &self.mappings {
-            if base < r.end && r.start <= end {
+            if base < r.end && r.start < end {
                 return None;
             }
         }

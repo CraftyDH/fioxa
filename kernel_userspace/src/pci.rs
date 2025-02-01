@@ -1,8 +1,8 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use serde::{Deserialize, Serialize};
 use spin::Mutex;
 
-use crate::service::SimpleService;
+use crate::channel::Channel;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PCIDevCmd {
@@ -11,7 +11,7 @@ pub enum PCIDevCmd {
 }
 
 pub struct PCIDevice {
-    pub device_service: SimpleService,
+    pub device_service: Channel,
 }
 
 #[allow(dead_code)]
@@ -28,7 +28,9 @@ impl PCIDevice {
 
     unsafe fn read_u32(&mut self, offset: u32) -> u32 {
         self.device_service
-            .call_val(&PCIDevCmd::Read(offset), &mut Vec::new())
+            .call_val::<0, _, _>(&PCIDevCmd::Read(offset), &[])
+            .unwrap()
+            .0
     }
 
     unsafe fn write_u8(&mut self, offset: u32, data: u8) {
@@ -47,7 +49,9 @@ impl PCIDevice {
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {
         self.device_service
-            .call_val(&PCIDevCmd::Write(offset, data), &mut Vec::new())
+            .call_val::<0, _, _>(&PCIDevCmd::Write(offset, data), &[])
+            .unwrap()
+            .0
     }
 }
 

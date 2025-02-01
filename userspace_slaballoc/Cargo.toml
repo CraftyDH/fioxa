@@ -7,4 +7,4 @@ edition = "2021"
 
 [dependencies]
 spin = "*"
-kernel_userspace = { path = "../kernel_userspace" }
+kernel_sys = { path = "../kernel_sys" }

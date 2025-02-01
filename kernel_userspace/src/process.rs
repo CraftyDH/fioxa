@@ -1,76 +1,49 @@
 use core::u64;
 
 use alloc::vec::Vec;
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::FromPrimitive;
+use kernel_sys::{
+    syscall::{sys_object_wait, sys_process_exit_code},
+    types::{Hid, ObjectSignal, SyscallResult},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    channel::{channel_read_rs, channel_write_rs},
-    make_syscall,
-    object::{object_wait, KernelReference, KernelReferenceID, ObjectSignal, REFERENCE_FIRST},
+    channel::{Channel, FIRST_HANDLE_CHANNEL},
+    handle::Handle,
     service::serialize,
 };
 
-#[derive(FromPrimitive, ToPrimitive)]
-pub enum KernelProcessOperation {
-    GetExitCode,
-    Kill,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum ProcessExit {
-    Exited,
-    NotExitedYet,
-}
-
-pub fn process_get_exit_code(handle: KernelReferenceID) -> ProcessExit {
-    let res: usize;
-    unsafe {
-        make_syscall!(
-            crate::syscall::PROCESS,
-            KernelProcessOperation::GetExitCode as usize,
-            handle.0.get() => res
-        );
-        ProcessExit::from_usize(res).unwrap()
-    }
-}
-
-pub fn process_kill(handle: KernelReferenceID) {
-    unsafe {
-        make_syscall!(
-            crate::syscall::PROCESS,
-            KernelProcessOperation::Kill as usize,
-            handle.0.get()
-        );
-    }
-}
-
-pub struct ProcessHandle {
-    handle: KernelReference,
-}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessHandle(Handle);
 
 impl ProcessHandle {
-    pub fn from_kref(kref: KernelReference) -> Self {
-        Self { handle: kref }
+    pub fn from_handle(handle: Handle) -> Self {
+        Self(handle)
     }
 
-    pub fn get_exit_code(&self) -> ProcessExit {
-        process_get_exit_code(self.handle.id())
+    pub const fn handle(&self) -> &Handle {
+        &self.0
     }
 
-    pub fn blocking_exit_code(&mut self) -> ProcessExit {
+    pub fn into_inner(self) -> Handle {
+        let Self(handle) = self;
+        handle
+    }
+
+    pub fn get_exit_code(&self) -> Result<usize, SyscallResult> {
+        sys_process_exit_code(*self.0)
+    }
+
+    pub fn blocking_exit_code(&mut self) -> usize {
         loop {
-            match process_get_exit_code(self.handle.id()) {
-                ProcessExit::NotExitedYet => (),
-                a => return a,
+            match self.get_exit_code() {
+                Ok(val) => return val,
+                Err(SyscallResult::ProcessStillRunning) => {
+                    sys_object_wait(*self.0, ObjectSignal::PROCESS_EXITED).unwrap();
+                }
+                Err(e) => panic!("unknown err {e:?}"),
             };
-            object_wait(self.handle.id(), ObjectSignal::PROCESS_EXITED);
         }
-    }
-
-    pub fn kill(&self) {
-        process_kill(self.handle.id())
     }
 }
 
@@ -81,51 +54,40 @@ pub enum InitHandleMessage<'a> {
     Clone,
 }
 
-pub fn get_handle(name: &str) -> Option<KernelReferenceID> {
-    let mut buf = Vec::new();
+pub fn get_handle(name: &str) -> Option<Handle> {
+    let mut buf = Vec::with_capacity(1);
     let data = serialize(&InitHandleMessage::GetHandle(name), &mut buf);
-    assert!(channel_write_rs(REFERENCE_FIRST, data, &[]));
 
-    let mut handles = Vec::with_capacity(1);
+    FIRST_HANDLE_CHANNEL.write(&data, &[]).assert_ok();
 
-    match channel_read_rs(REFERENCE_FIRST, &mut buf, &mut handles) {
-        crate::channel::ChannelReadResult::Ok => (),
-        e => panic!("error {e:?}"),
-    }
+    let mut handles = FIRST_HANDLE_CHANNEL
+        .read::<1>(&mut buf, true, true)
+        .unwrap();
 
-    if buf[0] == 1 {
-        Some(handles[0])
-    } else {
-        None
-    }
+    handles.pop()
 }
 
-pub fn publish_handle(name: &str, handle: KernelReferenceID) -> bool {
+pub fn publish_handle(name: &str, handle: Hid) -> bool {
     let mut buf = Vec::new();
     let data = serialize(&InitHandleMessage::PublishHandle(name), &mut buf);
-    assert!(channel_write_rs(REFERENCE_FIRST, data, &[handle]));
+    FIRST_HANDLE_CHANNEL.write(data, &[handle]).assert_ok();
 
-    let mut handles = Vec::with_capacity(1);
-
-    match channel_read_rs(REFERENCE_FIRST, &mut buf, &mut handles) {
-        crate::channel::ChannelReadResult::Ok => (),
-        e => panic!("error {e:?}"),
-    }
+    FIRST_HANDLE_CHANNEL
+        .read::<0>(&mut buf, true, true)
+        .unwrap();
 
     buf[0] == 1
 }
 
-pub fn clone_init_service() -> KernelReferenceID {
+pub fn clone_init_service() -> Channel {
     let mut buf = Vec::new();
     let data = serialize(&InitHandleMessage::Clone, &mut buf);
-    assert!(channel_write_rs(REFERENCE_FIRST, data, &[]));
+    FIRST_HANDLE_CHANNEL.write(data, &[]).assert_ok();
 
-    let mut handles = Vec::with_capacity(1);
+    let mut handles = FIRST_HANDLE_CHANNEL
+        .read::<1>(&mut buf, true, true)
+        .unwrap();
 
-    match channel_read_rs(REFERENCE_FIRST, &mut buf, &mut handles) {
-        crate::channel::ChannelReadResult::Ok => (),
-        e => panic!("error {e:?}"),
-    }
-
-    handles[0]
+    // We know that we'll get a channel back
+    Channel::from_handle(handles.pop().unwrap())
 }

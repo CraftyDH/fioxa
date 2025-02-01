@@ -1,12 +1,12 @@
 use alloc::vec::Vec;
+use kernel_sys::types::Hid;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
     backoff_sleep,
-    channel::{channel_read_rs, channel_write_rs},
+    channel::Channel,
     message::MessageHandle,
-    object::{KernelReference, KernelReferenceID},
     process::{get_handle, ProcessHandle},
     service::deserialize,
 };
@@ -95,25 +95,20 @@ pub struct SpawnElfProcess<'a> {
 pub fn spawn_elf_process<'a>(
     elf: MessageHandle,
     args: &[u8],
-    initial_ref: KernelReferenceID,
+    initial_ref: Hid,
     buffer: &'a mut Vec<u8>,
 ) -> Result<ProcessHandle, LoadElfError<'a>> {
-    let channel = KernelReference::from_id(backoff_sleep(|| get_handle("ELF_LOADER")));
+    let channel = Channel::from_handle(backoff_sleep(|| get_handle("ELF_LOADER")));
 
-    channel_write_rs(channel.id(), args, &[elf.kref().id(), initial_ref]);
+    channel
+        .write(args, &[**elf.handle(), initial_ref])
+        .assert_ok();
 
-    let mut handles = Vec::with_capacity(1);
-
-    match channel_read_rs(channel.id(), buffer, &mut handles) {
-        crate::channel::ChannelReadResult::Ok => (),
-        _ => panic!(),
-    };
+    let mut handles = channel.read::<1>(buffer, true, true).unwrap();
 
     if handles.is_empty() {
         Err(deserialize(buffer).unwrap())
     } else {
-        Ok(ProcessHandle::from_kref(KernelReference::from_id(
-            handles[0],
-        )))
+        Ok(ProcessHandle::from_handle(handles.pop().unwrap()))
     }
 }

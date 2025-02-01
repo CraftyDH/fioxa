@@ -1,244 +1,94 @@
-use core::{mem::MaybeUninit, u64};
-
 use alloc::vec::Vec;
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::FromPrimitive;
-
-use crate::{
-    make_syscall,
-    object::{delete_reference, object_wait, KernelReference, KernelReferenceID, ObjectSignal},
+use kernel_sys::{
+    syscall::{
+        sys_channel_create, sys_channel_read_val, sys_channel_read_vec, sys_channel_write,
+        sys_channel_write_val,
+    },
+    types::{Hid, SyscallResult},
 };
 
-#[derive(FromPrimitive, ToPrimitive)]
-pub enum ChannelSyscall {
-    Create,
-    Read,
-    Write,
-}
+use crate::handle::{Handle, FIRST_HANDLE};
 
-#[repr(C)]
-pub struct ChannelCreate {
-    pub left: Option<KernelReferenceID>,
-    pub right: Option<KernelReferenceID>,
-}
+pub static FIRST_HANDLE_CHANNEL: Channel = Channel::from_handle(FIRST_HANDLE);
 
-impl Default for ChannelCreate {
-    fn default() -> Self {
-        Self {
-            left: Default::default(),
-            right: Default::default(),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Channel(Handle);
+
+impl Channel {
+    pub const fn from_handle(handle: Handle) -> Self {
+        Self(handle)
+    }
+
+    pub const fn handle(&self) -> &Handle {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> Handle {
+        let Self(handle) = self;
+        handle
+    }
+
+    pub fn new() -> (Channel, Channel) {
+        unsafe {
+            let (left, right) = sys_channel_create();
+            let left = Self::from_handle(Handle::from_id(left));
+            let right = Self::from_handle(Handle::from_id(right));
+
+            (left, right)
         }
     }
-}
 
-pub fn channel_create(create: &mut ChannelCreate) -> bool {
-    unsafe {
-        let res: u16;
-        make_syscall!(
-            crate::syscall::CHANNEL,
-            ChannelSyscall::Create as usize,
-            create => res);
-        res != 0
+    pub fn read<const N: usize>(
+        &self,
+        buf: &mut Vec<u8>,
+        resize: bool,
+        blocking: bool,
+    ) -> Result<heapless::Vec<Handle, N>, SyscallResult> {
+        let handles = sys_channel_read_vec::<N>(*self.0, buf, resize, blocking)?;
+        // Safety: The kernel will return new handles
+        let handles = handles
+            .into_iter()
+            .map(|h| unsafe { Handle::from_id(h) })
+            .collect();
+        Ok(handles)
     }
-}
 
-pub fn channel_create_rs() -> (KernelReference, KernelReference) {
-    let mut create = ChannelCreate {
-        left: None,
-        right: None,
-    };
-    channel_create(&mut create);
-    (
-        KernelReference::from_id(create.left.unwrap()),
-        KernelReference::from_id(create.right.unwrap()),
-    )
-}
-
-#[repr(C)]
-pub struct ChannelRead {
-    pub handle: KernelReferenceID,
-    pub data: *mut u8,
-    pub data_len: usize,
-    pub handles: *mut u8,
-    pub handles_len: usize,
-}
-
-#[derive(Debug, FromPrimitive, ToPrimitive)]
-pub enum ChannelReadResult {
-    Ok,
-    Empty,
-    Size,
-    Closed,
-}
-
-pub fn channel_read(read: &mut ChannelRead) -> ChannelReadResult {
-    unsafe {
-        let res: u16;
-        make_syscall!(
-            crate::syscall::CHANNEL,
-            ChannelSyscall::Read as usize,
-            read => res);
-        ChannelReadResult::from_u16(res).unwrap()
+    pub fn read_val<const N: usize, V: Sized>(
+        &self,
+        blocking: bool,
+    ) -> Result<(V, heapless::Vec<Handle, N>), SyscallResult> {
+        let (v, handles) = sys_channel_read_val::<V, N>(*self.0, blocking)?;
+        // Safety: The kernel will return new handles
+        let handles = handles
+            .into_iter()
+            .map(|h| unsafe { Handle::from_id(h) })
+            .collect();
+        Ok((v, handles))
     }
-}
 
-#[repr(C)]
-pub struct ChannelWrite {
-    pub handle: KernelReferenceID,
-    pub data: *const u8,
-    pub data_len: usize,
-    pub handles: *const u8,
-    pub handles_len: usize,
-}
-
-pub fn channel_write(write: &ChannelWrite) -> bool {
-    unsafe {
-        let res: u16;
-        make_syscall!(
-            crate::syscall::CHANNEL,
-            ChannelSyscall::Write as usize,
-            write => res);
-        res != 0
+    pub fn write(&self, buf: &[u8], handles: &[Hid]) -> SyscallResult {
+        sys_channel_write(*self.0, buf, handles)
     }
-}
 
-pub fn channel_write_rs(
-    handle: KernelReferenceID,
-    data: &[u8],
-    handles: &[KernelReferenceID],
-) -> bool {
-    let write = ChannelWrite {
-        handle,
-        data: data.as_ptr(),
-        data_len: data.len(),
-        handles: handles.as_ptr().cast(),
-        handles_len: handles.len(),
-    };
-    channel_write(&write)
-}
-
-pub fn channel_write_val<V>(
-    handle: KernelReferenceID,
-    data: &V,
-    handles: &[KernelReferenceID],
-) -> bool {
-    let write = ChannelWrite {
-        handle,
-        data: data as *const V as *const u8,
-        data_len: size_of::<V>(),
-        handles: handles.as_ptr().cast(),
-        handles_len: handles.len(),
-    };
-    channel_write(&write)
-}
-
-pub fn channel_read_rs(
-    handle: KernelReferenceID,
-    data: &mut Vec<u8>,
-    handles: &mut Vec<KernelReferenceID>,
-) -> ChannelReadResult {
-    let mut read = ChannelRead {
-        handle,
-        data: data.as_mut_ptr(),
-        data_len: data.capacity(),
-        handles: handles.as_mut_ptr().cast(),
-        handles_len: handles.capacity(),
-    };
-
-    loop {
-        let res = channel_read(&mut read);
-        match res {
-            ChannelReadResult::Ok => unsafe {
-                data.set_len(read.data_len);
-                handles.set_len(read.handles_len);
-                return res;
-            },
-            ChannelReadResult::Empty => {
-                object_wait(handle, ObjectSignal::READABLE);
-            }
-            _ => unsafe {
-                data.set_len(0);
-                handles.set_len(0);
-                return res;
-            },
-        }
+    pub fn write_val<V: Sized>(&self, val: &V, handles: &[Hid]) -> SyscallResult {
+        sys_channel_write_val(*self.0, val, handles)
     }
-}
 
-pub fn channel_read_resize(
-    handle: KernelReferenceID,
-    data: &mut Vec<u8>,
-    handles: &mut Vec<KernelReferenceID>,
-) -> ChannelReadResult {
-    loop {
-        let mut read = ChannelRead {
-            handle,
-            data: data.as_mut_ptr(),
-            data_len: data.capacity(),
-            handles: handles.as_mut_ptr().cast(),
-            handles_len: handles.capacity(),
-        };
-        let res = channel_read(&mut read);
-        match res {
-            ChannelReadResult::Ok => unsafe {
-                data.set_len(read.data_len);
-                handles.set_len(read.handles_len);
-                return res;
-            },
-            ChannelReadResult::Empty => {
-                object_wait(handle, ObjectSignal::READABLE);
-            }
-            ChannelReadResult::Size => {
-                if read.data_len > data.len() {
-                    data.reserve(read.data_len - data.len());
-                }
-                if read.handles_len > handles.len() {
-                    handles.reserve(read.handles_len - handles.len());
-                }
-            }
-            _ => unsafe {
-                data.set_len(0);
-                handles.set_len(0);
-                return res;
-            },
-        }
+    pub fn call<const N: usize>(
+        &self,
+        buf: &mut Vec<u8>,
+        handles: &[Hid],
+    ) -> Result<heapless::Vec<Handle, N>, SyscallResult> {
+        self.write(buf, handles).into_err()?;
+        self.read(buf, true, true)
     }
-}
 
-pub fn channel_read_val<V>(
-    handle: KernelReferenceID,
-    data: &mut MaybeUninit<V>,
-    handles: &mut Vec<KernelReferenceID>,
-) -> ChannelReadResult {
-    let mut read = ChannelRead {
-        handle,
-        data: data.as_mut_ptr().cast(),
-        data_len: size_of::<V>(),
-        handles: handles.as_mut_ptr().cast(),
-        handles_len: handles.capacity(),
-    };
-
-    loop {
-        let res = channel_read(&mut read);
-        match res {
-            ChannelReadResult::Ok if read.data_len == size_of::<V>() => unsafe {
-                handles.set_len(read.handles_len);
-                return res;
-            },
-            ChannelReadResult::Ok => unsafe {
-                handles.set_len(read.handles_len);
-                while let Some(h) = handles.pop() {
-                    delete_reference(h);
-                }
-                return ChannelReadResult::Size;
-            },
-            ChannelReadResult::Empty => {
-                object_wait(handle, ObjectSignal::READABLE);
-            }
-            _ => unsafe {
-                handles.set_len(0);
-                return res;
-            },
-        }
+    pub fn call_val<const N: usize, S, R>(
+        &self,
+        val: &S,
+        handles: &[Hid],
+    ) -> Result<(R, heapless::Vec<Handle, N>), SyscallResult> {
+        self.write_val(val, handles).into_err()?;
+        self.read_val(true)
     }
 }

@@ -12,6 +12,7 @@ use crate::{
         MemoryLoc, MemoryMappingFlags, PageAllocator, PER_CPU_MAP,
     },
     scheduling::process::{Thread, ThreadSched},
+    syscall::syscall_kernel_handler,
 };
 
 // Do we probe the task manager for a new task?
@@ -37,6 +38,7 @@ pub struct CPULocalStorage {
     sched_task_ip: u64,
     hold_interrupts_depth: u64,
     hold_interrupts_initial: u8,
+    kernel_syscall_entry: usize,
     gdt_pointer: usize,
     // at 0x1000 (1 page down is GDT)
 }
@@ -204,8 +206,8 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     ls.gdt_pointer = (vaddr_base + 0x1000) as usize;
     ls.current_context = 0;
     ls.current_task_kernel_stack_top = 0;
-
     ls.current_task_ptr = 0;
+    ls.kernel_syscall_entry = syscall_kernel_handler as usize;
 
     crate::gdt::create_gdt_for_core(unsafe { &mut *((vaddr_base + 0x1000) as *mut CPULocalGDT) });
 

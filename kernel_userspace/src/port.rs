@@ -1,72 +1,36 @@
-use num_derive::{FromPrimitive, ToPrimitive};
-
-use crate::{
-    make_syscall,
-    object::{KernelReferenceID, ObjectSignal},
+use kernel_sys::{
+    syscall::{sys_port_create, sys_port_push, sys_port_wait},
+    types::{SysPortNotification, SyscallResult},
 };
 
-#[derive(FromPrimitive, ToPrimitive)]
-pub enum PortSyscall {
-    Create,
-    Wait,
-    Push,
-}
+use crate::handle::Handle;
 
-pub fn port_create() -> KernelReferenceID {
-    unsafe {
-        let id: usize;
-        make_syscall!(crate::syscall::PORT, PortSyscall::Create as usize => id);
-        KernelReferenceID::from_usize(id).unwrap()
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Port(Handle);
+
+impl Port {
+    pub const fn from_handle(handle: Handle) -> Self {
+        Self(handle)
     }
-}
 
-#[repr(C)]
-pub struct PortNotification {
-    pub key: u64,
-    pub ty: PortNotificationType,
-}
-
-#[repr(C)]
-pub enum PortNotificationType {
-    SignalOne {
-        trigger: ObjectSignal,
-        signals: ObjectSignal,
-    },
-    Interrupt {
-        timestamp: u64,
-    },
-    User([u8; 8]),
-}
-
-pub fn port_wait(handle: KernelReferenceID, notification: &mut PortNotification) {
-    unsafe {
-        make_syscall!(
-            crate::syscall::PORT,
-            PortSyscall::Wait as usize,
-            handle.0.get(),
-            notification
-        );
+    pub const fn handle(&self) -> &Handle {
+        &self.0
     }
-}
 
-pub fn port_wait_rs(handle: KernelReferenceID) -> PortNotification {
-    let mut notif = PortNotification {
-        key: Default::default(),
-        ty: PortNotificationType::User(Default::default()),
-    };
+    pub fn into_inner(self) -> Handle {
+        let Self(handle) = self;
+        handle
+    }
 
-    port_wait(handle, &mut notif);
+    pub fn new() -> Self {
+        unsafe { Port(Handle::from_id(sys_port_create())) }
+    }
 
-    notif
-}
+    pub fn wait(&self) -> Result<SysPortNotification, SyscallResult> {
+        sys_port_wait(*self.0)
+    }
 
-pub fn port_push(handle: KernelReferenceID, packet: &PortNotification) {
-    unsafe {
-        make_syscall!(
-            crate::syscall::PORT,
-            PortSyscall::Push as usize,
-            handle.0.get(),
-            packet
-        );
+    pub fn push(&self, notification: &SysPortNotification) -> SyscallResult {
+        sys_port_push(*self.0, notification)
     }
 }

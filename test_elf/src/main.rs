@@ -1,14 +1,13 @@
 #![no_std]
 #![no_main]
 
-use core::mem::MaybeUninit;
-
-use alloc::vec::Vec;
 use kernel_userspace::{
-    channel::{channel_read_val, channel_write_val, ChannelReadResult},
-    object::{object_wait, ObjectSignal},
+    channel::Channel,
     process::get_handle,
-    syscall::{exit, read_args},
+    sys::{
+        syscall::{sys_exit, sys_read_args_string},
+        types::{ObjectSignal, SyscallResult},
+    },
 };
 
 extern crate alloc;
@@ -20,49 +19,48 @@ extern crate userspace_slaballoc;
 pub extern "C" fn main() {
     print!("Hi");
 
-    let args = read_args();
+    let args = sys_read_args_string();
     let count: usize = if args.is_empty() {
         usize::MAX
     } else {
         args.parse().unwrap()
     };
 
-    let accepter = get_handle("ACCEPTER").unwrap();
+    let accepter = Channel::from_handle(get_handle("ACCEPTER").unwrap());
 
     let mut send_i = 0usize;
     let mut recv_i = 0usize;
 
     while send_i < 1024 {
-        channel_write_val(accepter, &send_i, &[]);
+        accepter.write_val(&send_i, &[]).assert_ok();
         send_i += 1;
     }
 
     while recv_i < count {
-        let mut data: MaybeUninit<usize> = MaybeUninit::uninit();
-        match channel_read_val(accepter, &mut data, &mut Vec::new()) {
-            ChannelReadResult::Ok => unsafe {
-                assert_eq!(data.assume_init(), recv_i);
+        match accepter.read_val::<0, usize>(true) {
+            Ok((val, _)) => {
+                assert_eq!(val, recv_i);
                 recv_i += 1;
                 if recv_i >= count {
                     break;
                 }
                 if send_i < count {
-                    channel_write_val(accepter, &send_i, &[]);
+                    accepter.write_val(&send_i, &[]).assert_ok();
                     send_i += 1;
                 }
-            },
-            ChannelReadResult::Empty => {
-                object_wait(accepter, ObjectSignal::READABLE);
+            }
+            Err(SyscallResult::ChannelEmpty) => {
+                accepter.handle().wait(ObjectSignal::READABLE).unwrap();
             }
             _ => todo!(),
         }
     }
 
-    exit();
+    sys_exit();
 }
 
 #[panic_handler]
 fn panic(i: &core::panic::PanicInfo) -> ! {
     println!("{}", i);
-    exit()
+    sys_exit()
 }

@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use kernel_userspace::syscall::{exit, read_args};
+use kernel_userspace::sys::syscall::{sys_exit, sys_read_args_string};
 
 extern crate alloc;
 #[macro_use]
@@ -10,7 +10,7 @@ extern crate userspace_slaballoc;
 
 #[export_name = "_start"]
 pub extern "C" fn main() {
-    let args = read_args();
+    let args = sys_read_args_string();
 
     println!("WARN: Evaulating left to right, so no order of operations :(");
 
@@ -57,7 +57,7 @@ pub extern "C" fn main() {
 
     println!("{res}");
     //
-    exit();
+    sys_exit();
 }
 
 enum Operators {
@@ -71,5 +71,5 @@ enum Operators {
 #[panic_handler]
 fn panic(i: &core::panic::PanicInfo) -> ! {
     println!("{}", i);
-    exit()
+    sys_exit()
 }

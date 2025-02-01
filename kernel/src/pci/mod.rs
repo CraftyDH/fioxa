@@ -8,12 +8,10 @@ use crate::{
     scheduling::process::ProcessReferences,
 };
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc};
 
-use kernel_userspace::{
-    channel::channel_create_rs, object::KernelReference, process::clone_init_service,
-    service::SimpleService, syscall::spawn_thread,
-};
+use kernel_sys::syscall::sys_process_spawn_thread;
+use kernel_userspace::{channel::Channel, process::clone_init_service};
 use mcfg::MCFG;
 mod express;
 mod legacy;
@@ -216,8 +214,8 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                 elf::load_elf(AMD_PCNET_DRIVER)
                     .unwrap()
                     .references(ProcessReferences::from_refs(&[
-                        clone_init_service(),
-                        sid.id(),
+                        **clone_init_service().handle(),
+                        **sid.handle(),
                     ]))
                     .privilege(crate::scheduling::process::ProcessPrivilege::KERNEL)
                     .build();
@@ -271,31 +269,28 @@ fn pci_dev_handler(
     bus: u8,
     device: u8,
     function: u8,
-) -> KernelReference {
+) -> Channel {
     let mut device = pci_bus.get_device_raw(segment, bus, device, function);
-    let (left, right) = channel_create_rs();
-    spawn_thread(move || {
-        let mut service = SimpleService::new(left);
-        loop {
-            let Some(msg) = service.recv_val(&mut Vec::new()) else {
-                return;
-            };
+    let (left, right) = Channel::new();
+    sys_process_spawn_thread(move || loop {
+        let Ok((msg, _)) = left.read_val::<0, _>(true) else {
+            return;
+        };
 
-            match msg {
-                kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
-                    let resp = device.read_u32(offset);
-                    service.send_val(&resp, &[]);
-                },
-                kernel_userspace::pci::PCIDevCmd::Write(offset, data) if offset <= 256 => unsafe {
-                    device.write_u32(offset, data);
-                    service.send_val(&(), &[]);
-                },
-                _ => {
-                    error!("Bad args to pci");
-                    return;
-                }
-            };
-        }
+        match msg {
+            kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
+                let resp = device.read_u32(offset);
+                left.write_val(&resp, &[]).assert_ok();
+            },
+            kernel_userspace::pci::PCIDevCmd::Write(offset, data) if offset <= 256 => unsafe {
+                device.write_u32(offset, data);
+                left.write_val(&(), &[]).assert_ok();
+            },
+            _ => {
+                error!("Bad args to pci");
+                return;
+            }
+        };
     });
 
     right

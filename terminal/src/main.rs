@@ -1,13 +1,16 @@
 #![no_std]
 #![no_main]
 
+use core::time::Duration;
+
 use kernel_userspace::{
+    backoff_sleep,
+    channel::Channel,
     elf::spawn_elf_process,
     fs::{self, add_path, get_disks, read_file_sector, read_full_file, StatResponse},
     message::MessageHandle,
-    process::clone_init_service,
-    service::SimpleService,
-    syscall::{exit, sleep},
+    process::{clone_init_service, get_handle},
+    sys::syscall::{sys_echo, sys_exit, sys_sleep},
 };
 
 extern crate alloc;
@@ -18,7 +21,7 @@ extern crate userspace_slaballoc;
 #[panic_handler]
 fn panic(i: &core::panic::PanicInfo) -> ! {
     println!("{}", i);
-    exit()
+    sys_exit()
 }
 
 use alloc::{boxed::Box, collections::VecDeque, string::String, vec::Vec};
@@ -29,7 +32,7 @@ use input::keyboard::{
 use userspace::print::WRITER;
 
 pub struct KBInputDecoder {
-    service: SimpleService,
+    service: Channel,
     lshift: bool,
     rshift: bool,
     caps_lock: bool,
@@ -37,7 +40,7 @@ pub struct KBInputDecoder {
 }
 
 impl KBInputDecoder {
-    pub fn new(service: SimpleService) -> Self {
+    pub fn new(service: Channel) -> Self {
         Self {
             service,
             lshift: false,
@@ -53,7 +56,7 @@ impl Iterator for KBInputDecoder {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            let ev = self.service.recv_val(&mut Vec::new())?;
+            let (ev, _) = self.service.read_val::<0, _>(true).ok()?;
             match ev {
                 kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code) => {
                     match scan_code {
@@ -95,7 +98,7 @@ pub extern "C" fn main() {
     let mut buffer = Vec::new();
     let mut file_buffer = Vec::new();
 
-    let keyboard = SimpleService::with_name("INPUT:KB");
+    let keyboard = Channel::from_handle(backoff_sleep(|| get_handle("INPUT:KB")));
 
     let mut input: KBInputDecoder = KBInputDecoder::new(keyboard);
 
@@ -177,6 +180,7 @@ pub extern "C" fn main() {
                 for part in get_disks(&mut buffer).unwrap().iter() {
                     println!("{}:", part)
                 }
+                println!("Drives:");
             }
             "ls" => {
                 let path = add_path(&cwd, rest);
@@ -265,8 +269,12 @@ pub extern "C" fn main() {
 
                 println!("SPAWNING...");
 
-                let proc =
-                    spawn_elf_process(contents, args.as_bytes(), clone_init_service(), &mut buffer);
+                let proc = spawn_elf_process(
+                    contents,
+                    args.as_bytes(),
+                    **clone_init_service().handle(),
+                    &mut buffer,
+                );
 
                 let mut proc = match proc {
                     Ok(p) => p,
@@ -289,8 +297,8 @@ pub extern "C" fn main() {
             // }
             "sleep" => match rest.parse::<u64>() {
                 Ok(n) => {
-                    let act = sleep(n);
-                    println!("sleep: slept for {act}");
+                    let act = sys_sleep(Duration::from_millis(n));
+                    println!("sleep: slept for {act:?}");
                 }
                 Err(e) => println!("sleep: {e:?}"),
             },
@@ -303,6 +311,10 @@ pub extern "C" fn main() {
 
                 let res = h2.read_vec();
                 assert_eq!(test, *res);
+
+                for i in 0..0x1000 {
+                    assert_eq!(sys_echo(i), i);
+                }
 
                 println!("Passed test");
             }

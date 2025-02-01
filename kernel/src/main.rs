@@ -46,7 +46,6 @@ use kernel::scheduling::with_held_interrupts;
 use kernel::screen::gop;
 use kernel::screen::psf1;
 use kernel::serial::{serial_monitor_stdin, Serial, COM_1, SERIAL};
-use kernel::syscall::syscall_kernel_handler;
 use kernel::terminal::Writer;
 use kernel::time::init_time;
 use kernel::uefi::get_config_table;
@@ -55,10 +54,10 @@ use kernel::{elf, gdt, paging, BOOT_INFO};
 use bootloader::uefi::table::cfg::ACPI2_GUID;
 use bootloader::uefi::table::{Runtime, SystemTable};
 
-use kernel_userspace::channel::{channel_create_rs, channel_read_rs, channel_write_rs};
-use kernel_userspace::ids::ProcessID;
+use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
+use kernel_sys::types::{RawValue, SyscallResult};
+use kernel_userspace::channel::Channel;
 use kernel_userspace::service::Service;
-use kernel_userspace::syscall::{exit, set_syscall_fn, spawn_thread};
 
 // #[no_mangle]
 entry_point!(main_stage1);
@@ -79,8 +78,6 @@ pub fn main_stage1(info: *const BootInfo) -> ! {
             serial.write_str("Welcome to Fioxa...\n");
             SERIAL.init_once(|| Spinlock::new(serial));
         }
-
-        set_syscall_fn(syscall_kernel_handler as u64);
 
         let boot_info = info.read();
         // get memory map
@@ -158,7 +155,7 @@ unsafe extern "C" fn main_stage2() {
         .name("INIT PROCESS".into())
         .build();
 
-    assert!(init_process.pid == ProcessID(0));
+    assert!(init_process.pid.into_raw() == 1);
 
     core_start_multitasking();
 }
@@ -229,9 +226,9 @@ extern "C" fn init() {
     let mut init_handles = Vec::new();
 
     let mut get_init = || {
-        let (l, r) = channel_create_rs();
+        let (l, r) = Channel::new();
         init_handles.push(l);
-        ProcessReferences::from_refs(&[r.id()])
+        ProcessReferences::from_refs(&[**r.handle()])
     };
 
     spawn_process(check_interrupts)
@@ -273,22 +270,19 @@ extern "C" fn init() {
 /// For testing, accepts all inputs
 fn testing_proc() {
     let mut buf = Vec::with_capacity(100);
-    let mut handles = Vec::new();
     Service::new(
         "ACCEPTER",
         || 0usize,
         |handle, i| loop {
-            match channel_read_rs(handle.id(), &mut buf, &mut handles) {
-                kernel_userspace::channel::ChannelReadResult::Ok => {
+            match handle.read::<0>(&mut buf, false, true) {
+                Ok(_) => {
                     *i += 1;
                     if *i % 10000 == 0 {
                         info!("ACCEPTER: {i}")
                     }
-                    channel_write_rs(handle.id(), &buf, &[]);
+                    handle.write(&buf, &[]).assert_ok();
                 }
-                kernel_userspace::channel::ChannelReadResult::Empty => {
-                    return ControlFlow::Continue(())
-                }
+                Err(SyscallResult::ChannelEmpty) => return ControlFlow::Continue(()),
                 _ => return ControlFlow::Break(()),
             }
         },
@@ -331,10 +325,10 @@ fn after_boot_pci() {
 
     enumerate_pci(acpi_tables);
 
-    spawn_thread(fs::file_handler);
+    sys_process_spawn_thread(fs::file_handler);
     FSDRIVES.lock().identify();
 
-    exit();
+    sys_exit();
 }
 
 #[cfg(test)]

@@ -1,17 +1,12 @@
-use core::{mem::MaybeUninit, u64};
+use core::u64;
 
 use alloc::{sync::Arc, vec::Vec};
 use conquer_once::spin::Lazy;
-use kernel_userspace::{
-    channel::{
-        channel_create_rs, channel_read_rs, channel_read_val, channel_write_rs, ChannelReadResult,
-    },
-    object::KernelReference,
-    port::{PortNotification, PortNotificationType},
-    process::publish_handle,
-    syscall::spawn_thread,
-    INT_COM1, INT_KB, INT_MOUSE, INT_PCI,
+use kernel_sys::{
+    syscall::sys_process_spawn_thread,
+    types::{SysPortNotification, SysPortNotificationValue, SyscallResult},
 };
+use kernel_userspace::{channel::Channel, handle::Handle, INT_COM1, INT_KB, INT_MOUSE, INT_PCI};
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 pub mod exceptions;
@@ -20,7 +15,7 @@ pub mod pic;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
-    kassert, lapic,
+    kassert2, lapic,
     mutex::Spinlock,
     port::KPort,
     scheduling::{
@@ -28,7 +23,7 @@ use crate::{
         taskmanager::enter_sched,
         with_held_interrupts,
     },
-    syscall::{self, SyscallError},
+    syscall,
     time::uptime,
 };
 
@@ -169,46 +164,33 @@ static INTERRUPT_SOURCES: Lazy<[Arc<Spinlock<Vec<Arc<KInterruptHandle>>>>; 4]> =
 
 /// Returns true if there were any interrupt events dispatched
 pub fn check_interrupts() {
-    let (service, sright) = channel_create_rs();
-    publish_handle("INTERRUPTS", sright.id());
+    let (service, sright) = Channel::new();
+    sright.handle().publish("INTERRUPTS");
 
     let mut data = Vec::with_capacity(100);
-    let mut handles = Vec::with_capacity(1);
     loop {
-        match channel_read_rs(service.id(), &mut data, &mut handles) {
-            ChannelReadResult::Ok => (),
-            _ => todo!(),
-        };
-        let handle = KernelReference::from_id(handles[0]);
-        spawn_thread({
-            move || {
-                let mut handles = Vec::with_capacity(1);
-                loop {
-                    let mut val = MaybeUninit::<usize>::uninit();
-                    match channel_read_val(handle.id(), &mut val, &mut handles) {
-                        ChannelReadResult::Ok => (),
-                        ChannelReadResult::Size | ChannelReadResult::Closed => return,
-                        _ => todo!(),
-                    };
+        let mut handles = service.read::<1>(&mut data, false, true).unwrap();
+        let handle = Channel::from_handle(handles.pop().unwrap());
 
-                    let req = unsafe { val.assume_init() };
+        sys_process_spawn_thread({
+            move || loop {
+                let (req, _) = handle.read_val::<0, usize>(true).unwrap();
 
-                    if req > 3 {
-                        error!("INTERRUPTS service got invalid id");
-                        return;
-                    }
-
-                    let h = Arc::new(KInterruptHandle::new());
-
-                    let id = with_held_interrupts(|| unsafe {
-                        let thread = CPULocalStorageRW::get_current_task();
-                        KernelReference::from_id(thread.process().add_value(h.clone().into()))
-                    });
-
-                    INTERRUPT_SOURCES[req].lock().push(h);
-
-                    channel_write_rs(handle.id(), &[], &[id.id()]);
+                if req > 3 {
+                    error!("INTERRUPTS service got invalid id");
+                    return;
                 }
+
+                let h = Arc::new(KInterruptHandle::new());
+
+                let id = with_held_interrupts(|| unsafe {
+                    let thread = CPULocalStorageRW::get_current_task();
+                    Handle::from_id(thread.process().add_value(h.clone().into()))
+                });
+
+                INTERRUPT_SOURCES[req].lock().push(h);
+
+                handle.write(&[], &[*id]).assert_ok();
             }
         });
     }
@@ -259,9 +241,9 @@ impl KInterruptHandle {
                 this.waiter = InterruptWaiter::None
             }
             InterruptWaiter::Port { port, key } => {
-                port.notify(PortNotification {
+                port.notify(SysPortNotification {
                     key: *key,
-                    ty: PortNotificationType::Interrupt {
+                    value: SysPortNotificationValue::Interrupt {
                         timestamp: uptime(),
                     },
                 });
@@ -269,17 +251,17 @@ impl KInterruptHandle {
         }
     }
 
-    pub fn wait(&self) -> Result<usize, SyscallError> {
+    pub fn wait(&self) -> SyscallResult {
         loop {
             let mut this = self.inner.lock();
 
-            kassert!(matches!(this.waiter, InterruptWaiter::None));
+            kassert2!(matches!(this.waiter, InterruptWaiter::None));
 
             this.waiting_ack = false;
 
             if this.pending {
                 this.pending = false;
-                return Ok(0);
+                return SyscallResult::Ok;
             }
 
             let thread = unsafe { CPULocalStorageRW::get_current_task() };
@@ -295,9 +277,9 @@ impl KInterruptHandle {
         let mut this = self.inner.lock();
 
         if this.pending && !this.waiting_ack {
-            port.notify(PortNotification {
+            port.notify(SysPortNotification {
                 key,
-                ty: PortNotificationType::Interrupt {
+                value: SysPortNotificationValue::Interrupt {
                     timestamp: uptime(),
                 },
             });
@@ -317,9 +299,9 @@ impl KInterruptHandle {
                 InterruptWaiter::None => (),
                 InterruptWaiter::Thread(t) => t.wake(),
                 InterruptWaiter::Port { port, key } => {
-                    port.notify(PortNotification {
+                    port.notify(SysPortNotification {
                         key,
-                        ty: PortNotificationType::Interrupt {
+                        value: SysPortNotificationValue::Interrupt {
                             timestamp: uptime(),
                         },
                     });

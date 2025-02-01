@@ -2,8 +2,9 @@ use core::fmt::Write;
 
 use alloc::vec::Vec;
 use conquer_once::spin::OnceCell;
+use kernel_sys::syscall::sys_exit;
 use kernel_userspace::{
-    interrupt::interrupt_wait, service::SimpleService, syscall::exit, INT_COM1,
+    backoff_sleep, channel::Channel, interrupt::Interrupt, process::get_handle, INT_COM1,
 };
 use log::LevelFilter;
 use x86_64::instructions::{interrupts::without_interrupts, port::Port};
@@ -124,13 +125,15 @@ impl Write for Serial {
 pub fn serial_monitor_stdin() {
     let Some(serial) = SERIAL.get() else {
         warn!("Serial device not found");
-        exit();
+        sys_exit();
     };
-    let mut ints = SimpleService::with_name("INTERRUPTS");
+    let ints = Channel::from_handle(backoff_sleep(|| get_handle("INTERRUPTS")));
     let mut handles_buf = Vec::with_capacity(1);
-    let _: () = ints.call_val(&INT_COM1, &mut handles_buf);
+    let (_, mut handles) = ints
+        .call_val::<1, _, ()>(&INT_COM1, &mut handles_buf)
+        .unwrap();
 
-    let ints = handles_buf[0];
+    let ints = Interrupt::from_handle(handles.pop().unwrap());
 
     loop {
         let mut serial = serial.lock();
@@ -192,6 +195,6 @@ pub fn serial_monitor_stdin() {
             }
         }
         drop(serial);
-        interrupt_wait(ints);
+        ints.wait().assert_ok();
     }
 }

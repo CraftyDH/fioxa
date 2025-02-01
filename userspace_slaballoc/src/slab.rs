@@ -1,6 +1,12 @@
-use core::alloc::{GlobalAlloc, Layout};
+use core::{
+    alloc::{GlobalAlloc, Layout},
+    ptr::null_mut,
+};
 
-use kernel_userspace::syscall::{mmap_page, unmmap_page};
+use kernel_sys::{
+    syscall::{sys_map, sys_unmap},
+    types::MapMemoryFlags,
+};
 
 use crate::locked_mutex::Locked;
 
@@ -46,7 +52,8 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     let block_size = SLAB_SIZES[index];
                     // Only works if all blocks are powers of 2
 
-                    let base = mmap_page(0, 0x1000);
+                    let base =
+                        sys_map(null_mut(), 0x1000, MapMemoryFlags::WRITEABLE).unwrap() as usize;
 
                     let mut current_node = None;
                     for block in (base..(base + 0x1000)).step_by(block_size) {
@@ -60,7 +67,9 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     nxt as *mut ListNode as *mut u8
                 }
             },
-            None => mmap_page(0, min_size as usize) as *mut u8,
+            None => sys_map(null_mut(), min_size, MapMemoryFlags::WRITEABLE)
+                .unwrap()
+                .cast(),
         }
     }
 
@@ -81,7 +90,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                 allocator.slab_heads[index] = Some(&mut *new_node_ptr);
             }
             None => {
-                unmmap_page(ptr as usize, max_size);
+                sys_unmap(ptr.cast(), max_size).assert_ok();
             }
         }
     }

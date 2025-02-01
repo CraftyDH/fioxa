@@ -7,17 +7,15 @@ extern crate userspace;
 extern crate userspace_slaballoc;
 
 use alloc::vec::Vec;
-use kernel_userspace::{
-    backoff_sleep,
-    channel::{channel_create_rs, channel_read_rs, channel_write_val, ChannelReadResult},
-    interrupt::{interrupt_acknowledge, interrupt_set_port},
-    object::{object_wait_port_rs, KernelReference, ObjectSignal},
-    port::{port_create, port_wait_rs},
-    process::{get_handle, publish_handle},
-    syscall::exit,
-    INT_KB, INT_MOUSE,
+use kernel_sys::{
+    syscall::sys_exit,
+    types::{ObjectSignal, SyscallResult},
 };
-use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
+use kernel_userspace::{
+    backoff_sleep, channel::Channel, interrupt::Interrupt, port::Port, process::get_handle, INT_KB,
+    INT_MOUSE,
+};
+use x86_64::instructions::port::{PortReadOnly, PortWriteOnly};
 
 use self::{keyboard::Keyboard, mouse::Mouse};
 
@@ -35,82 +33,71 @@ pub extern "C" fn main() {
         panic!("PS2 Controller failed to init because: {}", e);
     }
 
-    let mut buffer = Vec::with_capacity(100);
-    let mut handles_buffer = Vec::with_capacity(1);
+    let interrupts = Channel::from_handle(backoff_sleep(|| get_handle("INTERRUPTS")));
 
-    let interrupts = backoff_sleep(|| get_handle("INTERRUPTS"));
+    let (_, mut kb) = interrupts.call_val::<1, _, ()>(&INT_KB, &[]).unwrap();
+    let (_, mut ms) = interrupts.call_val::<1, _, ()>(&INT_MOUSE, &[]).unwrap();
 
-    channel_write_val(interrupts, &INT_KB, &[]);
-    match channel_read_rs(interrupts, &mut buffer, &mut handles_buffer) {
-        ChannelReadResult::Ok => (),
-        _ => panic!(),
-    }
-    let kb_ev = handles_buffer[0];
-
-    channel_write_val(interrupts, &INT_MOUSE, &[]);
-    match channel_read_rs(interrupts, &mut buffer, &mut handles_buffer) {
-        ChannelReadResult::Ok => (),
-        _ => panic!(),
-    }
-    let mouse_ev = handles_buffer[0];
+    let kb_ev = Interrupt::from_handle(kb.pop().unwrap());
+    let ms_ev = Interrupt::from_handle(ms.pop().unwrap());
 
     let kb_cbk = 1;
     let ms_cbk = 2;
     let kb_srv_cbk = 3;
     let ms_srv_cbk = 4;
 
-    let (kb_service, kb_right) = channel_create_rs();
-    publish_handle("INPUT:KB", kb_right.id());
+    let (kb_service, kb_right) = Channel::new();
+    kb_right.handle().publish("INPUT:KB");
 
-    let (ms_service, m_right) = channel_create_rs();
-    publish_handle("INPUT:MOUSE", m_right.id());
+    let (ms_service, ms_right) = Channel::new();
+    ms_right.handle().publish("INPUT:MOUSE");
 
-    let port = port_create();
+    let port = Port::new();
 
-    interrupt_set_port(kb_ev, port, kb_cbk);
-    interrupt_set_port(mouse_ev, port, ms_cbk);
+    kb_ev.set_port(&port, kb_cbk).assert_ok();
+    ms_ev.set_port(&port, ms_cbk).assert_ok();
 
     ps2_controller.flush();
 
     println!("PS2 Ready");
 
-    object_wait_port_rs(kb_service.id(), port, ObjectSignal::READABLE, kb_srv_cbk);
-    object_wait_port_rs(ms_service.id(), port, ObjectSignal::READABLE, ms_srv_cbk);
+    kb_service
+        .handle()
+        .wait_port(&port, ObjectSignal::READABLE, kb_srv_cbk)
+        .assert_ok();
+    ms_service
+        .handle()
+        .wait_port(&port, ObjectSignal::READABLE, ms_srv_cbk)
+        .assert_ok();
 
-    let mut kb_listeners: Vec<KernelReference> = Vec::new();
-    let mut ms_listeners: Vec<KernelReference> = Vec::new();
+    let mut kb_listeners: Vec<Channel> = Vec::new();
+    let mut ms_listeners: Vec<Channel> = Vec::new();
 
     loop {
-        let ev = port_wait_rs(port);
+        let ev = port.wait().unwrap();
 
         if ev.key == kb_cbk {
             if let Some(ev) = ps2_controller.keyboard.check_interrupts() {
                 let message = kernel_userspace::input::InputServiceMessage::KeyboardEvent(ev);
-                kb_listeners.retain(|l| channel_write_val(l.id(), &message, &[]));
+                kb_listeners.retain(|l| l.write_val(&message, &[]) == SyscallResult::Ok);
             }
-            interrupt_acknowledge(kb_ev);
+            kb_ev.acknowledge().assert_ok();
         } else if ev.key == ms_cbk {
             if let Some(message) = ps2_controller.mouse.check_interrupts() {
-                ms_listeners.retain(|l| channel_write_val(l.id(), &message, &[]));
+                ms_listeners.retain(|l| l.write_val(&message, &[]) == SyscallResult::Ok);
             }
-            interrupt_acknowledge(mouse_ev);
+            ms_ev.acknowledge().assert_ok();
         } else if ev.key == kb_srv_cbk {
-            match channel_read_rs(kb_service.id(), &mut buffer, &mut handles_buffer) {
-                ChannelReadResult::Ok => (),
-                e => panic!("{e:?}"),
-            }
-            kb_listeners.push(KernelReference::from_id(handles_buffer[0]));
+            let (_, mut handles) = kb_service.read_val::<1, bool>(false).unwrap();
+            kb_listeners.push(Channel::from_handle(handles.pop().unwrap()));
         } else if ev.key == ms_srv_cbk {
-            match channel_read_rs(ms_service.id(), &mut buffer, &mut handles_buffer) {
-                ChannelReadResult::Ok => (),
-                e => panic!("{e:?}"),
-            }
-            ms_listeners.push(KernelReference::from_id(handles_buffer[0]));
+            let (_, mut handles) = ms_service.read_val::<1, bool>(false).unwrap();
+            ms_listeners.push(Channel::from_handle(handles.pop().unwrap()));
         }
     }
 }
 pub struct PS2Command {
-    data_port: Port<u8>,
+    data_port: x86_64::instructions::port::Port<u8>,
     status_port: PortReadOnly<u8>,
     command_port: PortWriteOnly<u8>,
 }
@@ -118,7 +105,7 @@ pub struct PS2Command {
 impl PS2Command {
     pub const fn new() -> Self {
         Self {
-            data_port: Port::new(0x60),
+            data_port: x86_64::instructions::port::Port::new(0x60),
             status_port: PortReadOnly::new(0x64),
             command_port: PortWriteOnly::new(0x64),
         }
@@ -266,5 +253,5 @@ impl PS2Controller {
 #[panic_handler]
 fn panic(i: &core::panic::PanicInfo) -> ! {
     println!("{}", i);
-    exit()
+    sys_exit()
 }

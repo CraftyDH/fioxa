@@ -1,63 +1,47 @@
-use core::u64;
+use kernel_sys::{
+    syscall::{
+        sys_interrupt_acknowledge, sys_interrupt_create, sys_interrupt_set_port,
+        sys_interrupt_trigger, sys_interrupt_wait,
+    },
+    types::SyscallResult,
+};
 
-use num_derive::{FromPrimitive, ToPrimitive};
+use crate::{handle::Handle, port::Port};
 
-use crate::{make_syscall, object::KernelReferenceID};
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Interrupt(Handle);
 
-#[derive(FromPrimitive, ToPrimitive)]
-pub enum InterruptSyscall {
-    Create,
-    Trigger,
-    SetPort,
-    Acknowledge,
-    Wait,
-}
+impl Interrupt {
+    pub const fn from_handle(handle: Handle) -> Self {
+        Self(handle)
+    }
 
-pub fn interrupt_create() -> KernelReferenceID {
-    let id: usize;
-    unsafe { make_syscall!(crate::syscall::INTERRUPT, InterruptSyscall::Create as usize => id) };
-    KernelReferenceID::from_usize(id).unwrap()
-}
+    pub const fn handle(&self) -> &Handle {
+        &self.0
+    }
 
-pub fn interrupt_trigger(handle: KernelReferenceID) {
-    unsafe {
-        make_syscall!(
-            crate::syscall::INTERRUPT,
-            InterruptSyscall::Trigger as usize,
-            handle.0.get()
-        )
-    };
-}
+    pub fn into_inner(self) -> Handle {
+        let Self(handle) = self;
+        handle
+    }
 
-pub fn interrupt_set_port(handle: KernelReferenceID, port: KernelReferenceID, key: u64) {
-    unsafe {
-        let _x: u16;
-        make_syscall!(
-            crate::syscall::INTERRUPT,
-            InterruptSyscall::SetPort as usize,
-            handle.0.get(),
-            port.0.get(),
-            key => _x
-        )
-    };
-}
+    pub fn new() -> Interrupt {
+        unsafe { Self::from_handle(Handle::from_id(sys_interrupt_create())) }
+    }
 
-pub fn interrupt_acknowledge(handle: KernelReferenceID) {
-    unsafe {
-        make_syscall!(
-            crate::syscall::INTERRUPT,
-            InterruptSyscall::Acknowledge as usize,
-            handle.0.get()
-        )
-    };
-}
+    pub fn wait(&self) -> SyscallResult {
+        sys_interrupt_wait(*self.0)
+    }
 
-pub fn interrupt_wait(handle: KernelReferenceID) {
-    unsafe {
-        make_syscall!(
-            crate::syscall::INTERRUPT,
-            InterruptSyscall::Wait as usize,
-            handle.0.get()
-        )
-    };
+    pub fn trigger(&self) -> SyscallResult {
+        sys_interrupt_trigger(*self.0)
+    }
+
+    pub fn acknowledge(&self) -> SyscallResult {
+        sys_interrupt_acknowledge(*self.0)
+    }
+
+    pub fn set_port(&self, port: &Port, key: u64) -> SyscallResult {
+        sys_interrupt_set_port(*self.0, **port.handle(), key)
+    }
 }

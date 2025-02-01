@@ -12,5 +12,4 @@ kernel_userspace = { path = "../kernel_userspace" }
 input = { path = "../input" }
 
 [profile.dev]
-strip = true
 opt-level = 1
