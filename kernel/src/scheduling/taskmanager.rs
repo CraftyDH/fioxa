@@ -322,6 +322,10 @@ unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
     };
     CPULocalStorageRW::clear_current_task();
 
+    // we want interrupts to be enabled in the scheduler once the counter drops to zero,
+    // and by running tick a interrupt handler could have set this to false
+    CPULocalStorageRW::set_hold_interrupts_initial(true);
+
     sched.task_state = Some(SavedTaskState {
         sp: new_sp,
         ip: new_ip,
