@@ -784,10 +784,7 @@ unsafe extern "C" fn handle_sys_channel_write(
         data: data.into(),
         handles,
     };
-    match chan.send(msg) {
-        Some(()) => SyscallResult::Ok,
-        None => SyscallResult::ChannelFull,
-    }
+    chan.send(msg)
 }
 
 unsafe extern "C" fn handle_sys_interrupt_create() -> hid_t {

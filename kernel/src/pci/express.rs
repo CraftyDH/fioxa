@@ -1,8 +1,8 @@
 use alloc::{boxed::Box, sync::Arc};
 
-use crate::paging::{
-    MemoryMappingFlags, ensure_ident_map_curr_process,
-    page::{Page, Size4KB},
+use crate::{
+    cpu_localstorage::CPULocalStorageRW,
+    paging::{MemoryMappingFlags, page_mapper::PageMapping},
 };
 
 use super::{PCIBus, PCIDevice, PCIHeaderCommon, mcfg::MCFG};
@@ -67,14 +67,20 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
         let address = self.get_address(segment, bus, device, function).unwrap();
 
         unsafe {
-            ensure_ident_map_curr_process(
-                Page::<Size4KB>::new(address),
-                MemoryMappingFlags::WRITEABLE,
-            )
-        };
+            let mapping = PageMapping::new_mmap(address as usize, 0x1000);
+            let proc = CPULocalStorageRW::get_current_task().process();
 
-        PCIHeaderCommon {
-            device: Arc::new(PCIExpressDevice { address }),
+            let vaddr = proc
+                .memory
+                .lock()
+                .page_mapper
+                .insert_mapping_set(mapping, MemoryMappingFlags::WRITEABLE);
+
+            PCIHeaderCommon {
+                device: Arc::new(PCIExpressDevice {
+                    address: vaddr as u64,
+                }),
+            }
         }
     }
     fn get_device_raw(
@@ -87,12 +93,18 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
         let address = self.get_address(segment, bus, device, function).unwrap();
 
         unsafe {
-            ensure_ident_map_curr_process(
-                Page::<Size4KB>::new(address),
-                MemoryMappingFlags::WRITEABLE,
-            )
-        };
+            let mapping = PageMapping::new_mmap(address as usize, 0x1000);
+            let proc = CPULocalStorageRW::get_current_task().process();
 
-        Box::new(PCIExpressDevice { address })
+            let vaddr = proc
+                .memory
+                .lock()
+                .page_mapper
+                .insert_mapping_set(mapping, MemoryMappingFlags::WRITEABLE);
+
+            Box::new(PCIExpressDevice {
+                address: vaddr as u64,
+            })
+        }
     }
 }

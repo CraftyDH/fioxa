@@ -3,7 +3,7 @@ use alloc::{
     collections::vec_deque::VecDeque,
     sync::{Arc, Weak},
 };
-use kernel_sys::types::ObjectSignal;
+use kernel_sys::types::{ObjectSignal, SyscallResult};
 
 use crate::{
     mutex::Spinlock,
@@ -58,22 +58,25 @@ impl KChannelHandle {
         };
     }
 
-    pub fn send(&self, msg: ChannelMessage) -> Option<()> {
-        let peer = self.peer.upgrade()?;
+    pub fn send(&self, msg: ChannelMessage) -> SyscallResult {
+        let Some(peer) = self.peer.upgrade() else {
+            return SyscallResult::ChannelClosed;
+        };
+
         let mut chan = peer.channel.lock();
 
         if !chan.open {
-            return None;
+            return SyscallResult::ChannelClosed;
         }
 
         if chan.queue.len() > CHANNEL_CAPACITY {
-            return None;
+            return SyscallResult::ChannelFull;
         }
 
         chan.queue.push_back(msg);
         chan.signal.set_signal(ObjectSignal::READABLE, true);
 
-        Some(())
+        SyscallResult::Ok
     }
 
     pub fn read(&self, max_bytes: usize, max_handles: usize) -> Result<ChannelMessage, ReadError> {

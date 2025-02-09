@@ -5,10 +5,10 @@ use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use crate::{mutex::Spinlock, paging::page_table::Mapper};
 
 use super::{
+    AllocatedPage, GlobalPageAllocator, MemoryLoc, MemoryMappingFlags, PageAllocator,
     page::{Page, Size4KB},
     page_allocator::global_allocator,
     page_table::{PageTable, TableLevel4, UnMapMemoryError},
-    AllocatedPage, GlobalPageAllocator, MemoryLoc, MemoryMappingFlags, PageAllocator,
 };
 
 pub struct PageMapperManager {
@@ -116,8 +116,12 @@ impl PageMapperManager {
         }
     }
 
-    pub unsafe fn get_mapper_mut(&mut self) -> &mut PageTable<TableLevel4> {
-        &mut self.page_mapper
+    pub unsafe fn get_cr3(&self) -> usize {
+        self.page_mapper.get_physical_address()
+    }
+
+    pub fn get_phys_addr_from_vaddr(&self, address: u64) -> Option<u64> {
+        self.page_mapper.get_phys_addr_from_vaddr(address)
     }
 
     pub fn insert_mapping_at(

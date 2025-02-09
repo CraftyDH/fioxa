@@ -9,6 +9,7 @@ extern crate alloc;
 extern crate log;
 
 use core::ffi::c_void;
+use core::mem::transmute;
 use core::ops::ControlFlow;
 
 use ::acpi::AcpiError;
@@ -30,12 +31,11 @@ use kernel::mutex::Spinlock;
 use kernel::net::ethernet::userspace_networking_main;
 use kernel::object::init_handle_new_proc;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
-use kernel::paging::page::{Page, Size4KB};
 use kernel::paging::page_allocator::global_allocator;
-use kernel::paging::page_table::Mapper;
+use kernel::paging::page_mapper::PageMapping;
 use kernel::paging::{
-    KERNEL_DATA_MAP, KERNEL_LVL4, MemoryLoc, MemoryMappingFlags, OFFSET_MAP,
-    ensure_ident_map_curr_process, set_mem_offset, virt_addr_offset,
+    KERNEL_DATA_MAP, KERNEL_LVL4, MemoryLoc, MemoryMappingFlags, OFFSET_MAP, set_mem_offset,
+    virt_addr_offset,
 };
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::{
@@ -51,7 +51,7 @@ use kernel::time::init_time;
 use kernel::uefi::get_config_table;
 use kernel::{BOOT_INFO, elf, gdt, paging};
 
-use bootloader::uefi::table::cfg::ACPI2_GUID;
+use bootloader::uefi::table::cfg::{ACPI2_GUID, ConfigTableEntry};
 use bootloader::uefi::table::{Runtime, SystemTable};
 
 use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
@@ -100,16 +100,7 @@ pub fn main_stage1(info: *const BootInfo) -> ! {
         let cr3 = {
             let mut table = KERNEL_LVL4.lock();
             map_gop(global_allocator(), &mut table, &boot_info.gop);
-
-            table
-                .identity_map(
-                    alloc,
-                    Page::<Size4KB>::new(0xfee00000),
-                    MemoryMappingFlags::WRITEABLE,
-                )
-                .unwrap()
-                .ignore();
-
+            map_lapic(&mut table);
             table.get_physical_address()
         };
 
@@ -160,40 +151,67 @@ unsafe extern "C" fn main_stage2() {
     unsafe { core_start_multitasking() };
 }
 
-extern "C" fn init() {
-    with_held_interrupts(|| {
-        // read boot_info
-        let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
+unsafe fn get_and_map_config_table() -> &'static [ConfigTableEntry] {
+    // read boot_info
+    let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
 
-        let init_process = unsafe { CPULocalStorageRW::get_current_task().process() };
+    let process = unsafe { CPULocalStorageRW::get_current_task().process() };
+    let mut mapper = process.memory.lock();
 
-        unsafe {
-            ensure_ident_map_curr_process(
-                Page::<Size4KB>::containing(boot_info.uefi_runtime_table),
-                MemoryMappingFlags::empty(),
-            );
-        }
-        info!("Getting UEFI runtime table");
-        let runtime_table = unsafe {
-            SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void)
-        }
+    let uefi_table_base = (boot_info.uefi_runtime_table as usize) & !0xFFF;
+    let uefi_table = unsafe { PageMapping::new_mmap(uefi_table_base, 0x1000) };
+
+    mapper
+        .page_mapper
+        .insert_mapping_at_set(uefi_table_base, uefi_table, MemoryMappingFlags::empty())
         .unwrap();
 
-        info!("Loading UEFI runtime table");
-        let config_tables = runtime_table.config_table();
+    info!("UEFI Table addr: {uefi_table_base:#x}");
 
-        info!("Config table: ptr{:?}", config_tables.as_ptr());
+    info!("Getting UEFI runtime table");
+    let runtime_table =
+        unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
+            .unwrap();
 
-        unsafe {
-            ensure_ident_map_curr_process(
-                Page::<Size4KB>::containing(config_tables.as_ptr() as u64),
+    info!("Loading UEFI runtime table");
+    let config_tables: &'static [ConfigTableEntry] =
+        unsafe { transmute(runtime_table.config_table()) };
+
+    info!("Config table: ptr{:?}", config_tables.as_ptr());
+
+    // map further memory if needed (it might overlap so skip page)
+    let ptr = config_tables.as_ptr() as usize;
+    let mut base_addr = ptr & !0xFFF;
+    let mut size =
+        (ptr & 0xFFF + config_tables.len() * size_of::<ConfigTableEntry>() + 0xFFF) & !0xFFF;
+
+    if base_addr == uefi_table_base {
+        base_addr += 0x1000;
+        size -= 0x1000;
+    }
+
+    if size > 0 {
+        let config_tables_mapping = unsafe { PageMapping::new_mmap(base_addr, size) };
+
+        mapper
+            .page_mapper
+            .insert_mapping_at_set(
+                base_addr,
+                config_tables_mapping,
                 MemoryMappingFlags::empty(),
-            );
-        }
+            )
+            .unwrap();
+    }
 
+    config_tables
+}
+
+extern "C" fn init() {
+    with_held_interrupts(|| unsafe {
+        let config_tables = get_and_map_config_table();
         let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
             .ok_or(AcpiError::NoValidRsdp)
-            .and_then(|acpi2_table| unsafe {
+            .and_then(|acpi2_table| {
                 acpi::AcpiTables::from_rsdp(FioxaAcpiHandler, acpi2_table.address as usize)
             })
             .unwrap();
@@ -202,19 +220,10 @@ extern "C" fn init() {
 
         let madt = acpi_tables.find_table::<Madt>().unwrap();
 
-        unsafe {
-            map_lapic(&mut init_process.memory.lock().page_mapper.get_mapper_mut());
-            enable_localapic();
-        }
+        enable_localapic();
+        enable_apic(&madt);
 
-        unsafe {
-            enable_apic(
-                &madt,
-                &mut init_process.memory.lock().page_mapper.get_mapper_mut(),
-            );
-        }
-
-        unsafe { boot_aps(&madt) };
+        boot_aps(&madt);
     });
 
     // TODO: Reclaim memory, but first need to drop any references to the memory region
@@ -291,27 +300,7 @@ fn testing_proc() {
 }
 
 fn after_boot_pci() {
-    let boot_info = unsafe { &*BOOT_INFO };
-
-    unsafe {
-        ensure_ident_map_curr_process(
-            Page::<Size4KB>::containing(boot_info.uefi_runtime_table),
-            MemoryMappingFlags::empty(),
-        )
-    };
-
-    let runtime_table =
-        unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
-            .unwrap();
-
-    let config_tables = runtime_table.config_table();
-
-    unsafe {
-        ensure_ident_map_curr_process(
-            Page::<Size4KB>::containing(config_tables.as_ptr() as u64),
-            MemoryMappingFlags::empty(),
-        );
-    }
+    let config_tables = unsafe { get_and_map_config_table() };
 
     let acpi_tables = get_config_table(ACPI2_GUID, config_tables)
         .ok_or(AcpiError::NoValidRsdp)

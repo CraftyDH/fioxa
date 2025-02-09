@@ -101,21 +101,10 @@ impl ProcessMemory {
     pub fn new() -> Self {
         let mut page_mapper = PageMapperManager::new(global_allocator());
 
-        static APIC_LOCATION: Lazy<Arc<PageMapping>> =
-            Lazy::new(|| unsafe { PageMapping::new_mmap(0xfee00000, 0x1000) });
-
         static HPET_LOCATION: Lazy<(usize, Arc<PageMapping>)> = Lazy::new(|| unsafe {
             let val = HPET.get().unwrap().info.base_address;
             (val, PageMapping::new_mmap(val, 0x1000))
         });
-
-        page_mapper
-            .insert_mapping_at_set(
-                0xfee00000,
-                APIC_LOCATION.clone(),
-                MemoryMappingFlags::WRITEABLE,
-            )
-            .unwrap();
 
         // Slightly scary, but only init will not and it should map it itself
         if HPET.is_initialized() {
@@ -402,14 +391,7 @@ impl Thread {
                     ip: start_new_task as usize,
                 }),
                 kstack_top: VirtAddr::from_ptr(kstack_top as *const ()),
-                cr3_page: unsafe {
-                    process
-                        .memory
-                        .lock()
-                        .page_mapper
-                        .get_mapper_mut()
-                        .get_physical_address() as u64
-                },
+                cr3_page: unsafe { process.memory.lock().page_mapper.get_cr3() as u64 },
             }),
         });
 

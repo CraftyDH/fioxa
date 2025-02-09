@@ -1,5 +1,5 @@
 use core::{
-    mem::{size_of, MaybeUninit},
+    mem::{MaybeUninit, size_of},
     pin::Pin,
     time::Duration,
 };
@@ -9,23 +9,19 @@ use kernel_sys::syscall::sys_sleep;
 use kernel_userspace::disk::ata::ATADiskIdentify;
 
 use crate::{
+    cpu_localstorage::CPULocalStorageRW,
     driver::disk::{
-        ahci::{
-            fis::{FisRegH2D, FISTYPE},
-            HBACommandTable,
-        },
         DiskDevice,
-    },
-    paging::{
-        get_task_mapper,
-        page::{Page, Size4KB},
-        page_table::Mapper,
+        ahci::{
+            HBACommandTable,
+            fis::{FISTYPE, FisRegH2D},
+        },
     },
 };
 
 use super::{
-    bitfields::HBACommandHeader, fis::ReceivedFis, HBAPort, HBA_PX_CMD_CR, HBA_PX_CMD_FR,
-    HBA_PX_CMD_FRE, HBA_PX_CMD_ST,
+    HBA_PX_CMD_CR, HBA_PX_CMD_FR, HBA_PX_CMD_FRE, HBA_PX_CMD_ST, HBAPort,
+    bitfields::HBACommandHeader, fis::ReceivedFis,
 };
 
 #[derive(Debug, PartialEq)]
@@ -47,6 +43,14 @@ pub struct Port {
     cmd_tables: Pin<Box<[HBACommandTable<PRDT_LENGTH>; 32]>>,
 }
 
+unsafe fn get_phys_addr_from_vaddr(address: u64) -> Option<u64> {
+    unsafe {
+        let thread = CPULocalStorageRW::get_current_task();
+        let mem = thread.process().memory.lock();
+        mem.page_mapper.get_phys_addr_from_vaddr(address)
+    }
+}
+
 impl Port {
     pub fn new(port: &'static mut HBAPort) -> Self {
         unsafe {
@@ -54,16 +58,13 @@ impl Port {
 
             let received_fis: Pin<Box<ReceivedFis>> =
                 Box::into_pin(Box::new_uninit().assume_init());
-            let rfis_addr = get_task_mapper(|map| {
-                map.get_phys_addr_from_vaddr(&*received_fis.as_ref() as *const ReceivedFis as u64)
-            })
-            .unwrap();
+            let rfis_addr =
+                get_phys_addr_from_vaddr(&*received_fis.as_ref() as *const ReceivedFis as u64)
+                    .unwrap();
 
             let mut cmd_list: Pin<Box<[HBACommandHeader; 32]>> =
                 Box::into_pin(Box::new_uninit().assume_init());
-            let cmd_list_addr =
-                get_task_mapper(|map| map.get_phys_addr_from_vaddr(cmd_list.as_ptr() as u64))
-                    .unwrap();
+            let cmd_list_addr = get_phys_addr_from_vaddr(cmd_list.as_ptr() as u64).unwrap();
 
             port.command_list_base.write(cmd_list_addr);
             port.fis_base_address.write(rfis_addr);
@@ -71,8 +72,7 @@ impl Port {
             let cmd_tables: Pin<Box<[HBACommandTable<PRDT_LENGTH>; 32]>> =
                 Box::into_pin(Box::new_uninit().assume_init());
             let cmd_tables_addr: u64 =
-                get_task_mapper(|map| map.get_phys_addr_from_vaddr(cmd_tables.as_ptr() as u64))
-                    .unwrap();
+                get_phys_addr_from_vaddr(cmd_tables.as_ptr() as u64).unwrap();
 
             for i in 0..32 {
                 cmd_list[i].set_prdt_length(0);
@@ -160,11 +160,7 @@ impl DiskDevice for Port {
             // Align ptr on prev boundary
             ptr_addr &= !0xFFF;
 
-            let phys_addr = unsafe {
-                get_task_mapper(|m| m.address_of(Page::<Size4KB>::new(ptr_addr)))
-                    .unwrap()
-                    .get_address()
-            };
+            let phys_addr = unsafe { get_phys_addr_from_vaddr(ptr_addr).unwrap() };
 
             // Set the offset back on, since page offsets arn't supper pain yet (Only 4kb pages)
             cmd_table.prdt_entry[0].set_data_base_address(phys_addr + left_align_size as u64);
@@ -178,11 +174,7 @@ impl DiskDevice for Port {
         }
 
         while bytes_to_read > 0x1000 {
-            let phys_addr = unsafe {
-                get_task_mapper(|m| m.address_of(Page::<Size4KB>::new(ptr_addr)))
-                    .unwrap()
-                    .get_address()
-            };
+            let phys_addr = unsafe { get_phys_addr_from_vaddr(ptr_addr).unwrap() };
             cmd_table.prdt_entry[prdt_length].set_data_base_address(phys_addr);
             // Read read of bytes
             cmd_table.prdt_entry[prdt_length].set_byte_count(0xFFF);
@@ -192,11 +184,8 @@ impl DiskDevice for Port {
         }
 
         if bytes_to_read > 0 {
-            let phys_addr = unsafe {
-                get_task_mapper(|m| m.address_of(Page::<Size4KB>::new(ptr_addr)))
-                    .unwrap()
-                    .get_address()
-            };
+            let phys_addr = unsafe { get_phys_addr_from_vaddr(ptr_addr).unwrap() };
+
             cmd_table.prdt_entry[prdt_length].set_data_base_address(phys_addr);
             // Read read of bytes
             cmd_table.prdt_entry[prdt_length].set_byte_count(bytes_to_read - 1);
@@ -274,9 +263,7 @@ impl DiskDevice for Port {
         let identify: Box<MaybeUninit<ATADiskIdentify>> = Box::new_uninit();
 
         // TODO: Will probably break if buffer ever spans two non continuous pages
-        let phys_addr = unsafe {
-            get_task_mapper(|m| m.get_phys_addr_from_vaddr(identify.as_ptr() as u64)).unwrap()
-        };
+        let phys_addr = unsafe { get_phys_addr_from_vaddr(identify.as_ptr() as u64).unwrap() };
 
         cmd_table.prdt_entry[0].set_data_base_address(phys_addr);
         cmd_table.prdt_entry[0].set_byte_count(size_of::<ATADiskIdentify>() as u32 - 1);

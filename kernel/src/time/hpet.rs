@@ -5,11 +5,10 @@ use core::{arch::x86_64::_mm_pause, mem::transmute, ptr::read_volatile};
 use acpi::HpetInfo;
 
 use crate::paging::{
-    ensure_ident_map_curr_process,
+    KERNEL_LVL4, MemoryLoc, MemoryMappingFlags,
     page::{Page, Size4KB},
     page_allocator::global_allocator,
     page_table::Mapper,
-    MemoryMappingFlags, KERNEL_LVL4,
 };
 
 use self::bitfields::CapabilitiesIDRegister;
@@ -23,25 +22,29 @@ pub struct HPET {
 }
 
 impl HPET {
+    pub fn base_addr(&self) -> usize {
+        self.info.base_address + MemoryLoc::PhysMapOffset as usize
+    }
+
     pub fn new(hpet: HpetInfo) -> Self {
-        unsafe {
-            // Map into the sched mapping and this process
-            let page = Page::<Size4KB>::new(hpet.base_address as u64);
-            match KERNEL_LVL4.lock().identity_map(
-                global_allocator(),
-                page,
-                MemoryMappingFlags::WRITEABLE,
-            ) {
-                Ok(f) => f.flush(),
-                Err(_) => (),
-            }
-            ensure_ident_map_curr_process(page, MemoryMappingFlags::WRITEABLE);
-        };
-        let x = unsafe { core::ptr::read_volatile(hpet.base_address as *const u64) };
+        let hpet_base_vaddr = MemoryLoc::PhysMapOffset as usize + hpet.base_address;
+
+        // Map into the global mapping
+        match KERNEL_LVL4.lock().map(
+            global_allocator(),
+            Page::<Size4KB>::new(hpet_base_vaddr as u64),
+            Page::<Size4KB>::new(hpet.base_address as u64),
+            MemoryMappingFlags::WRITEABLE,
+        ) {
+            Ok(f) => f.flush(),
+            Err(e) => panic!("cannot ident map because {e:?}"),
+        }
+
+        let x = unsafe { core::ptr::read_volatile(hpet_base_vaddr as *const u64) };
         let capabilities: CapabilitiesIDRegister = unsafe { transmute(x) };
 
         // Enable hpet counting
-        let x = (hpet.base_address + 0x10) as *mut u64;
+        let x = (hpet_base_vaddr + 0x10) as *mut u64;
         let v = unsafe { x.read_volatile() };
         unsafe { x.write_volatile(v | 1) }
 
@@ -54,7 +57,7 @@ impl HPET {
     // Returns system uptime in milliseconds
     pub fn get_uptime(&self) -> u64 {
         unsafe {
-            read_volatile((self.info.base_address + 0xF0) as *const u64)
+            read_volatile((self.base_addr() + 0xF0) as *const u64)
                 / (FEMPTOSECOND / MILLISECOND / self.capabilities.counter_tick_period() as u64)
         }
     }

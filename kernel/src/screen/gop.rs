@@ -91,13 +91,13 @@ macro_rules! colour {
     };
 }
 
+use crate::BOOT_INFO;
 use crate::cpu_localstorage::CPULocalStorageRW;
 use crate::mutex::Spinlock;
-use crate::paging::offset_map::get_gop_range;
 use crate::paging::MemoryMappingFlags;
+use crate::paging::offset_map::get_gop_range;
 use crate::scheduling::with_held_interrupts;
 use crate::terminal::{Cell, Writer};
-use crate::BOOT_INFO;
 
 use super::mouse::monitor_cursor_task;
 use super::psf1::PSF1Font;
@@ -110,6 +110,7 @@ pub fn monitor_stdout_task() {
         |handle, ()| {
             match handle.read::<0>(&mut data_buf, false, false) {
                 Ok(_) => (),
+                Err(SyscallResult::ChannelClosed) => return ControlFlow::Break(()),
                 e => {
                     warn!("error recv {e:?}");
                     return ControlFlow::Break(());
@@ -121,8 +122,7 @@ pub fn monitor_stdout_task() {
                 w.write_str(&s).unwrap();
             });
             match handle.write(&[], &[]) {
-                SyscallResult::Ok => ControlFlow::Continue(()),
-                SyscallResult::ChannelClosed | SyscallResult::ChannelFull => ControlFlow::Break(()),
+                SyscallResult::Ok | SyscallResult::ChannelClosed => ControlFlow::Continue(()),
                 e => {
                     warn!("error send {e:?}");
                     return ControlFlow::Break(());

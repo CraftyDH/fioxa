@@ -8,15 +8,10 @@ use bit_field::BitField;
 use volatile::Volatile;
 
 use crate::{
+    cpu_localstorage::CPULocalStorageRW,
     driver::{disk::DiskDevice, driver::Driver},
     mutex::Spinlock,
-    paging::{
-        get_task_mapper,
-        page::{Page, Size4KB},
-        page_allocator::global_allocator,
-        page_table::Mapper,
-        MemoryMappingFlags,
-    },
+    paging::{MemoryMappingFlags, page_mapper::PageMapping},
     pci::{PCIHeader0, PCIHeaderCommon},
 };
 
@@ -133,19 +128,17 @@ impl Driver for AHCIDriver {
         trace!("BAR5: {}", header0.get_bar(5));
         let abar = header0.get_bar(5);
 
-        unsafe {
-            get_task_mapper(|m| {
-                m.identity_map(
-                    global_allocator(),
-                    Page::<Size4KB>::new(abar as u64),
-                    MemoryMappingFlags::all(),
-                )
-            })
-            .unwrap()
-            .flush();
-        }
+        let abar_vaddr = unsafe {
+            let map = PageMapping::new_mmap(abar as usize, 0x1000);
+            CPULocalStorageRW::get_current_task()
+                .process()
+                .memory
+                .lock()
+                .page_mapper
+                .insert_mapping_set(map, MemoryMappingFlags::WRITEABLE)
+        };
 
-        let abar = unsafe { &mut *(header0.get_bar(5) as *mut HBAMemory) };
+        let abar = unsafe { &mut *(abar_vaddr as *mut HBAMemory) };
 
         let mut ahci = Self {
             pci_device: header0,

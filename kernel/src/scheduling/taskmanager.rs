@@ -7,6 +7,7 @@ use kernel_sys::{
     syscall::sys_thread_bootstraper,
     types::{ObjectSignal, Pid, Tid},
 };
+use x86_64::instructions::interrupts;
 
 use crate::{
     assembly::{registers::SavedTaskState, wrmsr},
@@ -166,7 +167,8 @@ unsafe extern "C" fn scheduler() {
             if CPULocalStorageRW::hold_interrupts_depth() != 1 {
                 error!("Thread shouldn't be holding interrupts when yielding");
                 exit_thread_inner(&task, &mut sched);
-                CPULocalStorageRW::set_hold_interrupts_depth(0);
+                CPULocalStorageRW::set_hold_interrupts_depth(1);
+                continue;
             }
 
             match sched.state {
@@ -186,6 +188,14 @@ unsafe extern "C" fn scheduler() {
         } else {
             // nothing can run so sleep
             unsafe { core::arch::asm!("hlt") };
+        }
+
+        if CPULocalStorageRW::hold_interrupts_depth() != 0 {
+            warn!("interrupts?");
+        }
+
+        if !interrupts::are_enabled() {
+            warn!("interrupts??");
         }
     }
 }

@@ -3,48 +3,37 @@ use core::{
     ptr::{read_volatile, write_volatile},
 };
 
-use acpi::{sdt::SdtHeader, AcpiTable};
+use acpi::{AcpiTable, sdt::SdtHeader};
 use alloc::vec::Vec;
 use bit_field::BitField;
-use conquer_once::noblock::OnceCell;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     interrupts::{
         com1_int_handler, keyboard_int_handler, mouse_int_handler, pci_int_handler, set_irq_handler,
     },
-    paging::{
-        page::{Page, Size4KB},
-        page_allocator::global_allocator,
-        page_table::{Mapper, PageTable, TableLevel4},
-        MemoryMappingFlags,
-    },
+    lapic::LAPIC_ADDR,
+    paging::{MemoryMappingFlags, page_mapper::PageMapping},
 };
 
-static IOAPIC: OnceCell<IOApic> = OnceCell::uninit();
-
-pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<TableLevel4>) {
+pub unsafe fn enable_apic(madt: &Madt) {
     let (_, _, io_apics, apic_ints) = madt.find_ioapic();
 
     for apic in &io_apics {
         debug!("APIC: {:?}", apic);
-        mapper
-            .identity_map(
-                global_allocator(),
-                Page::<Size4KB>::new(apic.apic_addr.into()),
-                MemoryMappingFlags::WRITEABLE,
-            )
-            .unwrap()
-            .flush();
     }
-
-    let apic = io_apics.first().unwrap();
-
-    IOAPIC.try_init_once(|| *apic).unwrap();
 
     for i in apic_ints {
         debug!("Int override: {:?}", i);
     }
+
+    let curr_proc = unsafe { CPULocalStorageRW::get_current_task().process() };
+    let mapper = &mut curr_proc.memory.lock().page_mapper;
+
+    let apic = io_apics.first().unwrap();
+    let apic_mapping = unsafe { PageMapping::new_mmap(apic.apic_addr as usize, 0x1000) };
+
+    let apic_addr = mapper.insert_mapping_set(apic_mapping.clone(), MemoryMappingFlags::WRITEABLE);
 
     // Timer is usually overridden to irq 2
     // TODO: Parse overides and use those
@@ -52,29 +41,35 @@ pub fn enable_apic(madt: &Madt, mapper: &mut PageTable<TableLevel4>) {
     // set_redirect_entry(apic.apic_addr, 0xFF, 2, 49, true);
 
     set_irq_handler(50, keyboard_int_handler);
-    set_redirect_entry(apic.apic_addr, 0, 1, 50, true);
+    set_redirect_entry(apic_addr, 0, 1, 50, true);
 
     set_irq_handler(51, mouse_int_handler);
-    set_redirect_entry(apic.apic_addr, 0, 12, 51, true);
+    set_redirect_entry(apic_addr, 0, 12, 51, true);
 
     set_irq_handler(52, pci_int_handler);
-    set_redirect_entry(apic.apic_addr, 0, 10, 52, true);
-    set_redirect_entry(apic.apic_addr, 0, 11, 52, true);
+    set_redirect_entry(apic_addr, 0, 10, 52, true);
+    set_redirect_entry(apic_addr, 0, 11, 52, true);
 
     set_irq_handler(53, com1_int_handler);
-    set_redirect_entry(apic.apic_addr, 0, 4, 53, true);
+    set_redirect_entry(apic_addr, 0, 4, 53, true);
+
+    unsafe {
+        mapper
+            .free_mapping(apic_addr..(apic_addr + apic_mapping.size()))
+            .unwrap()
+    }
 }
 
 pub fn send_ipi_to(apic_id: u8, vector: u8) {
     // Check no IPI pending
-    while unsafe { read_volatile((0xfee00000u64 + 0x300) as *const u32) & (1 << 12) > 0 } {}
+    while unsafe { read_volatile((LAPIC_ADDR + 0x300) as *const u32) & (1 << 12) > 0 } {}
     // Target
-    unsafe { write_volatile((0xfee00000u64 + 0x310) as *mut u32, (apic_id as u32) << 24) };
+    unsafe { write_volatile((LAPIC_ADDR + 0x310) as *mut u32, (apic_id as u32) << 24) };
     // Send interrupt
-    unsafe { write_volatile((0xfee00000u64 + 0x300) as *mut u32, vector as u32 | 1 << 14) };
+    unsafe { write_volatile((LAPIC_ADDR + 0x300) as *mut u32, vector as u32 | 1 << 14) };
 }
 
-fn set_redirect_entry(apic_base: u32, processor: u32, irq: u8, vector: u8, enable: bool) {
+fn set_redirect_entry(apic_base: usize, processor: u32, irq: u8, vector: u8, enable: bool) {
     let mut low = read_ioapic_register(apic_base, 0x10 + 2 * irq);
     let mut high = read_ioapic_register(apic_base, 0x11 + 2 * irq);
 
@@ -98,35 +93,14 @@ fn set_redirect_entry(apic_base: u32, processor: u32, irq: u8, vector: u8, enabl
     write_ioapic_register(apic_base, 0x10 + 2 * irq, low);
 }
 
-pub fn mask_entry(irq: u8, enable: bool) {
-    let thread = unsafe { CPULocalStorageRW::get_current_task() };
-    let mut mapper = thread.process().memory.lock();
-    let mapper = unsafe { mapper.page_mapper.get_mapper_mut() };
-
-    let apic_base = unsafe { IOAPIC.get_unchecked().apic_addr };
-
-    let page = Page::<Size4KB>::new(apic_base as u64);
-
-    mapper
-        .identity_map(global_allocator(), page, MemoryMappingFlags::WRITEABLE)
-        .unwrap()
-        .flush();
-    let mut low = read_ioapic_register(apic_base, 0x10 + 2 * irq);
-
-    low.set_bit(16, !enable);
-
-    write_ioapic_register(apic_base, 0x10 + 2 * irq, low);
-    mapper.unmap(global_allocator(), page).unwrap().flush();
-}
-
-fn write_ioapic_register(apic_base: u32, offset: u8, val: u32) {
+fn write_ioapic_register(apic_base: usize, offset: u8, val: u32) {
     unsafe {
         write_volatile(apic_base as *mut u32, offset as u32);
         write_volatile((apic_base + 0x10) as *mut u32, val);
     }
 }
 
-fn read_ioapic_register(apic_base: u32, offset: u8) -> u32 {
+fn read_ioapic_register(apic_base: usize, offset: u8) -> u32 {
     unsafe {
         write_volatile(apic_base as *mut u32, offset as u32);
         read_volatile((apic_base + 0x10) as *mut u32)
@@ -177,6 +151,7 @@ impl Madt {
         }
         lapic_ids
     }
+
     pub fn find_ioapic(&self) -> (u64, Vec<u8>, Vec<IOApic>, Vec<ApicInterruptOveride>) {
         let mut start_ptr = self as *const Madt as *mut u8;
 

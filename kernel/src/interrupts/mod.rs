@@ -6,7 +6,7 @@ use kernel_sys::{
     syscall::sys_process_spawn_thread,
     types::{SysPortNotification, SysPortNotificationValue, SyscallResult},
 };
-use kernel_userspace::{channel::Channel, handle::Handle, INT_COM1, INT_KB, INT_MOUSE, INT_PCI};
+use kernel_userspace::{INT_COM1, INT_KB, INT_MOUSE, INT_PCI, channel::Channel, handle::Handle};
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 pub mod exceptions;
@@ -91,7 +91,7 @@ macro_rules! interrupt_handler {
             // println!("Core: {y} received int");
             $fn(i);
             // Finish int
-            unsafe { core::ptr::write_volatile(0xfee000b0 as *mut u32, 0) }
+            unsafe { core::ptr::write_volatile((crate::lapic::LAPIC_ADDR + 0xb0) as *mut u32, 0) }
         }
     };
 }

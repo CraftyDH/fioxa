@@ -5,7 +5,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     paging::{
-        MemoryMappingFlags,
+        MemoryLoc, MemoryMappingFlags,
         page::{Page, Size4KB},
         page_allocator::global_allocator,
         page_table::{MapMemoryError, Mapper, PageTable, TableLevel4},
@@ -15,13 +15,14 @@ use crate::{
 };
 
 // Local APIC
-/// Do not use before this has been initialized in enable_apic
-pub const LAPIC_ADDR: u64 = 0xfee00000;
+pub const PHYS_LAPIC_ADDR: u64 = 0xfee00000;
+pub const LAPIC_ADDR: u64 = MemoryLoc::PhysMapOffset as u64 + PHYS_LAPIC_ADDR;
 
 pub fn map_lapic(mapper: &mut PageTable<TableLevel4>) {
-    match mapper.identity_map(
+    match mapper.map(
         global_allocator(),
-        Page::<Size4KB>::new(0xfee00000),
+        Page::<Size4KB>::new(LAPIC_ADDR),
+        Page::new(PHYS_LAPIC_ADDR),
         MemoryMappingFlags::WRITEABLE,
     ) {
         Ok(f) => f.flush(),
@@ -29,7 +30,7 @@ pub fn map_lapic(mapper: &mut PageTable<TableLevel4>) {
             from: _,
             to,
             current,
-        }) if to == current => (),
+        }) if to == current => info!("LAPIC was already mapped"),
         Err(e) => panic!("cannot ident map because {e:?}"),
     }
 }
@@ -78,7 +79,7 @@ pub unsafe fn enable_localapic() {
 pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
     unsafe {
         // Ack interrupt
-        *(0xfee000b0 as *mut u32) = 0;
+        *((LAPIC_ADDR + 0xb0) as *mut u32) = 0;
 
         check_sleep();
 
