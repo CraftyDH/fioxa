@@ -89,7 +89,13 @@ impl PageFrameAllocator {
         // Capture the reserved pages
         let mut free_found = 0;
         loop {
-            let entry = free.by_ref().next().unwrap();
+            let mut entry = *free.by_ref().next().unwrap();
+
+            // ignore page starting at paddr 0
+            if entry.phys_start == 0 {
+                entry.phys_start = 0x1000;
+                entry.page_count -= 1;
+            }
 
             let range = entry.phys_start as usize
                 ..(entry.phys_start + (entry.page_count * 0x1000)) as usize;
@@ -209,12 +215,8 @@ impl PageFrameAllocator {
     pub unsafe fn free_32bit_reserved_page(&mut self, page: usize) {
         let meta = unsafe { &mut *virt_addr_offset_mut(page as *mut PageMetadata32) };
 
-        if let Some(p) = self.reserved_32bit {
-            meta.next_node = Some(p);
-            self.reserved_32bit = Some(page as *mut PageMetadata32);
-        } else {
-            self.reserved_32bit = Some(page as *mut PageMetadata32);
-        }
+        meta.next_node = self.reserved_32bit.take();
+        self.reserved_32bit = Some(page as *mut PageMetadata32);
     }
 
     pub fn free_page_of_order(&mut self, pages: AllocatedPageOrder) {

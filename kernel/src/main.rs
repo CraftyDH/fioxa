@@ -183,7 +183,7 @@ unsafe fn get_and_map_config_table() -> &'static [ConfigTableEntry] {
     let ptr = config_tables.as_ptr() as usize;
     let mut base_addr = ptr & !0xFFF;
     let mut size =
-        (ptr & 0xFFF + config_tables.len() * size_of::<ConfigTableEntry>() + 0xFFF) & !0xFFF;
+        ((ptr & 0xFFF) + config_tables.len() * size_of::<ConfigTableEntry>() + 0xFFF) & !0xFFF;
 
     if base_addr == uefi_table_base {
         base_addr += 0x1000;

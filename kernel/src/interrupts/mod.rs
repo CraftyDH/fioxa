@@ -15,7 +15,7 @@ pub mod pic;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
-    kassert2, lapic,
+    kassert, lapic,
     mutex::Spinlock,
     port::KPort,
     scheduling::{
@@ -255,7 +255,7 @@ impl KInterruptHandle {
         loop {
             let mut this = self.inner.lock();
 
-            kassert2!(matches!(this.waiter, InterruptWaiter::None));
+            kassert!(matches!(this.waiter, InterruptWaiter::None));
 
             this.waiting_ack = false;
 
