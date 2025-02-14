@@ -32,8 +32,8 @@ use self::pic::disable_pic;
 // Unusable interrupt vectors
 // 0..32 = Exceptions
 // 32..48 = PIC Possible spurrius interrupts
-const IRQ_OFFSET: usize = 49;
-const LAPIC_INT: usize = 60;
+const IRQ_OFFSET: u8 = 49;
+const LAPIC_INT: u8 = 60;
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -96,7 +96,7 @@ macro_rules! interrupt_handler {
     };
 }
 
-pub fn set_irq_handler(irq: usize, func: extern "x86-interrupt" fn(InterruptStackFrame)) {
+pub fn set_irq_handler(irq: u8, func: extern "x86-interrupt" fn(InterruptStackFrame)) {
     assert!((IRQ_OFFSET..=255).contains(&irq));
     IDT.lock()[irq].set_handler_fn(func);
 }

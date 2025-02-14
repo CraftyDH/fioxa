@@ -29,18 +29,18 @@ pub static TSS: Lazy<TaskStateSegment> = Lazy::new(|| {
         static mut STACK: [u8; TSS_STACK_SIZE] = [0; TSS_STACK_SIZE];
 
         let stack_start = VirtAddr::from_ptr(core::ptr::addr_of!(STACK));
-        stack_start + TSS_STACK_SIZE
+        stack_start + TSS_STACK_SIZE as u64
     };
     tss
 });
 
 pub static BOOTGDT: Lazy<GlobalDescriptorTable> = Lazy::new(|| {
     let mut gdt = GlobalDescriptorTable::new();
-    gdt.add_entry(Descriptor::kernel_code_segment());
-    gdt.add_entry(Descriptor::kernel_data_segment());
-    gdt.add_entry(Descriptor::user_data_segment());
-    gdt.add_entry(Descriptor::user_code_segment());
-    gdt.add_entry(Descriptor::tss_segment(&TSS));
+    gdt.append(Descriptor::kernel_code_segment());
+    gdt.append(Descriptor::kernel_data_segment());
+    gdt.append(Descriptor::user_data_segment());
+    gdt.append(Descriptor::user_code_segment());
+    gdt.append(Descriptor::tss_segment(&TSS));
     gdt
 });
 
@@ -72,11 +72,11 @@ impl CPULocalGDT {
 
 pub unsafe fn create_gdt_for_core(gdt: &'static mut CPULocalGDT) {
     gdt.gdt = GlobalDescriptorTable::new();
-    gdt.gdt.add_entry(Descriptor::kernel_code_segment());
-    gdt.gdt.add_entry(Descriptor::kernel_data_segment());
+    gdt.gdt.append(Descriptor::kernel_code_segment());
+    gdt.gdt.append(Descriptor::kernel_data_segment());
 
-    gdt.gdt.add_entry(Descriptor::user_data_segment());
-    gdt.gdt.add_entry(Descriptor::user_code_segment());
+    gdt.gdt.append(Descriptor::user_data_segment());
+    gdt.gdt.append(Descriptor::user_code_segment());
 
     gdt.tss = TaskStateSegment::new();
 
@@ -91,5 +91,5 @@ pub unsafe fn create_gdt_for_core(gdt: &'static mut CPULocalGDT) {
             VirtAddr::from_ptr(gdt.tss_stack[2].as_ptr().add(TSS_STACK_SIZE));
     }
 
-    gdt.gdt.add_entry(Descriptor::tss_segment(&gdt.tss));
+    gdt.gdt.append(Descriptor::tss_segment(&gdt.tss));
 }

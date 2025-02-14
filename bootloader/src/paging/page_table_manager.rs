@@ -1,4 +1,4 @@
-use uefi::table::boot::MemoryType;
+use uefi::boot::{AllocateType, MemoryType, allocate_pages};
 
 use super::{
     page_directory::{PageDirectoryEntry, PageTable},
@@ -15,18 +15,17 @@ impl PageTableManager {
         virtual_memory: u64,
         physical_memory: u64,
         write: bool,
-        bt: &uefi::table::boot::BootServices,
     ) -> Result<Flusher, &str> {
         let indexer = PageMapIndexer::new(virtual_memory);
         let pml4 = unsafe { &mut *(self.page_lvl4_addr as *mut PageTable) };
 
-        let pdp = Self::get_or_create_table(&mut pml4.entries[indexer.pdp_i as usize], bt);
+        let pdp = Self::get_or_create_table(&mut pml4.entries[indexer.pdp_i as usize]);
 
-        let pd = pdp
-            .and_then(|pdp| Self::get_or_create_table(&mut pdp.entries[indexer.pd_i as usize], bt));
+        let pd =
+            pdp.and_then(|pdp| Self::get_or_create_table(&mut pdp.entries[indexer.pd_i as usize]));
 
         let pt =
-            pd.and_then(|pd| Self::get_or_create_table(&mut pd.entries[indexer.pt_i as usize], bt));
+            pd.and_then(|pd| Self::get_or_create_table(&mut pd.entries[indexer.pt_i as usize]));
 
         pt.ok_or("Could not traverse pml4 tree").and_then(|pt| {
             let pde = &mut pt.entries[indexer.p_i as usize];
@@ -71,25 +70,18 @@ impl PageTableManager {
         None
     }
 
-    fn get_or_create_table(
-        pde: &mut PageDirectoryEntry,
-        bt: &uefi::table::boot::BootServices,
-    ) -> Option<&'static mut PageTable> {
+    fn get_or_create_table(pde: &mut PageDirectoryEntry) -> Option<&'static mut PageTable> {
         if pde.present() {
             return unsafe { Some(&mut *(pde.get_address() as *mut PageTable)) };
         }
-        let new_page = bt
-            .allocate_pages(
-                uefi::table::boot::AllocateType::AnyPages,
-                MemoryType::LOADER_DATA,
-                1,
-            )
-            .unwrap();
+        let new_page = allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, 1)
+            .unwrap()
+            .as_ptr();
         unsafe {
-            core::ptr::write_bytes(new_page as *mut u8, 0, 0x1000);
+            core::ptr::write_bytes(new_page, 0, 0x1000);
         }
         let pdp = unsafe { &mut *(new_page as *mut PageTable) };
-        pde.set_address(new_page);
+        pde.set_address(new_page as u64);
         pde.set_present(true);
         pde.set_read_write(true);
         Some(pdp)

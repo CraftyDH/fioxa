@@ -1,9 +1,11 @@
 use core::sync::atomic::AtomicPtr;
 
+use uefi::boot::ScopedProtocol;
+use uefi::boot::get_handle_for_protocol;
+use uefi::boot::open_protocol_exclusive;
 use uefi::proto::console::gop::GraphicsOutput;
 
 use uefi::proto::console::gop::PixelFormat;
-use uefi::table::boot::ScopedProtocol;
 
 #[derive(Debug)]
 pub struct GopInfo {
@@ -15,10 +17,9 @@ pub struct GopInfo {
     pub pixel_format: PixelFormat,
 }
 
-pub fn initialize_gop(bt: &uefi::table::boot::BootServices) -> ScopedProtocol<GraphicsOutput> {
-    let mut gop = bt
-        .get_handle_for_protocol::<GraphicsOutput>()
-        .and_then(|handle| bt.open_protocol_exclusive::<GraphicsOutput>(handle))
+pub fn initialize_gop() -> ScopedProtocol<GraphicsOutput> {
+    let mut gop = get_handle_for_protocol::<GraphicsOutput>()
+        .and_then(|handle| open_protocol_exclusive::<GraphicsOutput>(handle))
         .unwrap();
 
     // The max resolution to choose
@@ -33,7 +34,7 @@ pub fn initialize_gop(bt: &uefi::table::boot::BootServices) -> ScopedProtocol<Gr
 
     let mut best_mode = None;
 
-    for mode in gop.modes(bt) {
+    for mode in gop.modes() {
         let mode = mode;
         let info = mode.info();
         let (x, y) = info.resolution();

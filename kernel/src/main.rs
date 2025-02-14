@@ -8,12 +8,11 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use core::ffi::c_void;
-use core::mem::transmute;
 use core::ops::ControlFlow;
 
 use ::acpi::AcpiError;
 use alloc::vec::Vec;
+use bootloader::uefi::table::{set_system_table, system_table_raw};
 use bootloader::{BootInfo, entry_point};
 use kernel::acpi::FioxaAcpiHandler;
 use kernel::boot_aps::boot_aps;
@@ -52,7 +51,6 @@ use kernel::uefi::get_config_table;
 use kernel::{BOOT_INFO, elf, gdt, paging};
 
 use bootloader::uefi::table::cfg::{ACPI2_GUID, ConfigTableEntry};
-use bootloader::uefi::table::{Runtime, SystemTable};
 
 use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
 use kernel_sys::types::{RawValue, SyscallResult};
@@ -86,6 +84,9 @@ pub fn main_stage1(info: *const BootInfo) -> ! {
             boot_info.mmap_entry_size,
             boot_info.mmap_len,
         );
+
+        // set uefi system table
+        set_system_table(boot_info.uefi_runtime_table as *const _);
 
         // Initialize page allocator
         paging::page_allocator::init(mmap.clone());
@@ -169,21 +170,16 @@ unsafe fn get_and_map_config_table() -> &'static [ConfigTableEntry] {
     info!("UEFI Table addr: {uefi_table_base:#x}");
 
     info!("Getting UEFI runtime table");
-    let runtime_table =
-        unsafe { SystemTable::<Runtime>::from_ptr(boot_info.uefi_runtime_table as *mut c_void) }
-            .unwrap();
+
+    let st = unsafe { system_table_raw().unwrap().as_ref() };
 
     info!("Loading UEFI runtime table");
-    let config_tables: &'static [ConfigTableEntry] =
-        unsafe { transmute(runtime_table.config_table()) };
-
-    info!("Config table: ptr{:?}", config_tables.as_ptr());
 
     // map further memory if needed (it might overlap so skip page)
-    let ptr = config_tables.as_ptr() as usize;
+    let ptr = st.configuration_table as usize;
+    let len = st.number_of_configuration_table_entries;
     let mut base_addr = ptr & !0xFFF;
-    let mut size =
-        ((ptr & 0xFFF) + config_tables.len() * size_of::<ConfigTableEntry>() + 0xFFF) & !0xFFF;
+    let mut size = ((ptr & 0xFFF) + len * size_of::<ConfigTableEntry>() + 0xFFF) & !0xFFF;
 
     if base_addr == uefi_table_base {
         base_addr += 0x1000;
@@ -203,7 +199,7 @@ unsafe fn get_and_map_config_table() -> &'static [ConfigTableEntry] {
             .unwrap();
     }
 
-    config_tables
+    unsafe { core::slice::from_raw_parts(st.configuration_table.cast(), len) }
 }
 
 extern "C" fn init() {

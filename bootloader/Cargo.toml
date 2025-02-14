@@ -5,9 +5,12 @@ edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+default = ["uefi/global_allocator", "uefi/panic_handler"]
+
 [dependencies]
-uefi = { version = "0.30", features = ["logger"] }
+uefi = { version = "0.34", features = ["alloc", "logger"] }
 log = "0.4"
 
-x86_64 = "0.14"
+x86_64 = "0.15"
 modular-bitfield = { version = "0.11", default-features = false}

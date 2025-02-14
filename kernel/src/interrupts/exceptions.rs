@@ -129,6 +129,11 @@ unsafe extern "x86-interrupt" fn page_fault_handler(
         );
     }
 
+    let Ok(addr) = addr else {
+        error!("EXCEPTION: PAGE FAULT: Bad address {:?}", addr);
+        kill_bad_task()
+    };
+
     // unsafe { WRITER.force_unlock() };
     // WRITER.lock().fill_screen(0xFF_00_00);
     // WRITER.lock().pos.y = 0;

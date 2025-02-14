@@ -1,4 +1,4 @@
-use bootloader::uefi::table::boot::MemoryDescriptor;
+use bootloader::uefi::boot::MemoryDescriptor;
 
 use crate::paging::{
     page::{Page, Size4KB},

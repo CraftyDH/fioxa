@@ -14,7 +14,7 @@ kernel_userspace = { path = "../kernel_userspace" }
 input = { path = "../input" }
 
 spin = "0.9"
-x86_64 = "0.14"
+x86_64 = "0.15"
 
 [profile.dev]
 strip = true

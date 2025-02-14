@@ -1,4 +1,4 @@
-use bootloader::uefi::table::boot::MemoryType;
+use bootloader::uefi::boot::MemoryType;
 use conquer_once::spin::OnceCell;
 
 use crate::{

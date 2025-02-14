@@ -6,6 +6,6 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.93"
-cargo_metadata = "0.18"
-thiserror = "2.0"
+anyhow = "1.0.95"
+cargo_metadata = "0.19"
+thiserror = "2.0.11"

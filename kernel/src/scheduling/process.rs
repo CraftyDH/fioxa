@@ -15,6 +15,7 @@ use hashbrown::HashMap;
 use kernel_sys::types::{Hid, KernelObjectType, Pid, RawValue, Tid};
 use x86_64::{
     VirtAddr,
+    registers::rflags::RFlags,
     structures::{gdt::SegmentSelector, idt::InterruptStackFrameValue},
 };
 
@@ -369,13 +370,13 @@ impl Thread {
             .insert_mapping_at_set(kstack_base as usize, stack, MemoryMappingFlags::WRITEABLE)
             .unwrap();
 
-        let interrupt_frame = InterruptStackFrameValue {
-            instruction_pointer: VirtAddr::from_ptr(entry_point),
-            code_segment: process.privilege.get_code_segment().0 as u64,
-            cpu_flags: 0x202,
-            stack_pointer: VirtAddr::new(stack_base + STACK_SIZE),
-            stack_segment: process.privilege.get_data_segment().0 as u64,
-        };
+        let interrupt_frame = InterruptStackFrameValue::new(
+            VirtAddr::from_ptr(entry_point),
+            process.privilege.get_code_segment(),
+            RFlags::INTERRUPT_FLAG,
+            VirtAddr::new(stack_base + STACK_SIZE),
+            process.privilege.get_data_segment(),
+        );
 
         unsafe { *(kstack_base_virt as *mut usize) = arg };
         unsafe { *((kstack_base_virt + 8) as *mut InterruptStackFrameValue) = interrupt_frame }

@@ -1,6 +1,6 @@
 use super::types::*;
 
-pub const SYSCALL_NUMBER: usize = 0x80;
+pub const SYSCALL_NUMBER: u8 = 0x80;
 
 kernel_syscall::define_syscalls! {
     // misc
