@@ -5,7 +5,6 @@
 //* Testing
 // #![feature(custom_test_frameworks)]
 // #![test_runner(test_runner)]
-#![feature(extract_if)]
 
 use core::fmt::Write;
 
@@ -31,6 +30,7 @@ pub mod assembly;
 pub mod boot_aps;
 pub mod bootfs;
 pub mod channel;
+pub mod console;
 pub mod cpu_localstorage;
 pub mod driver;
 pub mod elf;

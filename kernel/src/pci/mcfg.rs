@@ -1,6 +1,6 @@
 use acpi::{
-    sdt::{SdtHeader, Signature},
     AcpiTable,
+    sdt::{SdtHeader, Signature},
 };
 use alloc::slice;
 

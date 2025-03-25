@@ -1,18 +1,20 @@
 use core::fmt::Write;
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use conquer_once::spin::OnceCell;
-use kernel_sys::syscall::sys_exit;
+use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
 use kernel_userspace::{
-    INT_COM1, backoff_sleep, channel::Channel, interrupt::Interrupt, process::get_handle,
+    INT_COM1, backoff_sleep,
+    channel::Channel,
+    handle::Handle,
+    interrupt::Interrupt,
+    process::{ProcessHandle, clone_init_service, get_handle},
 };
-use log::LevelFilter;
 use x86_64::instructions::{interrupts::without_interrupts, port::Port};
 
 use crate::{
-    mutex::Spinlock,
-    scheduling::taskmanager::{PROCESSES, SCHEDULER},
-    time::{SLEPT_PROCESSES, uptime},
+    bootfs::TERMINAL_ELF, cpu_localstorage::CPULocalStorageRW, elf::load_elf, mutex::Spinlock,
+    scheduling::process::ProcessReferences,
 };
 
 pub static SERIAL: OnceCell<Spinlock<Serial>> = OnceCell::uninit();
@@ -135,66 +137,68 @@ pub fn serial_monitor_stdin() {
 
     let ints = Interrupt::from_handle(handles.pop().unwrap());
 
+    let (stdin, cin) = Channel::new();
+    let (stdout, cout) = Channel::new();
+    let (stderr, cerr) = Channel::new();
+
+    sys_process_spawn_thread(move || {
+        loop {
+            let proc = load_elf(TERMINAL_ELF)
+                .unwrap()
+                .references(ProcessReferences::from_refs(&[
+                    **clone_init_service().handle(),
+                    **cin.handle(),
+                    **cout.handle(),
+                    **cerr.handle(),
+                ]))
+                .build();
+
+            let mut proc = unsafe {
+                let thread = CPULocalStorageRW::get_current_task();
+                ProcessHandle::from_handle(Handle::from_id(thread.process().add_value(proc.into())))
+            };
+
+            proc.blocking_exit_code();
+            warn!("Terminal exited")
+        }
+    });
+
+    let mon_out = |chan: Channel| {
+        sys_process_spawn_thread(move || {
+            let serial = SERIAL.get().unwrap();
+            let mut read = Vec::with_capacity(0x1000);
+            loop {
+                chan.read::<0>(&mut read, false, true).unwrap();
+                let s = String::from_utf8_lossy(&read);
+                let mut serial = serial.lock();
+                for c in s.chars() {
+                    if c == '\n' {
+                        serial.write_str("\r\n");
+                    } else if c == '\x08' {
+                        // go back, write space, go back
+                        serial.write_str("\x08 \x08");
+                    } else {
+                        serial.write_char(c).unwrap();
+                    }
+                }
+            }
+        });
+    };
+
+    mon_out(stdout);
+    mon_out(stderr);
+
     loop {
-        let mut serial = serial.lock();
-        while let Some(b) = serial.try_read() {
-            let c: char = b.into();
-
-            match c {
-                '\r' => serial.write_serial(b'\n'),
-                's' => {
-                    SCHEDULER.lock().dump_runnable(&mut *serial).unwrap();
-
-                    serial
-                        .write_fmt(format_args!("Slept processes (time: {})\n", uptime()))
-                        .unwrap();
-                    for slept in SLEPT_PROCESSES.lock().iter() {
-                        serial
-                            .write_fmt(format_args!("{} {:?}\n", slept.0.wakeup, slept.0.thread))
-                            .unwrap();
-                    }
-                }
-                'l' => {
-                    serial.write_str("Change log level to: ");
-                    let to = serial.read_serial();
-                    let to = match to {
-                        b'e' => LevelFilter::Error,
-                        b'w' => LevelFilter::Warn,
-                        b'i' => LevelFilter::Info,
-                        b'd' => LevelFilter::Debug,
-                        b't' => LevelFilter::Trace,
-                        _ => {
-                            serial.write_serial(to);
-                            serial.write_str(" Unknown log level\n");
-                            continue;
-                        }
-                    };
-                    log::set_max_level(to);
-                    serial
-                        .write_fmt(format_args!("Set log level to {to}\n"))
-                        .unwrap();
-                }
-                'p' => {
-                    let processes = PROCESSES.lock();
-
-                    for proc in processes.iter() {
-                        serial
-                            .write_fmt(format_args!("{:?} {}\n", proc.0, proc.1.name))
-                            .unwrap();
-
-                        for thread in proc.1.threads.lock().threads.iter() {
-                            serial
-                                .write_fmt(format_args!("\t{:?}\n", thread.1))
-                                .unwrap();
-                        }
-                    }
-                }
-                _ => serial
-                    .write_fmt(format_args!("Unknown cmd: {c}\n"))
-                    .unwrap(),
+        while let Some(b) = { serial.lock().try_read() } {
+            if b == b'\r' {
+                stdin.write(b"\n", &[]).assert_ok();
+            } else if b == 127 {
+                // delete character, make it backspace
+                stdin.write(&[8], &[]).assert_ok();
+            } else {
+                stdin.write(&[b], &[]).assert_ok();
             }
         }
-        drop(serial);
         ints.wait().assert_ok();
     }
 }

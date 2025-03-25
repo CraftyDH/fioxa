@@ -1,4 +1,4 @@
 #[macro_use]
 pub mod gop;
-pub mod psf1;
 pub mod mouse;
+pub mod psf1;

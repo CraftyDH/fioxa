@@ -247,9 +247,9 @@ pub fn exit_thread_inner(thread: &Thread, sched: &mut ThreadSched) {
 
 pub fn spawn_process<F>(func: F) -> ProcessBuilder
 where
-    F: Fn() + Send + Sync + 'static,
+    F: FnOnce() + Send + Sync + 'static,
 {
-    let boxed_func: Box<dyn Fn()> = Box::new(func);
+    let boxed_func: Box<dyn FnOnce()> = Box::new(func);
     let raw = Box::into_raw(Box::new(boxed_func)) as usize;
 
     ProcessBuilder::new(

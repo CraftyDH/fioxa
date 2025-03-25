@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use modular_bitfield::{
     bitfield,
-    specifiers::{B128, B22, B4, B5, B9},
+    specifiers::{B4, B5, B9, B22, B128},
 };
 
 #[bitfield]

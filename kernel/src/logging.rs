@@ -1,5 +1,6 @@
 use core::fmt::Write;
 
+use alloc::fmt;
 use log::{Level, Log};
 
 use crate::{screen::gop::WRITER, serial::SERIAL};
@@ -14,32 +15,35 @@ impl Log for KernelLogger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            if let Some(serial) = SERIAL.get() {
-                serial
-                    .lock()
-                    .write_fmt(format_args!(
-                        "\x1b[1;{}m{: <5}\x1b[22;39m {} > {}\n",
-                        get_8bit_color_for_level(record.level()),
-                        record.level(),
-                        record.target(),
-                        record.args()
-                    ))
-                    .unwrap();
-            }
-            if let Some(w) = WRITER.get() {
-                let mut w = w.lock();
-                let color = w.tty.set_fg_colour(get_color_for_level(record.level()));
-                w.write_fmt(format_args!("{: <5} ", record.level()))
-                    .unwrap();
-                w.tty.set_fg_colour(0xFFFFFF);
-                w.write_fmt(format_args!("{} > {}\n", record.target(), record.args()))
-                    .unwrap();
-                w.tty.set_fg_colour(color);
-            }
+            print_log(record.level(), record.target(), record.args());
         }
     }
 
     fn flush(&self) {}
+}
+
+pub fn print_log(level: Level, target: &str, args: &fmt::Arguments) {
+    if let Some(serial) = SERIAL.get() {
+        serial
+            .lock()
+            .write_fmt(format_args!(
+                "\x1b[1;{}m{: <5}\x1b[22;39m {} > {}\n",
+                get_8bit_color_for_level(level),
+                level,
+                target,
+                args
+            ))
+            .unwrap();
+    }
+    if let Some(w) = WRITER.get() {
+        let mut w = w.lock();
+        let color = w.tty.set_fg_colour(get_color_for_level(level));
+        w.write_fmt(format_args!("{: <5} ", level)).unwrap();
+        w.tty.set_fg_colour(0xFFFFFF);
+        w.write_fmt(format_args!("{} > {}\n", target, args))
+            .unwrap();
+        w.tty.set_fg_colour(color);
+    }
 }
 
 pub fn get_color_for_level(level: Level) -> u32 {

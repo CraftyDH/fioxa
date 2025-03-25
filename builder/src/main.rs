@@ -1,13 +1,13 @@
 use std::{
     env::{self, args},
-    fs::{self, copy, DirBuilder},
+    fs::{self, DirBuilder, copy},
     io::BufReader,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result};
-use cargo_metadata::{camino::Utf8PathBuf, Message};
+use cargo_metadata::{Message, camino::Utf8PathBuf};
 use errors::BuildErrors;
 
 use crate::errors::QEMUErrors;
@@ -56,18 +56,19 @@ fn main() -> Result<()> {
     }
 
     if args().any(|a| a == "qemu") {
-        qemu().context("Failed to launch qemu")?;
+        qemu(true).context("Failed to launch qemu")?;
+    } else if args().any(|a| a == "qemu-nox") {
+        qemu(false).context("Failed to launch qemu")?;
     }
 
     Ok(())
 }
 
 /// **Warning:** Contains intentional memory leaks, because I am lazy
-fn qemu() -> Result<()> {
+fn qemu(with_screen: bool) -> Result<()> {
     let mut qemu_args = vec![
         // GDB server
         "-s".into(),
-        "-S".into(),
         // Args
         "-machine".into(),
         "q35".into(),
@@ -77,8 +78,6 @@ fn qemu() -> Result<()> {
         "cores=4".into(),
         "-m".into(),
         "512M".into(),
-        "-serial".into(),
-        "stdio".into(),
         "-netdev".into(),
         "user,id=mynet0".into(),
         "-device".into(),
@@ -91,6 +90,16 @@ fn qemu() -> Result<()> {
     if has_kvm() {
         qemu_args.push("-enable-kvm".to_string());
     }
+
+    if with_screen {
+        qemu_args.push("-serial".into());
+        qemu_args.push("stdio".into());
+    } else {
+        qemu_args.push("-nographic".into());
+    }
+
+    // add any args to qemu after --
+    qemu_args.extend(args().skip_while(|a| a != "--").skip(1));
 
     let pure_path = Path::new(PURE_EFI_PATH);
     let local_vars = Path::new(LOCAL_EFI_VARS);

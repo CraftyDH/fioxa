@@ -6,10 +6,11 @@ use thiserror::Error;
 use crate::{mutex::Spinlock, paging::page::Page};
 
 use super::{
+    KERNEL_DATA_MAP, KERNEL_HEAP_MAP, MemoryLoc, MemoryMappingFlags, OFFSET_MAP, PER_CPU_MAP,
+    PageAllocator,
     page::{PageSize, Size1GB, Size2MB, Size4KB},
     page_directory::PageDirectoryEntry,
-    virt_addr_offset_mut, MemoryLoc, MemoryMappingFlags, PageAllocator, KERNEL_DATA_MAP,
-    KERNEL_HEAP_MAP, OFFSET_MAP, PER_CPU_MAP,
+    virt_addr_offset_mut,
 };
 
 #[derive(Error, Debug)]

@@ -16,7 +16,8 @@ use bootloader::uefi::table::{set_system_table, system_table_raw};
 use bootloader::{BootInfo, entry_point};
 use kernel::acpi::FioxaAcpiHandler;
 use kernel::boot_aps::boot_aps;
-use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER, TERMINAL_ELF};
+use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER};
+use kernel::console::run_console;
 use kernel::cpu_localstorage::{CPULocalStorageRW, init_bsp_localstorage};
 use kernel::elf::load_elf;
 use kernel::fs::{self, FSDRIVES};
@@ -236,6 +237,8 @@ extern "C" fn init() {
         ProcessReferences::from_refs(&[**r.handle()])
     };
 
+    spawn_process(run_console).references(get_init()).build();
+
     spawn_process(check_interrupts)
         .references(get_init())
         .build();
@@ -262,11 +265,6 @@ extern "C" fn init() {
         .unwrap()
         .references(get_init())
         .privilege(ProcessPrivilege::KERNEL)
-        .build();
-
-    load_elf(TERMINAL_ELF)
-        .unwrap()
-        .references(get_init())
         .build();
 
     init_handle_new_proc(init_handles);

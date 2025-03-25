@@ -12,7 +12,7 @@ use kernel_userspace::{
         StatResponseFolder,
     },
     message::MessageHandle,
-    service::{deserialize, serialize, Service},
+    service::{Service, deserialize, serialize},
 };
 
 use crate::{

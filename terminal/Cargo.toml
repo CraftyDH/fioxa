@@ -7,9 +7,8 @@ edition = "2024"
 
 [dependencies]
 userspace_slaballoc = { path = "../userspace_slaballoc" }
-userspace = { path = "../userspace" }
+userspace = { path = "../userspace", features = ["console"] }
 kernel_userspace = { path = "../kernel_userspace" }
-input = { path = "../input" }
 
 [profile.dev]
 opt-level = 1

@@ -7,14 +7,12 @@ extern crate userspace;
 extern crate userspace_slaballoc;
 
 use alloc::vec::Vec;
-use kernel_sys::{
-    syscall::sys_exit,
-    types::{ObjectSignal, SyscallResult},
-};
+use kernel_sys::types::{ObjectSignal, SyscallResult};
 use kernel_userspace::{
-    backoff_sleep, channel::Channel, interrupt::Interrupt, port::Port, process::get_handle, INT_KB,
-    INT_MOUSE,
+    INT_KB, INT_MOUSE, backoff_sleep, channel::Channel, interrupt::Interrupt, port::Port,
+    process::get_handle,
 };
+use userspace::log::info;
 use x86_64::instructions::port::{PortReadOnly, PortWriteOnly};
 
 use self::{keyboard::Keyboard, mouse::Mouse};
@@ -24,9 +22,10 @@ pub mod mouse;
 pub mod scancode;
 pub mod translate;
 
-#[unsafe(export_name = "_start")]
-pub extern "C" fn main() {
-    println!("Initalizing PS2 devices...");
+init_userspace!(main);
+
+pub fn main() {
+    info!("Initalizing PS2 devices...");
     let mut ps2_controller = PS2Controller::new();
 
     if let Err(e) = ps2_controller.initialize() {
@@ -59,7 +58,7 @@ pub extern "C" fn main() {
 
     ps2_controller.flush();
 
-    println!("PS2 Ready");
+    info!("PS2 Ready");
 
     kb_service
         .handle()
@@ -194,7 +193,7 @@ impl PS2Controller {
         // Set controller bytes
         self.command.write_command(0x20)?;
         let mut configuration = self.command.read()?;
-        println!("PS2 controller config, {:b}", configuration);
+        info!("PS2 controller config, {:b}", configuration);
         // Clear bits 0, 1, 6
         configuration &= !(1 | 0b10 | 1 << 6);
 
@@ -236,22 +235,16 @@ impl PS2Controller {
 
         // If keyboard failed to initalize print the error reason
         if let Err(e) = keyboard {
-            println!("Keyboard failed to init because: {}", e)
+            info!("Keyboard failed to init because: {}", e)
         }
 
         // If mouse failed to initalize print the error reason
         if let Err(e) = mouse {
-            println!("Mouse failed to init becuase: {}", e)
+            info!("Mouse failed to init becuase: {}", e)
         };
 
         // Even if there was an error with the keyboard or mouse we can still continue
         // And use the working one
         Ok(())
     }
-}
-
-#[panic_handler]
-fn panic(i: &core::panic::PanicInfo) -> ! {
-    println!("{}", i);
-    sys_exit()
 }

@@ -5,7 +5,7 @@ use kernel_userspace::{
     channel::Channel,
     process::get_handle,
     sys::{
-        syscall::{sys_exit, sys_read_args_string},
+        syscall::sys_read_args_string,
         types::{ObjectSignal, SyscallResult},
     },
 };
@@ -15,16 +15,16 @@ extern crate alloc;
 extern crate userspace;
 extern crate userspace_slaballoc;
 
-#[unsafe(export_name = "_start")]
-pub extern "C" fn main() {
-    print!("Hi");
+init_userspace!(main);
 
+pub fn main() {
     let args = sys_read_args_string();
     let count: usize = if args.is_empty() {
         usize::MAX
     } else {
         args.parse().unwrap()
     };
+    println!("Test elf, cnt = {count}");
 
     let accepter = Channel::from_handle(get_handle("ACCEPTER").unwrap());
 
@@ -55,12 +55,4 @@ pub extern "C" fn main() {
             _ => todo!(),
         }
     }
-
-    sys_exit();
-}
-
-#[panic_handler]
-fn panic(i: &core::panic::PanicInfo) -> ! {
-    println!("{}", i);
-    sys_exit()
 }

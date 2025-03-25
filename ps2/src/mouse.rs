@@ -1,5 +1,6 @@
 use input::mouse::MousePacket;
 use kernel_userspace::input::InputServiceMessage;
+use userspace::log::info;
 
 use super::PS2Command;
 
@@ -53,7 +54,7 @@ impl Mouse {
             else if response == 0xFA {
                 return Ok(());
             }
-            println!("Res: {}", response);
+            info!("Res: {}", response);
             return Err("Mouse didn't acknolodge command");
         }
         Err("Mouse required too many command resends")
@@ -90,7 +91,7 @@ impl Mouse {
         self.send_command(0xF2)?;
 
         let mut mode = self.command.read()?;
-        println!("Mode: {}", mode);
+        info!("Mode: {}", mode);
 
         if mode == 0 {
             // Try and upgrade
@@ -105,7 +106,7 @@ impl Mouse {
 
             self.send_command(0xF2)?;
             mode = self.command.read()?;
-            println!("Mode: {}", mode);
+            info!("Mode: {}", mode);
         }
         if mode == 3 {
             // Try and upgrade again
@@ -120,7 +121,7 @@ impl Mouse {
 
             self.send_command(0xF2)?;
             let mode = self.command.read()?;
-            println!("Mode: {}", mode);
+            info!("Mode: {}", mode);
         }
 
         // Save mouse type

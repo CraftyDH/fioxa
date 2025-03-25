@@ -1,4 +1,5 @@
 use input::keyboard::KeyboardEvent;
+use userspace::log::warn;
 
 use super::Scancode;
 
@@ -174,7 +175,7 @@ impl ScancodeSet2 {
             0xE1 => Control::PauseBreak.into(),
 
             _ => {
-                println!("Unknown keycode Entered '{:#X}'", code);
+                warn!("Unknown keycode Entered '{:#X}'", code);
                 return None;
             }
         })
@@ -208,7 +209,7 @@ impl ScancodeSet2 {
             0x7D => Control::PageUp.into(),
 
             _ => {
-                println!("Unknown ext keycode entered: {:#X}", code);
+                warn!("Unknown ext keycode entered: {:#X}", code);
                 return None;
             }
         })

@@ -156,6 +156,5 @@ pub fn gop_entry() {
     });
 
     sys_process_spawn_thread(monitor_cursor_task);
-    sys_process_spawn_thread(redraw_screen_task);
-    monitor_stdout_task();
+    redraw_screen_task();
 }

@@ -272,25 +272,27 @@ fn pci_dev_handler(
 ) -> Channel {
     let mut device = pci_bus.get_device_raw(segment, bus, device, function);
     let (left, right) = Channel::new();
-    sys_process_spawn_thread(move || loop {
-        let Ok((msg, _)) = left.read_val::<0, _>(true) else {
-            return;
-        };
-
-        match msg {
-            kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
-                let resp = device.read_u32(offset);
-                left.write_val(&resp, &[]).assert_ok();
-            },
-            kernel_userspace::pci::PCIDevCmd::Write(offset, data) if offset <= 256 => unsafe {
-                device.write_u32(offset, data);
-                left.write_val(&(), &[]).assert_ok();
-            },
-            _ => {
-                error!("Bad args to pci");
+    sys_process_spawn_thread(move || {
+        loop {
+            let Ok((msg, _)) = left.read_val::<0, _>(true) else {
                 return;
-            }
-        };
+            };
+
+            match msg {
+                kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
+                    let resp = device.read_u32(offset);
+                    left.write_val(&resp, &[]).assert_ok();
+                },
+                kernel_userspace::pci::PCIDevCmd::Write(offset, data) if offset <= 256 => unsafe {
+                    device.write_u32(offset, data);
+                    left.write_val(&(), &[]).assert_ok();
+                },
+                _ => {
+                    error!("Bad args to pci");
+                    return;
+                }
+            };
+        }
     });
 
     right

@@ -18,22 +18,22 @@ use core::{
 
 use alloc::{sync::Arc, vec::Vec};
 use kernel_sys::{
-    syscall::{sys_exit, sys_map, sys_process_spawn_thread, sys_yield},
+    syscall::{sys_map, sys_process_spawn_thread, sys_yield},
     types::{Hid, KernelObjectType, MapMemoryFlags, SyscallResult},
 };
 use spin::Mutex;
+use userspace::log::info;
 use x86_64::instructions::port::Port;
 
 use kernel_userspace::{
-    backoff_sleep,
+    INT_PCI, backoff_sleep,
     channel::Channel,
     handle::Handle,
     interrupt::Interrupt,
     net::PhysicalNet,
     pci::PCIDevice,
     process::get_handle,
-    service::{deserialize, serialize, Service},
-    INT_PCI,
+    service::{Service, deserialize, serialize},
 };
 
 use self::bitfields::InitBlock;
@@ -60,8 +60,9 @@ struct BufferDescriptor {
     avail: u32,
 }
 
-#[unsafe(export_name = "_start")]
-pub extern "C" fn main() {
+init_userspace!(main);
+
+pub fn main() {
     let pci_ref = unsafe { Handle::from_id(Hid::from_usize(2).unwrap()) };
     assert_eq!(
         kernel_sys::syscall::sys_object_type(*pci_ref).unwrap(),
@@ -99,7 +100,7 @@ pub extern "C" fn main() {
             let mut handles = match handle.read::<1>(&mut buffer, true, false) {
                 Ok(h) => h,
                 e => {
-                    println!("Error: {e:?}");
+                    info!("Error: {e:?}");
                     return ControlFlow::Break(());
                 }
             };
@@ -107,7 +108,7 @@ pub extern "C" fn main() {
             match deserialize(&buffer).unwrap() {
                 PhysicalNet::MacAddrGet => {
                     if !handles.is_empty() {
-                        println!("Bad amount of handles");
+                        info!("Bad amount of handles");
                         return ControlFlow::Break(());
                     }
                     let resp = pcnet.lock().read_mac_addr();
@@ -116,7 +117,7 @@ pub extern "C" fn main() {
                 }
                 PhysicalNet::SendPacket(packet) => {
                     if !handles.is_empty() {
-                        println!("Bad amount of handles");
+                        info!("Bad amount of handles");
                         return ControlFlow::Break(());
                     }
                     // Keep trying to send
@@ -127,7 +128,7 @@ pub extern "C" fn main() {
                 }
                 PhysicalNet::ListenToPackets => {
                     if handles.len() != 1 {
-                        println!("Bad amount of handles");
+                        info!("Bad amount of handles");
                         return ControlFlow::Break(());
                     }
                     pcnet
@@ -340,7 +341,7 @@ impl PCNET<'_> {
         // Set init
         this.io.write_csr_32(0, 1);
         while this.io.read_csr_32(0) & (1 << 7) == 0 {
-            println!("... {}", this.io.read_csr_32(0));
+            info!("... {}", this.io.read_csr_32(0));
             sys_yield();
         }
         assert!(this.io.read_csr_32(0) == 0b110000001); // IDON + INTR + INIT
@@ -351,7 +352,7 @@ impl PCNET<'_> {
 
         // Clear any interrupts the card send (INIT)
         this.interrupt_handler();
-        println!("PCNET inited");
+        info!("PCNET inited");
         Some(this)
     }
 
@@ -360,31 +361,31 @@ impl PCNET<'_> {
         let tmp = self.io.read_csr_32(0);
         self.io.write_csr_32(0, tmp & !0x40);
         if tmp & 0x8000 > 0 {
-            println!("AMD am79c973 ERROR")
+            info!("AMD am79c973 ERROR")
         }
         if tmp & 0x2000 > 0 {
-            println!("AMD am79c973 COLLISION ERROR")
+            info!("AMD am79c973 COLLISION ERROR")
         }
         if tmp & 0x1000 > 0 {
-            println!("AMD am79c973 MISSED FRAME")
+            info!("AMD am79c973 MISSED FRAME")
         }
         if tmp & 0x800 > 0 {
-            println!("AMD am79c973 MEMORY ERROR")
+            info!("AMD am79c973 MEMORY ERROR")
         }
         if tmp & 0x400 > 0 {
-            println!("AMD am79c973 DATA RECEIVED");
+            info!("AMD am79c973 DATA RECEIVED");
             self.receive();
         } else {
             // TODO: QEMU For some reason doesn't assert the bitflags in csr 0 to saw what caused the interrupts
             // At least it sends a PCI interrupt so just check the buffers whenever there is an interrupt.
-            println!("AMD am79c973 Checking receive buffers.");
+            info!("AMD am79c973 Checking receive buffers.");
             self.receive();
         }
         if tmp & 0x200 > 0 {
-            println!("AMD am79c973 DATA SENT")
+            info!("AMD am79c973 DATA SENT")
         }
         if tmp & 0x100 > 0 {
-            println!("AMD am79c973 INIT DONE")
+            info!("AMD am79c973 INIT DONE")
         }
         // Start interrupts again
         self.io.write_csr_32(0, 0x40);
@@ -448,10 +449,4 @@ impl PCNET<'_> {
             }
         }
     }
-}
-
-#[panic_handler]
-fn panic(i: &core::panic::PanicInfo) -> ! {
-    println!("{}", i);
-    sys_exit()
 }

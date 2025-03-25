@@ -76,6 +76,19 @@ pub fn sys_pid() -> Pid {
     unsafe { Pid::from_raw(raw_sys_pid()).unwrap() }
 }
 
+#[inline]
+pub fn sys_log(level: u32, target: &str, message: &str) {
+    unsafe {
+        raw_sys_log(
+            level,
+            target.as_ptr(),
+            target.len(),
+            message.as_ptr(),
+            message.len(),
+        );
+    }
+}
+
 // handle
 
 #[inline]

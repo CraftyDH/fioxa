@@ -13,7 +13,7 @@ use alloc::{
 };
 use kernel_userspace::fs::FSServiceError;
 
-use super::{next_partition_id, FSPartitionDisk, FileSystemDev, PartitionId, PARTITION};
+use super::{FSPartitionDisk, FileSystemDev, PARTITION, PartitionId, next_partition_id};
 
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
@@ -431,7 +431,7 @@ impl FileSystemDev for FAT {
                 return Ok(super::VFile {
                     location: (self.partition_id, file_id),
                     specialized: super::VFileSpecialized::File(*f as usize),
-                })
+                });
             }
         }
         if update {

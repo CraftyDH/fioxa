@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 use kernel_sys::{syscall::sys_process_spawn_thread, types::SyscallResult};
 use kernel_userspace::{
     channel::Channel,
-    elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
+    elf::{Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD, validate_elf_header},
     handle::Handle,
     message::MessageHandle,
     service::serialize,
@@ -11,7 +11,7 @@ use x86_64::{align_down, align_up};
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
-    paging::{page_mapper::PageMapping, MemoryMappingFlags},
+    paging::{MemoryMappingFlags, page_mapper::PageMapping},
     scheduling::{
         process::{ProcessBuilder, ProcessMemory, ProcessReferences},
         with_held_interrupts,
@@ -78,7 +78,11 @@ pub fn load_elf<'a>(data: &'a [u8]) -> Result<ProcessBuilder, LoadElfError<'a>> 
                         .insert_mapping(mem, MemoryMappingFlags::all())
                 });
 
-                assert_eq!(CPULocalStorageRW::hold_interrupts_depth(), 0, "We will be causing page faults on the copy so ensure we aren't holding interrupts");
+                assert_eq!(
+                    CPULocalStorageRW::hold_interrupts_depth(),
+                    0,
+                    "We will be causing page faults on the copy so ensure we aren't holding interrupts"
+                );
 
                 // Copy the contents
                 core::ptr::copy_nonoverlapping::<u8>(
@@ -114,7 +118,7 @@ pub fn elf_new_process_loader() {
         sys_process_spawn_thread({
             move || {
                 let mut data = Vec::with_capacity(100);
-                let handles = match handle.read::<2>(&mut data, false, true) {
+                let mut handles = match handle.read::<32>(&mut data, false, true) {
                     Ok(h) => h,
                     Err(SyscallResult::ChannelClosed) => return,
                     Err(e) => {
@@ -123,12 +127,12 @@ pub fn elf_new_process_loader() {
                     }
                 };
 
-                let Ok([elf, arg]) = handles.into_array::<2>() else {
+                if handles.is_empty() {
                     warn!("wrong args");
                     return;
-                };
+                }
 
-                let elf = MessageHandle::from_handle(elf).read_vec();
+                let elf = MessageHandle::from_handle(handles.remove(0)).read_vec();
 
                 let process = match load_elf(&elf) {
                     Ok(p) => p,
@@ -139,8 +143,13 @@ pub fn elf_new_process_loader() {
                     }
                 };
 
+                let hids = handles
+                    .iter()
+                    .map(|h| **h)
+                    .collect::<heapless::Vec<_, 31>>();
+
                 let process = process
-                    .references(ProcessReferences::from_refs(&[*arg]))
+                    .references(ProcessReferences::from_refs(&hids))
                     .args(data)
                     .build();
 

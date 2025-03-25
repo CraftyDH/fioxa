@@ -1,4 +1,4 @@
-use crate::cpu_localstorage::{is_ls_enabled, CPULocalStorageRW};
+use crate::cpu_localstorage::{CPULocalStorageRW, is_ls_enabled};
 
 pub mod process;
 pub mod taskmanager;

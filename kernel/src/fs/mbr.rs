@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use crate::{
     driver::disk::DiskDevice,
-    fs::{fat::read_bios_block, FSPartitionDisk},
+    fs::{FSPartitionDisk, fat::read_bios_block},
     mutex::Spinlock,
 };
 

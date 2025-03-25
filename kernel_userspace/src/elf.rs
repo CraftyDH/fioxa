@@ -7,7 +7,7 @@ use crate::{
     backoff_sleep,
     channel::Channel,
     message::MessageHandle,
-    process::{get_handle, ProcessHandle},
+    process::{ProcessHandle, get_handle},
     service::deserialize,
 };
 
@@ -95,14 +95,16 @@ pub struct SpawnElfProcess<'a> {
 pub fn spawn_elf_process<'a>(
     elf: MessageHandle,
     args: &[u8],
-    initial_ref: Hid,
+    initial_refs: &[Hid],
     buffer: &'a mut Vec<u8>,
 ) -> Result<ProcessHandle, LoadElfError<'a>> {
     let channel = Channel::from_handle(backoff_sleep(|| get_handle("ELF_LOADER")));
 
-    channel
-        .write(args, &[**elf.handle(), initial_ref])
-        .assert_ok();
+    let mut hids = heapless::Vec::<Hid, 32>::new();
+    hids.push(**elf.handle()).unwrap();
+    hids.extend(initial_refs.iter().copied());
+
+    channel.write(args, &hids).assert_ok();
 
     let mut handles = channel.read::<1>(buffer, true, true).unwrap();
 

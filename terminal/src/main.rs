@@ -4,12 +4,10 @@
 use core::time::Duration;
 
 use kernel_userspace::{
-    backoff_sleep,
-    channel::Channel,
     elf::spawn_elf_process,
     fs::{self, StatResponse, add_path, get_disks, read_file_sector, read_full_file},
     message::MessageHandle,
-    process::{clone_init_service, get_handle},
+    process::clone_init_service,
     sys::syscall::{sys_echo, sys_exit, sys_sleep},
 };
 
@@ -18,91 +16,22 @@ extern crate alloc;
 extern crate userspace;
 extern crate userspace_slaballoc;
 
-#[panic_handler]
-fn panic(i: &core::panic::PanicInfo) -> ! {
-    println!("{}", i);
-    sys_exit()
-}
-
 use alloc::{boxed::Box, collections::VecDeque, string::String, vec::Vec};
-use input::keyboard::{
-    KeyboardEvent,
-    virtual_code::{Modifier, VirtualKeyCode},
-};
-use userspace::print::WRITER;
+use userspace::print::{STDERR_CHANNEL, STDIN_CHANNEL, STDOUT_CHANNEL, WRITER_STDOUT};
 
-pub struct KBInputDecoder {
-    service: Channel,
-    lshift: bool,
-    rshift: bool,
-    caps_lock: bool,
-    num_lock: bool,
-}
+init_userspace!(main);
 
-impl KBInputDecoder {
-    pub fn new(service: Channel) -> Self {
-        Self {
-            service,
-            lshift: false,
-            rshift: false,
-            caps_lock: false,
-            num_lock: false,
-        }
-    }
-}
-
-impl Iterator for KBInputDecoder {
-    type Item = char;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let (ev, _) = self.service.read_val::<0, _>(true).ok()?;
-            match ev {
-                kernel_userspace::input::InputServiceMessage::KeyboardEvent(scan_code) => {
-                    match scan_code {
-                        KeyboardEvent::Up(VirtualKeyCode::Modifier(key)) => match key {
-                            Modifier::LeftShift => self.lshift = false,
-                            Modifier::RightShift => self.rshift = false,
-                            _ => {}
-                        },
-                        KeyboardEvent::Up(_) => {}
-                        KeyboardEvent::Down(VirtualKeyCode::Modifier(key)) => match key {
-                            Modifier::LeftShift => self.lshift = true,
-                            Modifier::RightShift => self.rshift = true,
-                            Modifier::CapsLock => self.caps_lock = !self.caps_lock,
-                            Modifier::NumLock => self.num_lock = !self.num_lock,
-                            _ => {}
-                        },
-                        KeyboardEvent::Down(letter) => {
-                            return Some(input::keyboard::us_keyboard::USKeymap::get_unicode(
-                                letter,
-                                self.lshift,
-                                self.rshift,
-                                self.caps_lock,
-                                self.num_lock,
-                            ));
-                        }
-                    }
-                }
-                _ => todo!(),
-            }
-        }
-    }
-}
-
-#[unsafe(export_name = "_start")]
-pub extern "C" fn main() {
+pub fn main() {
     let mut cwd: String = String::from("/");
     let mut partiton_id = 0u64;
 
     let mut buffer = Vec::new();
     let mut file_buffer = Vec::new();
 
-    let keyboard = Channel::from_handle(backoff_sleep(|| get_handle("INPUT:KB")));
-
-    let mut input: KBInputDecoder = KBInputDecoder::new(keyboard);
-
     let mut input_history: VecDeque<Box<str>> = VecDeque::new();
+
+    let mut input_buf = String::new();
+    let mut input = input_buf.chars();
 
     loop {
         print!("{partiton_id}:{cwd} ");
@@ -111,7 +40,15 @@ pub extern "C" fn main() {
         let mut history_pos: usize = 0;
 
         loop {
-            let c = input.next().unwrap();
+            let Some(c) = input.next() else {
+                unsafe {
+                    STDIN_CHANNEL
+                        .read::<0>(input_buf.as_mut_vec(), true, true)
+                        .unwrap()
+                };
+                input = input_buf.chars();
+                continue;
+            };
             if c == '\n' {
                 if !curr_line.is_empty() {
                     input_history.push_front(curr_line.clone().into());
@@ -227,7 +164,7 @@ pub extern "C" fn main() {
                         };
                         if let Some(data) = sect {
                             data.read_into_vec(&mut file_buffer);
-                            WRITER.lock().write_raw(&file_buffer);
+                            WRITER_STDOUT.lock().write_raw(&file_buffer).unwrap();
                         } else {
                             print!("Error reading");
                             break;
@@ -253,7 +190,7 @@ pub extern "C" fn main() {
                         continue;
                     }
                 };
-                println!("READING...");
+
                 let contents =
                     match read_full_file(partiton_id as usize, file.node_id, &mut file_buffer) {
                         Ok(Some(c)) => c,
@@ -267,12 +204,15 @@ pub extern "C" fn main() {
                         }
                     };
 
-                println!("SPAWNING...");
-
                 let proc = spawn_elf_process(
                     contents,
                     args.as_bytes(),
-                    **clone_init_service().handle(),
+                    &[
+                        **clone_init_service().handle(),
+                        **STDIN_CHANNEL.handle(),
+                        **STDOUT_CHANNEL.handle(),
+                        **STDERR_CHANNEL.handle(),
+                    ],
                     &mut buffer,
                 );
 
@@ -283,7 +223,6 @@ pub extern "C" fn main() {
                         continue;
                     }
                 };
-                println!("proc!");
 
                 proc.blocking_exit_code();
             }
@@ -317,6 +256,9 @@ pub extern "C" fn main() {
                 }
 
                 println!("Passed test");
+            }
+            "exit" => {
+                sys_exit();
             }
             _ => {
                 println!("{command}: command not found")

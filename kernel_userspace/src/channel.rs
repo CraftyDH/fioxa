@@ -7,7 +7,7 @@ use kernel_sys::{
     types::{Hid, SyscallResult},
 };
 
-use crate::handle::{Handle, FIRST_HANDLE};
+use crate::handle::{FIRST_HANDLE, Handle};
 
 pub static FIRST_HANDLE_CHANNEL: Channel = Channel::from_handle(FIRST_HANDLE);
 

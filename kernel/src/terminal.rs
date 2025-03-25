@@ -6,7 +6,7 @@ use alloc::{
 use bootloader::gop::GopInfo;
 
 use crate::screen::{
-    gop::{Pos, Screen, CHAR_HEIGHT, CHAR_WIDTH},
+    gop::{CHAR_HEIGHT, CHAR_WIDTH, Pos, Screen},
     mouse::MOUSE_POINTER,
     psf1::PSF1Font,
 };

@@ -22,7 +22,7 @@
             "name": "Launch",
             "request": "launch",
             "cwd": "${workspaceFolder}/builder",
-            "command": "cargo run qemu"
+            "command": "cargo run qemu -- -S"
         },
     ],
     "compounds": [

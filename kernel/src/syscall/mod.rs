@@ -11,12 +11,14 @@ use kernel_sys::{
         SyscallResult,
     },
 };
+use log::Level;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
     channel::{ChannelMessage, ReadError, channel_create},
     cpu_localstorage::CPULocalStorageRW,
     interrupts::KInterruptHandle,
+    logging::print_log,
     message::KMessage,
     object::{KObject, KObjectSignal, SignalWaiter},
     paging::{
@@ -292,7 +294,7 @@ struct SyscallFn(pub *const ());
 
 unsafe impl Sync for SyscallFn {}
 
-static SYSCALL_FNS: [SyscallFn; 29] = [
+static SYSCALL_FNS: [SyscallFn; 30] = [
     // misc
     SyscallFn(handle_sys_echo as *const ()),
     SyscallFn(handle_sys_yield as *const ()),
@@ -302,6 +304,7 @@ static SYSCALL_FNS: [SyscallFn; 29] = [
     SyscallFn(handle_sys_unmap as *const ()),
     SyscallFn(handle_sys_read_args as *const ()),
     SyscallFn(handle_sys_pid as *const ()),
+    SyscallFn(handle_sys_log as *const ()),
     // handle
     SyscallFn(handle_sys_handle_drop as *const ()),
     SyscallFn(handle_sys_handle_clone as *const ()),
@@ -470,6 +473,38 @@ unsafe extern "C" fn handle_sys_pid() -> pid_t {
             .process()
             .pid
             .into_raw()
+    }
+}
+
+unsafe extern "C" fn handle_sys_log(
+    level: u32,
+    target: *const u8,
+    target_len: usize,
+    message: *const u8,
+    message_len: usize,
+) {
+    unsafe {
+        let target = core::str::from_utf8(core::slice::from_raw_parts(target, target_len));
+        let message = core::str::from_utf8(core::slice::from_raw_parts(message, message_len));
+
+        let (Ok(target), Ok(message)) = (target, message) else {
+            warn!("utf-8 error");
+            kill_bad_task();
+        };
+
+        let level = match level {
+            1 => Level::Error,
+            2 => Level::Warn,
+            3 => Level::Info,
+            4 => Level::Debug,
+            5 => Level::Trace,
+            _ => {
+                warn!("Invalid level {level}");
+                kill_bad_task();
+            }
+        };
+
+        print_log(level, target, &format_args!("{message}"));
     }
 }
 

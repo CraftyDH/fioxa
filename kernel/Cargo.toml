@@ -24,6 +24,9 @@ serde = { version = "1.0.*", default-features = false, features = ["derive"] }
 thiserror = { version = "2.0", default-features = false }
 volatile = "0.3"
 x86_64 = "0.15"
+num-derive = { version = "0.4.2" }
+num-traits = { version = "0.2.19", default-features = false }
+heapless = "0.8.0"
 
 [profile.dev]
 # Increase speed by 1000% since there are lots of hot loops / "zero cost" abstrations that need optimising

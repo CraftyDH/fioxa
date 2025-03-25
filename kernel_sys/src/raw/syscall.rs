@@ -12,6 +12,7 @@ kernel_syscall::define_syscalls! {
     raw_sys_unmap(address: vaddr_t, length: usize) -> result_t,
     raw_sys_read_args(buffer: *mut u8, len: usize) -> usize,
     raw_sys_pid() -> pid_t,
+    raw_sys_log(level: u32, target: *const u8, target_len: usize, message: *const u8, message_len: usize),
 
     // handle
     raw_sys_handle_drop(handle: hid_t) -> result_t,

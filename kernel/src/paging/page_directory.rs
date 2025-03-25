@@ -1,6 +1,6 @@
 use modular_bitfield::{
     bitfield,
-    specifiers::{B12, B3, B40},
+    specifiers::{B3, B12, B40},
 };
 
 #[bitfield(bits = 64)]

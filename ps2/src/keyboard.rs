@@ -2,8 +2,8 @@ use alloc::boxed::Box;
 use input::keyboard::KeyboardEvent;
 
 use super::{
-    scancode::{set2::ScancodeSet2, Scancode},
     PS2Command,
+    scancode::{Scancode, set2::ScancodeSet2},
 };
 
 pub struct Keyboard {

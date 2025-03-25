@@ -11,7 +11,7 @@ use kernel_userspace::{
     channel::Channel,
     net::{ArpResponse, IPAddr, Networking, NotSameSubnetError},
     process::get_handle,
-    service::{deserialize, serialize, Service},
+    service::{Service, deserialize, serialize},
 };
 use modular_bitfield::{bitfield, specifiers::B48};
 

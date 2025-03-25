@@ -7,7 +7,7 @@ use kernel_userspace::{
     net::{ArpResponse, IPAddr, NotSameSubnetError},
     process::get_handle,
     service::{deserialize, serialize},
-    sys::syscall::{sys_exit, sys_read_args_string},
+    sys::syscall::sys_read_args_string,
 };
 
 extern crate alloc;
@@ -15,8 +15,9 @@ extern crate alloc;
 extern crate userspace;
 extern crate userspace_slaballoc;
 
-#[unsafe(export_name = "_start")]
-pub extern "C" fn main() {
+init_userspace!(main);
+
+pub fn main() {
     let args = sys_read_args_string();
 
     let mut args = args.split_whitespace();
@@ -43,7 +44,6 @@ pub extern "C" fn main() {
         }
         _ => println!("Unknown cmd"),
     }
-    sys_exit()
 }
 
 pub fn lookup_ip(ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
@@ -57,10 +57,4 @@ pub fn lookup_ip(ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
         ArpResponse::Pending(pend) => pend?,
     }
     Ok(None)
-}
-
-#[panic_handler]
-fn panic(i: &core::panic::PanicInfo) -> ! {
-    println!("{}", i);
-    sys_exit()
 }

@@ -1,43 +1,66 @@
-use core::fmt::{Arguments, Write};
+use core::{
+    fmt::{Arguments, Write},
+    time::Duration,
+};
 
-use alloc::vec::Vec;
-use kernel_userspace::{channel::Channel, process::get_handle};
+use kernel_userspace::{
+    channel::Channel,
+    handle::Handle,
+    sys::{syscall::sys_sleep, types::Hid},
+};
 
+use log::warn;
 use spin::{Lazy, Mutex};
 
-pub struct Writer {
-    stdout_socket: Channel,
-    in_flight: usize,
+pub struct Writer<'a> {
+    channel: &'a Channel,
 }
 
-pub static WRITER: Lazy<Mutex<Writer>> = Lazy::new(|| {
-    let handle = get_handle("STDOUT").unwrap();
+pub static STDIN_CHANNEL: Channel =
+    Channel::from_handle(unsafe { Handle::from_id(Hid::from_usize(2).unwrap()) });
+pub static STDOUT_CHANNEL: Channel =
+    Channel::from_handle(unsafe { Handle::from_id(Hid::from_usize(3).unwrap()) });
+pub static STDERR_CHANNEL: Channel =
+    Channel::from_handle(unsafe { Handle::from_id(Hid::from_usize(4).unwrap()) });
 
+pub static WRITER_STDOUT: Lazy<Mutex<Writer<'static>>> = Lazy::new(|| {
     Mutex::new(Writer {
-        stdout_socket: Channel::from_handle(handle),
-        in_flight: 0,
+        channel: &STDOUT_CHANNEL,
     })
 });
 
-impl Writer {
-    pub fn write_raw(&mut self, bytes: &[u8]) {
-        for chunk in bytes.chunks(0x1000) {
-            if self.in_flight > 100 {
-                let mut data = Vec::new();
+pub static WRITER_STDERR: Lazy<Mutex<Writer<'static>>> = Lazy::new(|| {
+    Mutex::new(Writer {
+        channel: &STDERR_CHANNEL,
+    })
+});
 
-                self.stdout_socket
-                    .read::<0>(&mut data, false, true)
-                    .unwrap();
+impl Writer<'_> {
+    pub fn write_raw(&mut self, bytes: &[u8]) -> core::fmt::Result {
+        for chunk in bytes.chunks(0x1000) {
+            let mut sleep = 1;
+            loop {
+                match self.channel.write(chunk, &[]) {
+                    kernel_userspace::sys::types::SyscallResult::Ok => break,
+                    kernel_userspace::sys::types::SyscallResult::ChannelClosed => return Ok(()),
+                    kernel_userspace::sys::types::SyscallResult::ChannelFull => {
+                        sys_sleep(Duration::from_millis(sleep));
+                        sleep = 1000.max(sleep * 2);
+                    }
+                    _ => {
+                        warn!("Failed to write to stdout/stderr");
+                        return Err(core::fmt::Error);
+                    }
+                }
             }
-            self.stdout_socket.write(chunk, &[]).assert_ok();
         }
+        return Ok(());
     }
 }
 
-impl core::fmt::Write for Writer {
+impl core::fmt::Write for Writer<'_> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.write_raw(s.as_bytes());
-        Ok(())
+        self.write_raw(s.as_bytes())
     }
 }
 
@@ -53,5 +76,20 @@ macro_rules! print {
 }
 
 pub fn _print(args: Arguments) {
-    WRITER.lock().write_fmt(args).unwrap();
+    WRITER_STDOUT.lock().write_fmt(args).unwrap();
+}
+
+#[macro_export]
+macro_rules! eprintln {
+    () => (eprint!("\n"));
+    ($($arg:tt)*) => (eprint!("{}\n", format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! eprint {
+    ($($arg:tt)*) => ($crate::print::_eprint(format_args!($($arg)*)));
+}
+
+pub fn _eprint(args: Arguments) {
+    WRITER_STDERR.lock().write_fmt(args).unwrap();
 }
