@@ -1,5 +1,4 @@
 #![no_std]
-#![feature(naked_functions)]
 #![feature(box_into_inner)]
 #![feature(fn_traits)]
 

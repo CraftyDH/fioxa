@@ -46,9 +46,9 @@ fn solve(line: &str) -> Result<isize, String> {
 
     match op {
         Operators::Emit => res = curr_val,
-        Operators::Add => res += curr_val,
-        Operators::Sub => res -= curr_val,
-        Operators::Mul => res *= curr_val,
+        Operators::Add => res = res.checked_add(curr_val).ok_or("overflow")?,
+        Operators::Sub => res = res.checked_sub(curr_val).ok_or("overflow")?,
+        Operators::Mul => res = res.checked_mul(curr_val).ok_or("overflow")?,
         Operators::Div => res = res.checked_div(curr_val).ok_or("div by zero")?,
     }
 

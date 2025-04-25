@@ -137,155 +137,149 @@ extern "C" fn bad_interrupts_held() {
 }
 
 /// Handler for internal syscalls called by the kernel (Note: not nested).
-#[naked]
+#[unsafe(naked)]
 pub unsafe extern "C" fn syscall_kernel_handler() {
-    unsafe {
-        core::arch::naked_asm!(
-            // check interrupts
-            "cmp qword ptr gs:0x32, 0",
-            "jne {bad_interrupts_held}",
+    core::arch::naked_asm!(
+        // check interrupts
+        "cmp qword ptr gs:0x32, 0",
+        "jne {bad_interrupts_held}",
 
-            // save regs
-            "push rbp",
-            "push r15",
-            "pushfq",
-            "cli",
+        // save regs
+        "push rbp",
+        "push r15",
+        "pushfq",
+        "cli",
 
-            // set cpu context
-            "mov r11b, 1",
-            "mov gs:0x9, r11b",
-            "mov r15, rsp",     // save caller rsp
-            "mov rsp, gs:0x1A", // load kstack top
-            "sti",
+        // set cpu context
+        "mov r11b, 1",
+        "mov gs:0x9, r11b",
+        "mov r15, rsp",     // save caller rsp
+        "mov rsp, gs:0x1A", // load kstack top
+        "sti",
 
-            // check bounds of syscall
-            "cmp rax, {syscall_len}",
-            "jb 2f",
-            "mov rdi, rax",
-            "call {out_of_bounds}",
+        // check bounds of syscall
+        "cmp rax, {syscall_len}",
+        "jb 2f",
+        "mov rdi, rax",
+        "call {out_of_bounds}",
 
-            // call the syscall fn
-            "2:",
-            "lea r11, [rip+{syscall_fns}]",
-            "call [r11+rax*8]",
+        // call the syscall fn
+        "2:",
+        "lea r11, [rip+{syscall_fns}]",
+        "call [r11+rax*8]",
 
-            // set cpu context
-            "cli",
-            "mov cl, 2",
-            "mov gs:0x9, cl", // set cpu context
+        // set cpu context
+        "cli",
+        "mov cl, 2",
+        "mov gs:0x9, cl", // set cpu context
 
-            // restore regs
-            "mov rsp, r15",   // restore caller rip
-            "popfq",
-            "pop r15",
-            "pop rbp",
-            "ret",
-            syscall_len = const SYSCALL_FNS.len(),
-            syscall_fns = sym SYSCALL_FNS,
-            out_of_bounds = sym out_of_bounds,
-            bad_interrupts_held = sym bad_interrupts_held,
-        );
-    }
+        // restore regs
+        "mov rsp, r15",   // restore caller rip
+        "popfq",
+        "pop r15",
+        "pop rbp",
+        "ret",
+        syscall_len = const SYSCALL_FNS.len(),
+        syscall_fns = sym SYSCALL_FNS,
+        out_of_bounds = sym out_of_bounds,
+        bad_interrupts_held = sym bad_interrupts_held,
+    );
 }
 
 /// Handler for syscalls via int 0x80
-#[naked]
-pub extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
-    unsafe {
-        core::arch::naked_asm!(
-            // set cpu context
-            "mov r11b, 1",
-            "mov gs:0x9, r11b",
-            "sti",
+#[unsafe(naked)]
+extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
+    core::arch::naked_asm!(
+        // set cpu context
+        "mov r11b, 1",
+        "mov gs:0x9, r11b",
+        "sti",
 
-            // check bounds of syscall
-            "cmp rax, {syscall_len}",
-            "jb 2f",
-            "mov rdi, rax",
-            "call {out_of_bounds}",
+        // check bounds of syscall
+        "cmp rax, {syscall_len}",
+        "jb 2f",
+        "mov rdi, rax",
+        "call {out_of_bounds}",
 
-            // call the syscall fn
-            "2:",
-            "lea r11, [rip+{syscall_fns}]",
-            "call [r11+rax*8]",
+        // call the syscall fn
+        "2:",
+        "lea r11, [rip+{syscall_fns}]",
+        "call [r11+rax*8]",
 
-            // set cpu context
-            "cli",
-            "mov cl, 2",
-            "mov gs:0x9, cl",
+        // set cpu context
+        "cli",
+        "mov cl, 2",
+        "mov gs:0x9, cl",
 
-            // clear scratch registers (we don't want leaks)
-            "xor r11d, r11d",
-            "xor r10d, r10d",
-            "xor r9d,  r9d",
-            "xor r8d,  r8d",
-            "xor edi,  edi",
-            "xor esi,  esi",
-            "xor edx,  edx",
-            "xor ecx,  ecx",
-            "iretq",
-            syscall_len = const SYSCALL_FNS.len(),
-            syscall_fns = sym SYSCALL_FNS,
-            out_of_bounds = sym out_of_bounds,
-        );
-    }
+        // clear scratch registers (we don't want leaks)
+        "xor r11d, r11d",
+        "xor r10d, r10d",
+        "xor r9d,  r9d",
+        "xor r8d,  r8d",
+        "xor edi,  edi",
+        "xor esi,  esi",
+        "xor edx,  edx",
+        "xor ecx,  ecx",
+        "iretq",
+        syscall_len = const SYSCALL_FNS.len(),
+        syscall_fns = sym SYSCALL_FNS,
+        out_of_bounds = sym out_of_bounds,
+    );
 }
 
 /// Handler for syscalls via syscall
-#[naked]
+#[unsafe(naked)]
 pub unsafe extern "C" fn syscall_sysret_handler() {
-    unsafe {
-        core::arch::naked_asm!(
-            // set cpu context
-            "mov r12d, 1",
-            "mov gs:0x9, r12d",
+    core::arch::naked_asm!(
+        // set cpu context
+        "mov r12d, 1",
+        "mov gs:0x9, r12d",
 
-            // swap stack
-            "mov r12, rsp",
-            "mov rsp, gs:0x1A",
-            "sti",
+        // swap stack
+        "mov r12, rsp",
+        "mov rsp, gs:0x1A",
+        "sti",
 
-            // save registers
-            "push r11", // save caller flags
-            "push rcx", // save caller rip
+        // save registers
+        "push r11", // save caller flags
+        "push rcx", // save caller rip
 
-            // move arg3 to match sysv c calling convention
-            "mov rcx, r10",
+        // move arg3 to match sysv c calling convention
+        "mov rcx, r10",
 
-            // check bounds of syscall
-            "cmp rax, {syscall_len}",
-            "jb 2f",
-            "mov rdi, rax",
-            "call {out_of_bounds}",
+        // check bounds of syscall
+        "cmp rax, {syscall_len}",
+        "jb 2f",
+        "mov rdi, rax",
+        "call {out_of_bounds}",
 
-            // call the syscall fn
-            "2:",
-            "lea r11, [rip+{syscall_fns}]",
-            "call [r11+rax*8]",
+        // call the syscall fn
+        "2:",
+        "lea r11, [rip+{syscall_fns}]",
+        "call [r11+rax*8]",
 
-            // clear scratch registers (we don't want leaks)
-            "xor r10d, r10d",
-            "xor r9d,  r9d",
-            "xor r8d,  r8d",
-            "xor edi,  edi",
-            "xor esi,  esi",
-            "xor edx,  edx",
+        // clear scratch registers (we don't want leaks)
+        "xor r10d, r10d",
+        "xor r9d,  r9d",
+        "xor r8d,  r8d",
+        "xor edi,  edi",
+        "xor esi,  esi",
+        "xor edx,  edx",
 
-            // set cpu context
-            "cli",
-            "mov cl, 2",
-            "mov gs:0x9, cl",
+        // set cpu context
+        "cli",
+        "mov cl, 2",
+        "mov gs:0x9, cl",
 
-            // restore registers
-            "pop rcx",
-            "pop r11",
-            "mov rsp, r12",
-            "sysretq",
-            syscall_len = const SYSCALL_FNS.len(),
-            syscall_fns = sym SYSCALL_FNS,
-            out_of_bounds = sym out_of_bounds,
-        );
-    }
+        // restore registers
+        "pop rcx",
+        "pop r11",
+        "mov rsp, r12",
+        "sysretq",
+        syscall_len = const SYSCALL_FNS.len(),
+        syscall_fns = sym SYSCALL_FNS,
+        out_of_bounds = sym out_of_bounds,
+    );
 }
 
 // We read into this from asm

@@ -211,8 +211,8 @@ impl KObject for Process {
     }
 }
 
-#[naked]
-pub extern "C" fn start_new_task(arg: usize) {
+#[unsafe(naked)]
+pub unsafe extern "C" fn start_new_task(arg: usize) {
     unsafe extern "C" fn after_start_cleanup() {
         unsafe {
             let thread = CPULocalStorageRW::get_current_task();
@@ -221,32 +221,30 @@ pub extern "C" fn start_new_task(arg: usize) {
         }
     }
 
-    unsafe {
-        core::arch::naked_asm!(
-            "mov cl, 2",
-            "mov gs:0x9, cl", // set cpu context
-            "call {}",
-            "pop rdi",
-            // Zero registers (except rdi which has arg)
-            "xor r15d, r15d",
-            "xor r14d, r14d",
-            "xor r13d, r13d",
-            "xor r12d, r12d",
-            "xor r11d, r11d",
-            "xor r10d, r10d",
-            "xor r9d,  r9d",
-            "xor r8d,  r8d",
-            "xor esi,  esi",
-            "xor edx,  edx",
-            "xor ecx,  ecx",
-            "xor ebx,  ebx",
-            "xor eax,  eax",
-            "xor ebp,  ebp",
-            // start
-            "iretq",
-            sym after_start_cleanup
-        );
-    }
+    core::arch::naked_asm!(
+        "mov cl, 2",
+        "mov gs:0x9, cl", // set cpu context
+        "call {}",
+        "pop rdi",
+        // Zero registers (except rdi which has arg)
+        "xor r15d, r15d",
+        "xor r14d, r14d",
+        "xor r13d, r13d",
+        "xor r12d, r12d",
+        "xor r11d, r11d",
+        "xor r10d, r10d",
+        "xor r9d,  r9d",
+        "xor r8d,  r8d",
+        "xor esi,  esi",
+        "xor edx,  edx",
+        "xor ecx,  ecx",
+        "xor ebx,  ebx",
+        "xor eax,  eax",
+        "xor ebp,  ebp",
+        // start
+        "iretq",
+        sym after_start_cleanup
+    );
 }
 
 pub struct ProcessBuilder {
