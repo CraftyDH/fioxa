@@ -1,4 +1,4 @@
-use core::num::NonZero;
+use core::{error::Error, fmt::Display, num::NonZero};
 
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
@@ -80,6 +80,14 @@ pub enum SyscallResult {
 
     ProcessStillRunning,
 }
+
+impl Display for SyscallResult {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_fmt(format_args!("{self:?}"))
+    }
+}
+
+impl Error for SyscallResult {}
 
 impl SyscallResult {
     #[inline]
@@ -177,19 +185,21 @@ impl RawValue for SysPortNotification {
     #[inline]
     fn into_raw(&self) -> Self::Raw {
         let (ty, value) = match self.value {
-            SysPortNotificationValue::SignalOne { trigger, signals } => {
-                (0, sys_port_notification_value_t {
+            SysPortNotificationValue::SignalOne { trigger, signals } => (
+                0,
+                sys_port_notification_value_t {
                     one: sys_port_notification_one_t {
                         trigger: trigger.bits(),
                         signals: signals.bits(),
                     },
-                })
-            }
-            SysPortNotificationValue::Interrupt { timestamp } => {
-                (1, sys_port_notification_value_t {
+                },
+            ),
+            SysPortNotificationValue::Interrupt { timestamp } => (
+                1,
+                sys_port_notification_value_t {
                     interrupt: timestamp,
-                })
-            }
+                },
+            ),
             SysPortNotificationValue::User(user) => (2, sys_port_notification_value_t { user }),
         };
 

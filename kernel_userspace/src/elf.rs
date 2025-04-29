@@ -1,14 +1,16 @@
-use alloc::vec::Vec;
-use kernel_sys::types::Hid;
-use serde::{Deserialize, Serialize};
+use kernel_sys::types::SyscallResult;
+use rkyv::{
+    Archive, Deserialize, Serialize,
+    rancor::{Error, Source},
+    with::InlineAsBox,
+};
 use thiserror::Error;
 
 use crate::{
-    backoff_sleep,
-    channel::Channel,
+    handle::Handle,
+    ipc::{CowAsOwned, IPCChannel},
     message::MessageHandle,
-    process::{ProcessHandle, get_handle},
-    service::deserialize,
+    process::ProcessHandle,
 };
 
 #[repr(C, packed)]
@@ -58,7 +60,7 @@ pub const ELF_HEADER_SIG: [u8; 6] = [0x7F, b'E', b'L', b'F', ELFCLASS64, ELFDATA
 pub fn validate_elf_header(elf_header: &Elf64Ehdr) -> Result<(), LoadElfError> {
     // Ensure that all the header flags are suitable
     if elf_header.e_ident[0..6] != ELF_HEADER_SIG {
-        return Err(LoadElfError::ElfHeaderSigInvalid(&elf_header.e_ident[0..6]));
+        return Err(LoadElfError::ElfHeaderSigInvalid);
     }
     if elf_header.e_type != ET_EXEC {
         return Err(LoadElfError::EType(elf_header.e_type));
@@ -72,10 +74,10 @@ pub fn validate_elf_header(elf_header: &Elf64Ehdr) -> Result<(), LoadElfError> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Error, Serialize, Deserialize)]
-pub enum LoadElfError<'a> {
-    #[error("invalid elf header signature (expected {ELF_HEADER_SIG:?}, found {0:?})")]
-    ElfHeaderSigInvalid(&'a [u8]),
+#[derive(Debug, Clone, Error, Archive, Serialize, Deserialize)]
+pub enum LoadElfError {
+    #[error("invalid elf header signature (expected {ELF_HEADER_SIG:?})")]
+    ElfHeaderSigInvalid,
     #[error("expected ET_EXEC ({ET_EXEC}), found: {0}")]
     EType(u16),
     #[error("expected EM_X86_64 ({EM_X86_64}), found: {0}")]
@@ -86,31 +88,81 @@ pub enum LoadElfError<'a> {
     InternalError,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub struct SpawnElfProcess<'a> {
+    pub elf: CowAsOwned<'a, MessageHandle>,
+    #[rkyv(with = InlineAsBox)]
     pub args: &'a [u8],
-    pub init_references_count: usize,
+    #[rkyv(with = InlineAsBox)]
+    pub initial_refs: &'a [CowAsOwned<'a, Handle>],
 }
 
-pub fn spawn_elf_process<'a>(
-    elf: MessageHandle,
-    args: &[u8],
-    initial_refs: &[Hid],
-    buffer: &'a mut Vec<u8>,
-) -> Result<ProcessHandle, LoadElfError<'a>> {
-    let channel = Channel::from_handle(backoff_sleep(|| get_handle("ELF_LOADER")));
+pub struct ElfLoaderService(IPCChannel);
 
-    let mut hids = heapless::Vec::<Hid, 32>::new();
-    hids.push(**elf.handle()).unwrap();
-    hids.extend(initial_refs.iter().copied());
-
-    channel.write(args, &hids).assert_ok();
-
-    let mut handles = channel.read::<1>(buffer, true, true).unwrap();
-
-    if handles.is_empty() {
-        Err(deserialize(buffer).unwrap())
-    } else {
-        Ok(ProcessHandle::from_handle(handles.pop().unwrap()))
+impl ElfLoaderService {
+    pub fn from_channel(chan: IPCChannel) -> Self {
+        Self(chan)
     }
+
+    pub fn spawn(
+        &mut self,
+        elf: &MessageHandle,
+        args: &[u8],
+        initial_refs: &[&Handle],
+    ) -> Result<ProcessHandle, LoadElfError> {
+        let initial_refs: heapless::Vec<_, 31> = initial_refs.iter().map(|e| (*e).into()).collect();
+
+        let spawn = SpawnElfProcess {
+            elf: elf.into(),
+            args,
+            initial_refs: &initial_refs,
+        };
+
+        self.0.send(&spawn).assert_ok();
+        let mut res = self.0.recv().unwrap();
+
+        res.deserialize().unwrap()
+    }
+}
+
+pub struct ElfLoaderServiceExecutor<I: ElfLoaderServiceImpl> {
+    channel: IPCChannel,
+    service: I,
+}
+
+impl<I: ElfLoaderServiceImpl> ElfLoaderServiceExecutor<I> {
+    pub fn new(channel: IPCChannel, service: I) -> Self {
+        Self { channel, service }
+    }
+
+    pub fn run(&mut self) -> Result<(), Error> {
+        loop {
+            let mut msg = match self.channel.recv() {
+                Ok(m) => m,
+                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(e) => return Err(Error::new(e)),
+            };
+            let (spawn, des) = msg.access::<ArchivedSpawnElfProcess>()?;
+            let elf = spawn.elf.0.deserialize(des)?;
+
+            let hids: heapless::Vec<Handle, 31> = spawn
+                .initial_refs
+                .iter()
+                .map(|h| h.0.deserialize(des))
+                .flatten()
+                .collect();
+
+            let res = self.service.spawn(elf, &spawn.args, &hids);
+            self.channel.send(&res).into_err().map_err(Error::new)?;
+        }
+    }
+}
+
+pub trait ElfLoaderServiceImpl {
+    fn spawn(
+        &mut self,
+        elf: MessageHandle,
+        args: &[u8],
+        initial_refs: &[Handle],
+    ) -> Result<ProcessHandle, LoadElfError>;
 }

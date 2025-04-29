@@ -1,18 +1,20 @@
 use alloc::sync::Arc;
-use serde::{Deserialize, Serialize};
+use kernel_sys::types::SyscallResult;
+use rkyv::{
+    Archive, Deserialize, Serialize,
+    rancor::{Error, Source},
+};
 use spin::Mutex;
 
-use crate::channel::Channel;
+use crate::ipc::IPCChannel;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub enum PCIDevCmd {
     Read(u32),
     Write(u32, u32),
 }
 
-pub struct PCIDevice {
-    pub device_service: Channel,
-}
+pub struct PCIDevice(pub IPCChannel);
 
 #[allow(dead_code)]
 impl PCIDevice {
@@ -31,10 +33,8 @@ impl PCIDevice {
     }
 
     unsafe fn read_u32(&mut self, offset: u32) -> u32 {
-        self.device_service
-            .call_val::<0, _, _>(&PCIDevCmd::Read(offset), &[])
-            .unwrap()
-            .0
+        self.0.send(&PCIDevCmd::Read(offset)).assert_ok();
+        self.0.recv().unwrap().deserialize().unwrap()
     }
 
     unsafe fn write_u8(&mut self, offset: u32, data: u8) {
@@ -56,10 +56,49 @@ impl PCIDevice {
     }
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {
-        self.device_service
-            .call_val::<0, _, _>(&PCIDevCmd::Write(offset, data), &[])
-            .unwrap()
-            .0
+        self.0.send(&PCIDevCmd::Write(offset, data)).assert_ok();
+        self.0.recv().unwrap().deserialize().unwrap()
+    }
+}
+
+pub trait PCIDeviceImpl {
+    fn read(&mut self, offset: u32) -> u32;
+
+    fn write(&mut self, offset: u32, data: u32);
+}
+
+pub struct PCIDeviceExecutor<I: PCIDeviceImpl> {
+    channel: IPCChannel,
+    service: I,
+}
+
+impl<I: PCIDeviceImpl> PCIDeviceExecutor<I> {
+    pub fn new(channel: IPCChannel, service: I) -> Self {
+        Self { channel, service }
+    }
+
+    pub fn run(&mut self) -> Result<(), Error> {
+        loop {
+            let mut msg = match self.channel.recv() {
+                Ok(m) => m,
+                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(e) => return Err(Error::new(e)),
+            };
+            let (msg, _) = msg.access::<ArchivedPCIDevCmd>()?;
+
+            match msg {
+                ArchivedPCIDevCmd::Read(offset) => {
+                    let res = self.service.read(offset.to_native());
+                    self.channel.send(&res)
+                }
+                ArchivedPCIDevCmd::Write(offset, data) => {
+                    self.service.write(offset.to_native(), data.to_native());
+                    self.channel.send(&())
+                }
+            }
+            .into_err()
+            .map_err(Error::new)?;
+        }
     }
 }
 

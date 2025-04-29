@@ -221,7 +221,11 @@ pub fn sys_channel_read_val<V: Sized, const N: usize>(
             .unwrap();
 
             if blocking && res == SyscallResult::ChannelEmpty {
-                sys_object_wait(handle, ObjectSignal::READABLE).unwrap();
+                sys_object_wait(
+                    handle,
+                    ObjectSignal::READABLE | ObjectSignal::CHANNEL_CLOSED,
+                )
+                .unwrap();
                 continue;
             }
 

@@ -4,11 +4,11 @@ use alloc::{string::String, vec::Vec};
 use conquer_once::spin::OnceCell;
 use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
 use kernel_userspace::{
-    INT_COM1, backoff_sleep,
     channel::Channel,
     handle::Handle,
-    interrupt::Interrupt,
-    process::{ProcessHandle, clone_init_service, get_handle},
+    interrupt::InterruptsService,
+    ipc::IPCChannel,
+    process::{INIT_HANDLE_SERVICE, ProcessHandle},
 };
 use x86_64::instructions::{interrupts::without_interrupts, port::Port};
 
@@ -129,13 +129,9 @@ pub fn serial_monitor_stdin() {
         warn!("Serial device not found");
         sys_exit();
     };
-    let ints = Channel::from_handle(backoff_sleep(|| get_handle("INTERRUPTS")));
-    let mut handles_buf = Vec::with_capacity(1);
-    let (_, mut handles) = ints
-        .call_val::<1, _, ()>(&INT_COM1, &mut handles_buf)
+    let comm1 = InterruptsService::from_channel(IPCChannel::connect("INTERRUPTS"))
+        .get_interrupt(kernel_userspace::interrupt::InterruptVector::COM1)
         .unwrap();
-
-    let ints = Interrupt::from_handle(handles.pop().unwrap());
 
     let (stdin, cin) = Channel::new();
     let (stdout, cout) = Channel::new();
@@ -146,7 +142,7 @@ pub fn serial_monitor_stdin() {
             let proc = load_elf(TERMINAL_ELF)
                 .unwrap()
                 .references(ProcessReferences::from_refs(&[
-                    **clone_init_service().handle(),
+                    **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
                     **cin.handle(),
                     **cout.handle(),
                     **cerr.handle(),
@@ -199,6 +195,6 @@ pub fn serial_monitor_stdin() {
                 stdin.write(&[b], &[]).assert_ok();
             }
         }
-        ints.wait().assert_ok();
+        comm1.wait().assert_ok();
     }
 }

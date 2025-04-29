@@ -8,8 +8,6 @@ extern crate alloc;
 #[macro_use]
 extern crate log;
 
-use core::ops::ControlFlow;
-
 use ::acpi::AcpiError;
 use alloc::vec::Vec;
 use bootloader::uefi::table::{set_system_table, system_table_raw};
@@ -54,9 +52,8 @@ use kernel::{BOOT_INFO, elf, gdt, paging};
 use bootloader::uefi::table::cfg::{ACPI2_GUID, ConfigTableEntry};
 
 use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
-use kernel_sys::types::{RawValue, SyscallResult};
+use kernel_sys::types::RawValue;
 use kernel_userspace::channel::Channel;
-use kernel_userspace::service::Service;
 
 // #[no_mangle]
 entry_point!(main_stage1);
@@ -253,7 +250,6 @@ extern "C" fn init() {
         .references(get_init())
         .build();
 
-    spawn_process(testing_proc).references(get_init()).build();
     spawn_process(after_boot_pci).references(get_init()).build();
 
     spawn_process(serial_monitor_stdin)
@@ -268,29 +264,7 @@ extern "C" fn init() {
         .build();
 
     init_handle_new_proc(init_handles);
-}
-
-/// For testing, accepts all inputs
-fn testing_proc() {
-    let mut buf = Vec::with_capacity(100);
-    Service::new(
-        "ACCEPTER",
-        || 0usize,
-        |handle, i| loop {
-            match handle.read::<0>(&mut buf, false, true) {
-                Ok(_) => {
-                    *i += 1;
-                    if *i % 10000 == 0 {
-                        info!("ACCEPTER: {i}")
-                    }
-                    handle.write(&buf, &[]).assert_ok();
-                }
-                Err(SyscallResult::ChannelEmpty) => return ControlFlow::Continue(()),
-                _ => return ControlFlow::Break(()),
-            }
-        },
-    )
-    .run();
+    sys_exit();
 }
 
 fn after_boot_pci() {

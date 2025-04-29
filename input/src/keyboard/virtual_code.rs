@@ -1,6 +1,4 @@
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum VirtualKeyCode {
     Modifier(Modifier),
     Control(Control),
@@ -53,7 +51,7 @@ impl From<Function> for VirtualKeyCode {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum Modifier {
     LeftShift,
     RightShift,
@@ -68,7 +66,7 @@ pub enum Modifier {
     NumLock,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum Control {
     Escape,
     Enter,
@@ -89,7 +87,7 @@ pub enum Control {
     PauseBreak,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum Number {
     N0,
     N1,
@@ -103,7 +101,7 @@ pub enum Number {
     N9,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum Numpad {
     N0,
     N1,
@@ -123,7 +121,7 @@ pub enum Numpad {
     Period,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum Letter {
     A,
     B,
@@ -153,7 +151,7 @@ pub enum Letter {
     Z,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum Misc {
     Hyphen,
     Equals,
@@ -169,7 +167,7 @@ pub enum Misc {
     MenuKey,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy)]
 pub enum Function {
     F0,
     F1,

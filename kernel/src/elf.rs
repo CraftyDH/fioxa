@@ -1,17 +1,18 @@
-use alloc::vec::Vec;
-use kernel_sys::{syscall::sys_process_spawn_thread, types::SyscallResult};
+use kernel_sys::syscall::sys_process_spawn_thread;
+use kernel_userspace::elf::{ElfLoaderServiceExecutor, ElfLoaderServiceImpl};
+use kernel_userspace::service::ServiceExecutor;
 use kernel_userspace::{
-    channel::Channel,
-    elf::{Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD, validate_elf_header},
+    elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
     handle::Handle,
-    message::MessageHandle,
-    service::serialize,
+    ipc::IPCChannel,
+    process::ProcessHandle,
 };
+
 use x86_64::{align_down, align_up};
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
-    paging::{MemoryMappingFlags, page_mapper::PageMapping},
+    paging::{page_mapper::PageMapping, MemoryMappingFlags},
     scheduling::{
         process::{ProcessBuilder, ProcessMemory, ProcessReferences},
         with_held_interrupts,
@@ -36,7 +37,7 @@ impl ElfSegmentFlags {
     }
 }
 
-pub fn load_elf<'a>(data: &'a [u8]) -> Result<ProcessBuilder, LoadElfError<'a>> {
+pub fn load_elf(data: &[u8]) -> Result<ProcessBuilder, LoadElfError> {
     // Transpose the header as an elf header
     let elf_header = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
@@ -106,59 +107,45 @@ pub fn load_elf<'a>(data: &'a [u8]) -> Result<ProcessBuilder, LoadElfError<'a>> 
     ))
 }
 
+pub struct ElfLoader;
+
+impl ElfLoaderServiceImpl for ElfLoader {
+    fn spawn(
+        &mut self,
+        elf: kernel_userspace::message::MessageHandle,
+        args: &[u8],
+        initial_refs: &[Handle],
+    ) -> Result<ProcessHandle, LoadElfError> {
+        let elf = elf.read_vec();
+
+        let process = load_elf(&elf)?;
+
+        let hids: heapless::Vec<_, 31> = initial_refs.iter().map(|h| **h).collect();
+
+        let process = process
+            .references(ProcessReferences::from_refs(&hids))
+            .args(args.to_vec())
+            .build();
+
+        let proc = with_held_interrupts(|| unsafe {
+            let thread = CPULocalStorageRW::get_current_task();
+            ProcessHandle::from_handle(Handle::from_id(thread.process().add_value(process.into())))
+        });
+
+        Ok(proc)
+    }
+}
+
 pub fn elf_new_process_loader() {
-    let (service, sright) = Channel::new();
-    sright.handle().publish("ELF_LOADER");
-
-    let mut data = Vec::with_capacity(100);
-    loop {
-        let mut handles = service.read::<1>(&mut data, false, true).unwrap();
-        let handle = Channel::from_handle(handles.pop().unwrap());
-
+    ServiceExecutor::with_name("ELF_LOADER", |chan| {
         sys_process_spawn_thread({
-            move || {
-                let mut data = Vec::with_capacity(100);
-                let mut handles = match handle.read::<32>(&mut data, false, true) {
-                    Ok(h) => h,
-                    Err(SyscallResult::ChannelClosed) => return,
-                    Err(e) => {
-                        warn!("{e:?}");
-                        return;
-                    }
-                };
-
-                if handles.is_empty() {
-                    warn!("wrong args");
-                    return;
-                }
-
-                let elf = MessageHandle::from_handle(handles.remove(0)).read_vec();
-
-                let process = match load_elf(&elf) {
-                    Ok(p) => p,
-                    Err(err) => {
-                        let msg = serialize(&err, &mut data);
-                        handle.write(msg, &[]).assert_ok();
-                        return;
-                    }
-                };
-
-                let hids = handles
-                    .iter()
-                    .map(|h| **h)
-                    .collect::<heapless::Vec<_, 31>>();
-
-                let process = process
-                    .references(ProcessReferences::from_refs(&hids))
-                    .args(data)
-                    .build();
-
-                let proc = with_held_interrupts(|| unsafe {
-                    let thread = CPULocalStorageRW::get_current_task();
-                    Handle::from_id(thread.process().add_value(process.into()))
-                });
-                handle.write(&[], &[*proc]).assert_ok();
+            || match ElfLoaderServiceExecutor::new(IPCChannel::from_channel(chan), ElfLoader).run()
+            {
+                Ok(()) => (),
+                Err(e) => error!("Error running elf service: {e}"),
             }
         });
-    }
+    })
+    .run()
+    .unwrap();
 }

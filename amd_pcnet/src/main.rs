@@ -8,33 +8,23 @@ extern crate userspace_slaballoc;
 
 pub mod bitfields;
 
-use core::{
-    iter::Cycle,
-    mem::size_of,
-    ops::{ControlFlow, Range},
-    ptr::null_mut,
-    slice,
-};
+use core::{iter::Cycle, mem::size_of, ops::Range, ptr::null_mut, slice};
 
 use alloc::{sync::Arc, vec::Vec};
 use kernel_sys::{
     syscall::{sys_map, sys_process_spawn_thread, sys_yield},
     types::{Hid, KernelObjectType, MapMemoryFlags, SyscallResult},
 };
+use kernel_userspace::{
+    interrupt::InterruptsService,
+    net::{NetworkInterfaceServiceExecutor, NetworkInterfaceServiceImpl},
+    service::ServiceExecutor,
+};
 use spin::Mutex;
-use userspace::log::info;
+use userspace::log::{error, info};
 use x86_64::instructions::port::Port;
 
-use kernel_userspace::{
-    INT_PCI, backoff_sleep,
-    channel::Channel,
-    handle::Handle,
-    interrupt::Interrupt,
-    net::PhysicalNet,
-    pci::PCIDevice,
-    process::get_handle,
-    service::{Service, deserialize, serialize},
-};
+use kernel_userspace::{channel::Channel, handle::Handle, ipc::IPCChannel, pci::PCIDevice};
 
 use self::bitfields::InitBlock;
 
@@ -68,22 +58,16 @@ pub fn main() {
         kernel_sys::syscall::sys_object_type(*pci_ref).unwrap(),
         KernelObjectType::Channel
     );
-    let pci_device = Channel::from_handle(pci_ref);
+    let pci_device = IPCChannel::from_channel(Channel::from_handle(pci_ref));
 
-    let pcnet = Arc::new(Mutex::new(
-        PCNET::new(PCIDevice {
-            device_service: pci_device,
-        })
-        .unwrap(),
-    ));
+    let pcnet = Arc::new(Mutex::new(PCNET::new(PCIDevice(pci_device)).unwrap()));
 
     sys_process_spawn_thread({
         let pcnet = pcnet.clone();
         move || {
-            let interrupts = Channel::from_handle(backoff_sleep(|| get_handle("INTERRUPTS")));
-
-            let (_, mut handles) = interrupts.call_val::<1, _, ()>(&INT_PCI, &[]).unwrap();
-            let pci_ev = Interrupt::from_handle(handles.pop().unwrap());
+            let pci_ev = InterruptsService::from_channel(IPCChannel::connect("INTERRUPTS"))
+                .get_interrupt(kernel_userspace::interrupt::InterruptVector::PCI)
+                .unwrap();
 
             loop {
                 pci_ev.wait().assert_ok();
@@ -92,56 +76,43 @@ pub fn main() {
         }
     });
 
-    let mut buffer = Vec::new();
-    Service::new(
-        "PCNET",
-        || (),
-        |handle, ()| {
-            let mut handles = match handle.read::<1>(&mut buffer, true, false) {
-                Ok(h) => h,
-                e => {
-                    info!("Error: {e:?}");
-                    return ControlFlow::Break(());
-                }
-            };
+    ServiceExecutor::with_name("PCNET", |chan| {
+        let pcnet = pcnet.clone();
 
-            match deserialize(&buffer).unwrap() {
-                PhysicalNet::MacAddrGet => {
-                    if !handles.is_empty() {
-                        info!("Bad amount of handles");
-                        return ControlFlow::Break(());
-                    }
-                    let resp = pcnet.lock().read_mac_addr();
-                    let resp = serialize(&resp, &mut buffer);
-                    handle.write(&resp, &[]).assert_ok();
-                }
-                PhysicalNet::SendPacket(packet) => {
-                    if !handles.is_empty() {
-                        info!("Bad amount of handles");
-                        return ControlFlow::Break(());
-                    }
-                    // Keep trying to send
-                    while pcnet.lock().send_packet(packet).is_err() {
-                        sys_yield()
-                    }
-                    handle.write(&[], &[]).assert_ok();
-                }
-                PhysicalNet::ListenToPackets => {
-                    if handles.len() != 1 {
-                        info!("Bad amount of handles");
-                        return ControlFlow::Break(());
-                    }
-                    pcnet
-                        .lock()
-                        .listeners
-                        .push(Channel::from_handle(handles.pop().unwrap()));
-                    handle.write(&[], &[]).assert_ok();
-                }
-            };
-            ControlFlow::Continue(())
-        },
-    )
-    .run();
+        sys_process_spawn_thread(move || {
+            match NetworkInterfaceServiceExecutor::new(
+                IPCChannel::from_channel(chan),
+                NetworkInterface { pcnet },
+            )
+            .run()
+            {
+                Ok(()) => (),
+                Err(e) => error!("Error running service: {e}"),
+            }
+        });
+    })
+    .run()
+    .unwrap();
+}
+
+struct NetworkInterface<'a> {
+    pcnet: Arc<Mutex<PCNET<'a>>>,
+}
+
+impl NetworkInterfaceServiceImpl for NetworkInterface<'_> {
+    fn mac_address(&mut self) -> u64 {
+        self.pcnet.lock().read_mac_addr()
+    }
+
+    fn send_packet(&mut self, packet: &[u8]) {
+        while self.pcnet.lock().send_packet(packet).is_err() {
+            sys_yield()
+        }
+    }
+
+    fn listen_to_packets(&mut self, channel: Channel) {
+        self.pcnet.lock().listeners.push(channel);
+    }
 }
 
 pub struct PCNETIOPort(u16);

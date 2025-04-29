@@ -4,10 +4,11 @@
 use core::time::Duration;
 
 use kernel_userspace::{
-    elf::spawn_elf_process,
-    fs::{self, StatResponse, add_path, get_disks, read_file_sector, read_full_file},
+    elf::ElfLoaderService,
+    fs::{FSService, StatResponse, add_path},
+    ipc::IPCChannel,
     message::MessageHandle,
-    process::clone_init_service,
+    process::INIT_HANDLE_SERVICE,
     sys::syscall::{sys_echo, sys_exit, sys_sleep},
 };
 
@@ -16,22 +17,24 @@ extern crate alloc;
 extern crate userspace;
 extern crate userspace_slaballoc;
 
-use alloc::{boxed::Box, collections::VecDeque, string::String, vec::Vec};
+use alloc::{borrow::ToOwned, boxed::Box, collections::VecDeque, string::String, vec::Vec};
 use userspace::print::{STDERR_CHANNEL, STDIN_CHANNEL, STDOUT_CHANNEL, WRITER_STDOUT};
 
 init_userspace!(main);
 
 pub fn main() {
-    let mut cwd: String = String::from("/");
+    let mut cwd: String = "/".to_owned();
     let mut partiton_id = 0u64;
 
-    let mut buffer = Vec::new();
     let mut file_buffer = Vec::new();
 
     let mut input_history: VecDeque<Box<str>> = VecDeque::new();
 
     let mut input_buf = String::new();
     let mut input = input_buf.chars();
+
+    let mut elf_loader = ElfLoaderService::from_channel(IPCChannel::connect("ELF_LOADER"));
+    let mut fs_service = FSService::from_channel(IPCChannel::connect("FS"));
 
     loop {
         print!("{partiton_id}:{cwd} ");
@@ -101,7 +104,7 @@ pub fn main() {
                 let c = c.chars().next();
                 if let Some(chr) = c {
                     if let Some(n) = chr.to_digit(10) {
-                        match fs::stat(n as usize, "/", &mut buffer) {
+                        match fs_service.stat(n as u64, "/") {
                             Ok(StatResponse::File(_)) => println!("cd: cannot cd into a file"),
                             Ok(StatResponse::Folder(_)) => {
                                 partiton_id = n.into();
@@ -114,7 +117,7 @@ pub fn main() {
                 }
 
                 println!("Drives:");
-                for part in get_disks(&mut buffer).unwrap().iter() {
+                for part in fs_service.get_disks().unwrap() {
                     println!("{}:", part)
                 }
                 println!("Drives:");
@@ -122,7 +125,7 @@ pub fn main() {
             "ls" => {
                 let path = add_path(&cwd, rest);
 
-                match fs::stat(partiton_id as usize, path.as_str(), &mut buffer) {
+                match fs_service.stat(partiton_id, path.as_str()) {
                     Ok(StatResponse::File(_)) => println!("This is a file"),
                     Ok(StatResponse::Folder(c)) => {
                         for child in c.children {
@@ -137,7 +140,7 @@ pub fn main() {
                 for file in rest.split_ascii_whitespace() {
                     let path = add_path(&cwd, file);
 
-                    let file = match fs::stat(partiton_id as usize, path.as_str(), &mut buffer) {
+                    let file = match fs_service.stat(partiton_id, path.as_str()) {
                         Ok(StatResponse::File(f)) => f,
                         Ok(StatResponse::Folder(_)) => {
                             println!("Not a file");
@@ -150,25 +153,15 @@ pub fn main() {
                     };
 
                     for i in 0..file.file_size / 512 {
-                        let sect = match read_file_sector(
-                            partiton_id as usize,
-                            file.node_id,
-                            i as u32,
-                            &mut file_buffer,
-                        ) {
-                            Ok(s) => s,
-                            Err(e) => {
+                        let sect = match fs_service.read_file_sector(partiton_id, file.node_id, i) {
+                            Ok(Some((_, s))) => s,
+                            e => {
                                 println!("Error: {e:?}");
                                 break;
                             }
                         };
-                        if let Some(data) = sect {
-                            data.read_into_vec(&mut file_buffer);
-                            WRITER_STDOUT.lock().write_raw(&file_buffer).unwrap();
-                        } else {
-                            print!("Error reading");
-                            break;
-                        }
+                        sect.read_into_vec(&mut file_buffer);
+                        WRITER_STDOUT.lock().write_raw(&file_buffer).unwrap();
                     }
                 }
             }
@@ -177,7 +170,7 @@ pub fn main() {
 
                 let path = add_path(&cwd, prog);
 
-                let stat = fs::stat(partiton_id as usize, path.as_str(), &mut buffer);
+                let stat = fs_service.stat(partiton_id, path.as_str());
 
                 let file = match stat {
                     Ok(StatResponse::File(f)) => f,
@@ -191,29 +184,23 @@ pub fn main() {
                     }
                 };
 
-                let contents =
-                    match read_full_file(partiton_id as usize, file.node_id, &mut file_buffer) {
-                        Ok(Some(c)) => c,
-                        Ok(None) => {
-                            println!("Failed to read file");
-                            continue;
-                        }
-                        Err(e) => {
-                            println!("Error: {e:?}");
-                            continue;
-                        }
-                    };
+                let contents = match fs_service.read_full_file(partiton_id, file.node_id) {
+                    Ok((_, c)) => c,
+                    Err(e) => {
+                        println!("Error: {e:?}");
+                        continue;
+                    }
+                };
 
-                let proc = spawn_elf_process(
-                    contents,
+                let proc = elf_loader.spawn(
+                    &contents,
                     args.as_bytes(),
                     &[
-                        **clone_init_service().handle(),
-                        **STDIN_CHANNEL.handle(),
-                        **STDOUT_CHANNEL.handle(),
-                        **STDERR_CHANNEL.handle(),
+                        INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
+                        STDIN_CHANNEL.handle(),
+                        STDOUT_CHANNEL.handle(),
+                        STDERR_CHANNEL.handle(),
                     ],
-                    &mut buffer,
                 );
 
                 let mut proc = match proc {

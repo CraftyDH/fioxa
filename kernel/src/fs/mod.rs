@@ -1,18 +1,19 @@
 pub mod fat;
 pub mod mbr;
 
-use core::{fmt::Debug, ops::ControlFlow, sync::atomic::AtomicU64};
+use core::{fmt::Debug, sync::atomic::AtomicU64};
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
 use conquer_once::spin::Lazy;
-use kernel_sys::types::SyscallResult;
+use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_userspace::{
     fs::{
-        FSServiceError, FSServiceMessage, FSServiceMessageResp, StatResponse, StatResponseFile,
+        FSServiceError, FSServiceExecuter, FSServiceImpl, StatResponse, StatResponseFile,
         StatResponseFolder,
     },
+    ipc::IPCChannel,
     message::MessageHandle,
-    service::{Service, deserialize, serialize},
+    service::ServiceExecutor,
 };
 
 use crate::{
@@ -201,103 +202,90 @@ pub fn get_file_from_path(partition_id: PartitionId, path: &str) -> Result<VFile
 // }
 
 pub fn file_handler() {
-    // A bit of a hack to extend the lifetime
-    let mut buffer = Vec::with_capacity(0x1000);
-    let mut fs_buffer = Vec::new();
-    let mut btree_child_buffer = BTreeMap::new();
-    let mut sec_buf = [0; 512];
-
-    let mut service = Service::new(
-        "FS",
-        || (),
-        |handle, ()| {
-            match handle.read::<0>(&mut buffer, false, false) {
-                Ok(_) => (),
-                Err(SyscallResult::ChannelEmpty) => return ControlFlow::Break(()),
-                err => {
-                    error!("Error recv msg: {err:?}");
-                    return ControlFlow::Break(());
-                }
+    ServiceExecutor::with_name("FS", |chan| {
+        sys_process_spawn_thread({
+            || match FSServiceExecuter::new(
+                IPCChannel::from_channel(chan),
+                FSServiceHandler {
+                    btree_child_buf: BTreeMap::new(),
+                    file_buffer: Vec::new(),
+                    sec_buffer: [0u8; 512],
+                    disks: None,
+                },
+            )
+            .run()
+            {
+                Ok(()) => (),
+                Err(e) => error!("Error running service: {e}"),
             }
-
-            let msg = match deserialize(&buffer) {
-                Ok(m) => m,
-                Err(e) => {
-                    error!("{e:?}");
-                    return ControlFlow::Break(());
-                }
-            };
-            let res = run_fs_query(msg, &mut fs_buffer, &mut sec_buf, &mut btree_child_buffer);
-            match res {
-                Ok((a, b)) => {
-                    let m = serialize(&Ok::<_, FSServiceError>(a), &mut buffer);
-                    match b {
-                        Some(h) => handle.write(&m, &[**h.handle()]).assert_ok(),
-                        None => handle.write(&m, &[]).assert_ok(),
-                    };
-                }
-                Err(e) => {
-                    let m = serialize(&Err::<FSServiceMessageResp, _>(e), &mut buffer);
-                    handle.write(&m, &[]).assert_ok()
-                }
-            }
-
-            core::ops::ControlFlow::Continue(())
-        },
-    );
-    service.run();
+        });
+    })
+    .run()
+    .unwrap();
 }
 
-fn run_fs_query<'a>(
-    query: FSServiceMessage,
-    buffer: &'a mut Vec<u8>,
-    sec_buffer: &'a mut [u8; 512],
-    btree_child_buf: &'a mut BTreeMap<String, VFileID>,
-) -> Result<(FSServiceMessageResp<'a>, Option<MessageHandle>), FSServiceError> {
-    match query {
-        FSServiceMessage::RunStat(disk, path) => {
-            let file = get_file_from_path(PartitionId(disk as u64), path)?;
-            let stat = match file.specialized {
-                VFileSpecialized::Folder(children) => {
-                    *btree_child_buf = children;
-                    let keys = btree_child_buf.keys();
-                    StatResponse::Folder(StatResponseFolder {
-                        node_id: file.location.1,
-                        children: keys.map(|c| c.as_str()).collect(),
-                    })
-                }
-                VFileSpecialized::File(size) => StatResponse::File(StatResponseFile {
-                    node_id: file.location.1,
-                    file_size: size,
-                }),
-            };
+pub struct FSServiceHandler {
+    btree_child_buf: BTreeMap<String, VFileID>,
+    file_buffer: Vec<u8>,
+    sec_buffer: [u8; 512],
+    disks: Option<Box<[u64]>>,
+}
 
-            Ok((FSServiceMessageResp::StatResponse(stat), None))
-        }
-        FSServiceMessage::ReadRequest(req) => {
-            if let Some(len) = read_file_sector(
-                (PartitionId(req.disk_id as u64), req.node_id),
-                req.sector as usize,
-                sec_buffer,
-            )? {
-                Ok((
-                    FSServiceMessageResp::ReadResponse(Some(len)),
-                    Some(MessageHandle::create(&sec_buffer[0..len])),
-                ))
-            } else {
-                Ok((FSServiceMessageResp::ReadResponse(None), None))
+impl FSServiceImpl for FSServiceHandler {
+    fn stat(&mut self, disk: u64, path: &str) -> Result<StatResponse, FSServiceError> {
+        let file = get_file_from_path(PartitionId(disk), path)?;
+        let stat = match file.specialized {
+            VFileSpecialized::Folder(children) => {
+                self.btree_child_buf = children;
+                let keys = self.btree_child_buf.keys();
+                StatResponse::Folder(StatResponseFolder {
+                    node_id: file.location.1,
+                    children: keys
+                        .map(|c| alloc::borrow::Cow::Borrowed(c.as_str()))
+                        .collect(),
+                })
             }
+            VFileSpecialized::File(size) => StatResponse::File(StatResponseFile {
+                node_id: file.location.1 as u64,
+                file_size: size as u64,
+            }),
+        };
+        Ok(stat)
+    }
+
+    fn read_file_sector(
+        &mut self,
+        disk: u64,
+        node: u64,
+        sector: u64,
+    ) -> Result<Option<(u64, MessageHandle)>, FSServiceError> {
+        if let Some(len) = read_file_sector(
+            (PartitionId(disk), node as usize),
+            sector as usize,
+            &mut self.sec_buffer,
+        )? {
+            Ok(Some((
+                len as u64,
+                MessageHandle::create(&self.sec_buffer[0..len]),
+            )))
+        } else {
+            Ok(None)
         }
-        FSServiceMessage::ReadFullFileRequest(req) => {
-            let file_vec = read_file((PartitionId(req.disk_id as u64), req.node_id), buffer)?;
-            Ok((
-                FSServiceMessageResp::ReadResponse(Some(file_vec.len())),
-                Some(MessageHandle::create(file_vec)),
-            ))
-        }
-        FSServiceMessage::GetDisksRequest => {
-            let disks = PARTITION.lock().keys().map(|p| p.0).collect();
-            Ok((FSServiceMessageResp::GetDisksResponse(disks), None))
-        }
+    }
+
+    fn read_full_file(
+        &mut self,
+        disk: u64,
+        node: u64,
+    ) -> Result<(u64, MessageHandle), FSServiceError> {
+        let file_vec = read_file((PartitionId(disk), node as usize), &mut self.file_buffer)?;
+        Ok((file_vec.len() as u64, MessageHandle::create(file_vec)))
+    }
+
+    fn get_disks(&mut self) -> Result<&[u64], FSServiceError> {
+        let disks = self
+            .disks
+            .get_or_insert_with(|| PARTITION.lock().keys().map(|p| p.0).collect());
+        Ok(disks)
     }
 }

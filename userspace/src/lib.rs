@@ -32,7 +32,11 @@ fn panic(i: &core::panic::PanicInfo) -> ! {
         use core::fmt::Write;
         use print::WRITER_STDERR;
 
-        if WRITER_STDERR.lock().write_fmt(format_args!("{i}")).is_err() {
+        if WRITER_STDERR
+            .lock()
+            .write_fmt(format_args!("{i}\n"))
+            .is_err()
+        {
             log::error!("Failed to write error message to stderr `{i}`");
         };
     }

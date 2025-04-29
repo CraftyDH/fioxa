@@ -6,12 +6,11 @@ use kernel_sys::{
     },
     types::{Hid, SyscallResult},
 };
+use rkyv::{Archive, Deserialize, Serialize};
 
-use crate::handle::{FIRST_HANDLE, Handle};
+use crate::handle::Handle;
 
-pub static FIRST_HANDLE_CHANNEL: Channel = Channel::from_handle(FIRST_HANDLE);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
 pub struct Channel(Handle);
 
 impl Channel {

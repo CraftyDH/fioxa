@@ -1,30 +1,32 @@
-use serde::{Deserialize, Serialize};
-
 use alloc::{
+    borrow::Cow,
     boxed::Box,
     string::{String, ToString},
     vec::Vec,
 };
-
-use crate::{
-    backoff_sleep,
-    channel::Channel,
-    message::MessageHandle,
-    process::get_handle,
-    service::{deserialize, serialize},
+use kernel_sys::types::SyscallResult;
+use rkyv::{
+    Archive, Deserialize, Serialize,
+    rancor::{Error, Source},
+    with::{AsOwned, InlineAsBox, Map},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+use crate::{
+    ipc::{IPCBox, IPCChannel},
+    message::MessageHandle,
+};
+
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub enum FSServiceMessage<'a> {
     // DiskID | Path
-    RunStat(usize, &'a str),
+    RunStat(u64, #[rkyv(with = InlineAsBox)] &'a str),
     ReadRequest(ReadRequest),
     ReadFullFileRequest(ReadFullFileRequest),
 
     GetDisksRequest,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub enum FSServiceError {
     NoSuchPartition(u64),
     CouldNotFollowPath,
@@ -32,50 +34,36 @@ pub enum FSServiceError {
     InvalidRequestForFileType,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum FSServiceMessageResp<'a> {
-    ExpectedQuestion,
-
-    #[serde(borrow)]
-    StatResponse(StatResponse<'a>),
-
-    ReadResponse(Option<usize>),
-
-    GetDisksResponse(Box<[u64]>),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub enum StatResponse<'a> {
     File(StatResponseFile),
-    #[serde(borrow)]
     Folder(StatResponseFolder<'a>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub struct StatResponseFile {
-    pub node_id: usize,
-    pub file_size: usize,
+    pub node_id: u64,
+    pub file_size: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub struct StatResponseFolder<'a> {
     pub node_id: usize,
-
-    #[serde(borrow)]
-    pub children: Vec<&'a str>,
+    #[rkyv(with = Map<AsOwned>)]
+    pub children: Vec<Cow<'a, str>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub struct ReadRequest {
-    pub disk_id: usize,
-    pub node_id: usize,
-    pub sector: u32,
+    pub disk_id: u64,
+    pub node_id: u64,
+    pub sector: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub struct ReadFullFileRequest {
-    pub disk_id: usize,
-    pub node_id: usize,
+    pub disk_id: u64,
+    pub node_id: u64,
 }
 
 pub fn add_path(folder: &str, file: &str) -> String {
@@ -95,79 +83,145 @@ pub fn add_path(folder: &str, file: &str) -> String {
         }
     }
 
-    String::from("/") + path.join("/").as_str()
+    "/".to_string() + path.join("/").as_str()
 }
 
-pub fn stat<'a>(
-    disk: usize,
-    file: &str,
-    buffer: &'a mut Vec<u8>,
-) -> Result<StatResponse<'a>, FSServiceError> {
-    let fs = Channel::from_handle(backoff_sleep(|| get_handle("FS")));
-    serialize(&FSServiceMessage::RunStat(disk, file), buffer);
-    fs.call::<0>(buffer, &[]).unwrap();
+pub struct FSService {
+    chan: IPCChannel,
+    disks: Option<Box<[u64]>>,
+}
 
-    match deserialize::<Result<FSServiceMessageResp, FSServiceError>>(buffer).unwrap()? {
-        FSServiceMessageResp::StatResponse(resp) => Ok(resp),
-        _ => todo!(),
+impl FSService {
+    pub fn from_channel(chan: IPCChannel) -> Self {
+        Self { chan, disks: None }
     }
-}
 
-pub fn read_file_sector(
-    disk: usize,
-    node: usize,
-    sector: u32,
-    buffer: &mut Vec<u8>,
-) -> Result<Option<MessageHandle>, FSServiceError> {
-    let fs = Channel::from_handle(backoff_sleep(|| get_handle("FS")));
-    serialize(
-        &FSServiceMessage::ReadRequest(ReadRequest {
-            disk_id: disk,
-            node_id: node,
-            sector,
-        }),
-        buffer,
-    );
-    let mut handles = fs.call::<1>(buffer, &[]).unwrap();
-    match deserialize::<Result<FSServiceMessageResp, FSServiceError>>(&buffer).unwrap()? {
-        FSServiceMessageResp::ReadResponse(None) => Ok(None),
-        FSServiceMessageResp::ReadResponse(Some(_)) => {
-            Ok(Some(MessageHandle::from_handle(handles.pop().unwrap())))
+    pub fn stat(&mut self, disk: u64, path: &str) -> Result<StatResponse<'static>, FSServiceError> {
+        self.chan
+            .send(&FSServiceMessage::RunStat(disk, path))
+            .assert_ok();
+
+        self.chan.recv().unwrap().deserialize().unwrap()
+    }
+
+    pub fn read_file_sector(
+        &mut self,
+        disk: u64,
+        node: u64,
+        sector: u64,
+    ) -> Result<Option<(u64, MessageHandle)>, FSServiceError> {
+        self.chan
+            .send(&FSServiceMessage::ReadRequest(ReadRequest {
+                disk_id: disk,
+                node_id: node,
+                sector,
+            }))
+            .assert_ok();
+        self.chan.recv().unwrap().deserialize().unwrap()
+    }
+
+    pub fn read_full_file(
+        &mut self,
+        disk: u64,
+        node: u64,
+    ) -> Result<(u64, MessageHandle), FSServiceError> {
+        self.chan
+            .send(&FSServiceMessage::ReadFullFileRequest(
+                ReadFullFileRequest {
+                    disk_id: disk,
+                    node_id: node,
+                },
+            ))
+            .assert_ok();
+        self.chan.recv().unwrap().deserialize().unwrap()
+    }
+
+    pub fn get_disks(&mut self) -> Result<&[u64], FSServiceError> {
+        if self.disks.is_none() {
+            self.chan
+                .send(&FSServiceMessage::GetDisksRequest)
+                .assert_ok();
+            let mut msg = self.chan.recv().unwrap();
+
+            let (msg, des) = msg
+                .access::<<Result<IPCBox<'static, [u64]>, FSServiceError> as Archive>::Archived>()
+                .unwrap();
+
+            let b = match msg {
+                rkyv::result::ArchivedResult::Ok(disks) => Ok(disks.0.deserialize(des).unwrap()),
+                rkyv::result::ArchivedResult::Err(err) => Err(err.deserialize(des).unwrap()),
+            }?;
+            self.disks = Some(b);
         }
-        _ => todo!(),
+
+        Ok(self.disks.as_ref().unwrap())
     }
 }
 
-pub fn read_full_file(
-    disk: usize,
-    node: usize,
-    buffer: &mut Vec<u8>,
-) -> Result<Option<MessageHandle>, FSServiceError> {
-    let fs = Channel::from_handle(backoff_sleep(|| get_handle("FS")));
-    serialize(
-        &FSServiceMessage::ReadFullFileRequest(ReadFullFileRequest {
-            disk_id: disk,
-            node_id: node,
-        }),
-        buffer,
-    );
-    let mut handles = fs.call::<1>(buffer, &[]).unwrap();
-    match deserialize::<Result<FSServiceMessageResp, FSServiceError>>(&buffer).unwrap()? {
-        FSServiceMessageResp::ReadResponse(None) => Ok(None),
-        FSServiceMessageResp::ReadResponse(Some(_)) => {
-            Ok(Some(MessageHandle::from_handle(handles.pop().unwrap())))
+pub struct FSServiceExecuter<I: FSServiceImpl> {
+    channel: IPCChannel,
+    service: I,
+}
+
+impl<I: FSServiceImpl> FSServiceExecuter<I> {
+    pub fn new(channel: IPCChannel, service: I) -> Self {
+        Self { channel, service }
+    }
+
+    pub fn run(&mut self) -> Result<(), Error> {
+        loop {
+            let mut msg = match self.channel.recv() {
+                Ok(m) => m,
+                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(e) => return Err(Error::new(e)),
+            };
+            let (msg, _) = msg.access::<ArchivedFSServiceMessage>()?;
+
+            let err = match msg {
+                ArchivedFSServiceMessage::RunStat(disk, path) => {
+                    let res = self.service.stat(disk.to_native(), path);
+                    self.channel.send(&res)
+                }
+                ArchivedFSServiceMessage::ReadRequest(rr) => {
+                    let res = self.service.read_file_sector(
+                        rr.disk_id.to_native(),
+                        rr.node_id.to_native(),
+                        rr.sector.to_native(),
+                    );
+                    self.channel.send(&res)
+                }
+                ArchivedFSServiceMessage::ReadFullFileRequest(rr) => {
+                    let res = self
+                        .service
+                        .read_full_file(rr.disk_id.to_native(), rr.node_id.to_native());
+                    self.channel.send(&res)
+                }
+                ArchivedFSServiceMessage::GetDisksRequest => {
+                    let res = self.service.get_disks();
+                    let res = res.map(IPCBox);
+                    self.channel.send(&res)
+                }
+            };
+            err.into_err().map_err(Error::new)?;
         }
-        _ => todo!(),
     }
 }
 
-pub fn get_disks(buffer: &mut Vec<u8>) -> Result<Box<[u64]>, FSServiceError> {
-    let fs = Channel::from_handle(backoff_sleep(|| get_handle("FS")));
-    serialize(&FSServiceMessage::GetDisksRequest, buffer);
-    fs.call::<0>(buffer, &[]).unwrap();
+pub trait FSServiceImpl {
+    fn stat(&mut self, disk: u64, path: &str) -> Result<StatResponse, FSServiceError>;
 
-    match deserialize::<Result<FSServiceMessageResp, FSServiceError>>(buffer).unwrap()? {
-        FSServiceMessageResp::GetDisksResponse(d) => Ok(d),
-        _ => todo!(),
-    }
+    fn read_file_sector(
+        &mut self,
+        disk: u64,
+        node: u64,
+        sector: u64,
+    ) -> Result<Option<(u64, MessageHandle)>, FSServiceError>;
+
+    fn read_full_file(
+        &mut self,
+        disk: u64,
+        node: u64,
+    ) -> Result<(u64, MessageHandle), FSServiceError>;
+
+    fn get_disks(&mut self) -> Result<&[u64], FSServiceError>;
 }

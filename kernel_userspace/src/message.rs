@@ -1,10 +1,11 @@
 use alloc::vec::Vec;
 use kernel_sys::syscall::{sys_message_create, sys_message_read, sys_message_size};
+use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::handle::Handle;
 
 /// This is a kernel ref counted immutable object
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
 pub struct MessageHandle(Handle);
 
 impl MessageHandle {

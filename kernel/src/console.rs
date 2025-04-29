@@ -14,7 +14,7 @@ use kernel_userspace::{
     channel::Channel,
     handle::Handle,
     input::InputServiceMessage,
-    process::{ProcessHandle, clone_init_service, get_handle},
+    process::{INIT_HANDLE_SERVICE, ProcessHandle},
 };
 
 use crate::{
@@ -47,7 +47,7 @@ pub fn run_console() {
     mon_out(stdout);
     mon_out(stderr);
 
-    let keyboard = Channel::from_handle(backoff_sleep(|| get_handle("INPUT:KB")));
+    let keyboard = backoff_sleep(|| INIT_HANDLE_SERVICE.lock().get_service("INPUT:KB"));
 
     let mut kb_decoder = KBInputDecoder::new();
 
@@ -56,7 +56,7 @@ pub fn run_console() {
             let proc = load_elf(TERMINAL_ELF)
                 .unwrap()
                 .references(ProcessReferences::from_refs(&[
-                    **clone_init_service().handle(),
+                    **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
                     **cin.handle(),
                     **cout.handle(),
                     **cerr.handle(),
@@ -108,7 +108,9 @@ impl KBInputDecoder {
                 }
                 Err(SyscallResult::ChannelEmpty) => {
                     if self.str_buf.is_empty() {
-                        chan.handle().wait(ObjectSignal::READABLE).unwrap();
+                        chan.handle()
+                            .wait(ObjectSignal::READABLE | ObjectSignal::CHANNEL_CLOSED)
+                            .unwrap();
                     } else {
                         return &self.str_buf;
                     }

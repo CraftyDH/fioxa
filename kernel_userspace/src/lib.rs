@@ -13,6 +13,7 @@ pub mod fs;
 pub mod handle;
 pub mod input;
 pub mod interrupt;
+pub mod ipc;
 pub mod message;
 pub mod net;
 pub mod pci;
@@ -21,6 +22,7 @@ pub mod process;
 pub mod service;
 
 pub use kernel_sys as sys;
+pub use rkyv;
 
 use core::time::Duration;
 
@@ -40,8 +42,3 @@ pub fn backoff_sleep<R>(mut f: impl FnMut() -> Option<R>) -> R {
         time = 10.max(time + 1);
     }
 }
-
-pub const INT_KB: usize = 0;
-pub const INT_MOUSE: usize = 1;
-pub const INT_PCI: usize = 2;
-pub const INT_COM1: usize = 3;

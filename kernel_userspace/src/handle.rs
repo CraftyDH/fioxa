@@ -5,7 +5,7 @@ use kernel_sys::{
     types::{Hid, ObjectSignal},
 };
 
-use crate::{port::Port, process::publish_handle};
+use crate::port::Port;
 
 /// A struct that owns the handle and will free it on drop
 #[derive(Debug, PartialEq, Eq)]
@@ -17,10 +17,6 @@ pub const FIRST_HANDLE: Handle = unsafe { Handle::from_id(Hid::from_usize(1).unw
 impl Handle {
     pub const unsafe fn from_id(id: Hid) -> Self {
         Self(id)
-    }
-
-    pub fn publish(&self, name: &str) -> bool {
-        publish_handle(name, self.0)
     }
 
     pub fn wait(

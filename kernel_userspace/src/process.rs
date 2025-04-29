@@ -1,19 +1,28 @@
-use core::u64;
-
-use alloc::vec::Vec;
+use conquer_once::spin::Lazy;
 use kernel_sys::{
     syscall::{sys_object_wait, sys_process_exit_code},
-    types::{Hid, ObjectSignal, SyscallResult},
+    types::{ObjectSignal, SyscallResult},
 };
-use serde::{Deserialize, Serialize};
+use rkyv::{
+    Archive, Deserialize, Serialize,
+    rancor::{Error, Source},
+    with::InlineAsBox,
+};
+use spin::Mutex;
 
 use crate::{
-    channel::{Channel, FIRST_HANDLE_CHANNEL},
-    handle::Handle,
-    service::serialize,
+    channel::Channel,
+    handle::{FIRST_HANDLE, Handle},
+    ipc::IPCChannel,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+pub static INIT_HANDLE_SERVICE: Lazy<Mutex<InitHandleService>> = Lazy::new(|| {
+    Mutex::new(InitHandleService::from_channel(IPCChannel::from_channel(
+        Channel::from_handle(FIRST_HANDLE),
+    )))
+});
+
+#[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
 pub struct ProcessHandle(Handle);
 
 impl ProcessHandle {
@@ -47,47 +56,85 @@ impl ProcessHandle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub enum InitHandleMessage<'a> {
-    GetHandle(&'a str),
-    PublishHandle(&'a str),
+    GetService(#[rkyv(with = InlineAsBox)] &'a str),
+    PublishService(#[rkyv(with = InlineAsBox)] &'a str, Channel),
     Clone,
 }
 
-pub fn get_handle(name: &str) -> Option<Handle> {
-    let mut buf = Vec::with_capacity(1);
-    let data = serialize(&InitHandleMessage::GetHandle(name), &mut buf);
+pub struct InitHandleService(IPCChannel);
 
-    FIRST_HANDLE_CHANNEL.write(&data, &[]).assert_ok();
+impl InitHandleService {
+    pub fn from_channel(chan: IPCChannel) -> Self {
+        Self(chan)
+    }
 
-    let mut handles = FIRST_HANDLE_CHANNEL
-        .read::<1>(&mut buf, true, true)
-        .unwrap();
+    pub fn get_service(&mut self, name: &str) -> Option<Channel> {
+        self.0
+            .send(&InitHandleMessage::GetService(name))
+            .assert_ok();
+        let mut msg = self.0.recv().unwrap();
+        msg.deserialize().unwrap()
+    }
 
-    handles.pop()
+    pub fn publish_service(&mut self, name: &str, handle: Channel) -> bool {
+        self.0
+            .send(&InitHandleMessage::PublishService(name, handle))
+            .assert_ok();
+        let mut msg = self.0.recv().unwrap();
+        msg.deserialize().unwrap()
+    }
+
+    pub fn clone_init_service(&mut self) -> Channel {
+        self.0.send(&InitHandleMessage::Clone).assert_ok();
+        let mut msg = self.0.recv().unwrap();
+        msg.deserialize().unwrap()
+    }
 }
 
-pub fn publish_handle(name: &str, handle: Hid) -> bool {
-    let mut buf = Vec::new();
-    let data = serialize(&InitHandleMessage::PublishHandle(name), &mut buf);
-    FIRST_HANDLE_CHANNEL.write(data, &[handle]).assert_ok();
-
-    FIRST_HANDLE_CHANNEL
-        .read::<0>(&mut buf, true, true)
-        .unwrap();
-
-    buf[0] == 1
+pub struct InitHandleServiceExecutor<I: InitHandleServiceImpl> {
+    channel: IPCChannel,
+    service: I,
 }
 
-pub fn clone_init_service() -> Channel {
-    let mut buf = Vec::new();
-    let data = serialize(&InitHandleMessage::Clone, &mut buf);
-    FIRST_HANDLE_CHANNEL.write(data, &[]).assert_ok();
+impl<I: InitHandleServiceImpl> InitHandleServiceExecutor<I> {
+    pub fn new(channel: IPCChannel, service: I) -> Self {
+        Self { channel, service }
+    }
 
-    let mut handles = FIRST_HANDLE_CHANNEL
-        .read::<1>(&mut buf, true, true)
-        .unwrap();
+    pub fn run(&mut self) -> Result<(), Error> {
+        loop {
+            let mut msg = match self.channel.recv() {
+                Ok(m) => m,
+                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(e) => return Err(Error::new(e)),
+            };
+            let (msg, des) = msg.access::<ArchivedInitHandleMessage>()?;
 
-    // We know that we'll get a channel back
-    Channel::from_handle(handles.pop().unwrap())
+            match msg {
+                ArchivedInitHandleMessage::GetService(name) => {
+                    let res = self.service.get_service(name);
+                    self.channel.send(&res)
+                }
+                ArchivedInitHandleMessage::PublishService(name, handle) => {
+                    let res = self.service.publish_service(name, handle.deserialize(des)?);
+                    self.channel.send(&res)
+                }
+                ArchivedInitHandleMessage::Clone => {
+                    self.channel.send(&self.service.clone_init_service())
+                }
+            }
+            .into_err()
+            .map_err(Error::new)?;
+        }
+    }
+}
+
+pub trait InitHandleServiceImpl {
+    fn get_service(&mut self, name: &str) -> Option<Channel>;
+
+    fn publish_service(&mut self, name: &str, handle: Channel) -> bool;
+
+    fn clone_init_service(&mut self) -> Channel;
 }

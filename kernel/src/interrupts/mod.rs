@@ -6,7 +6,12 @@ use kernel_sys::{
     syscall::sys_process_spawn_thread,
     types::{SysPortNotification, SysPortNotificationValue, SyscallResult},
 };
-use kernel_userspace::{INT_COM1, INT_KB, INT_MOUSE, INT_PCI, channel::Channel, handle::Handle};
+use kernel_userspace::{
+    handle::Handle,
+    interrupt::{Interrupt, InterruptVector, InterruptsServiceExecutor, InterruptsServiceImpl},
+    ipc::IPCChannel,
+    service::ServiceExecutor,
+};
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 pub mod exceptions;
@@ -127,8 +132,8 @@ pub fn spurious(s: InterruptStackFrame) {
 }
 
 #[inline(always)]
-fn int_interrupt_handler(vector: usize) {
-    INTERRUPT_SOURCES[vector]
+fn int_interrupt_handler(vector: InterruptVector) {
+    INTERRUPT_SOURCES[vector as usize]
         .lock()
         .iter()
         .for_each(|e| e.trigger());
@@ -136,21 +141,21 @@ fn int_interrupt_handler(vector: usize) {
 
 interrupt_handler!(kb_interrupt_handler => keyboard_int_handler);
 fn kb_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(INT_KB)
+    int_interrupt_handler(InterruptVector::Keyboard)
 }
 
 interrupt_handler!(mouse_interrupt_handler => mouse_int_handler);
 fn mouse_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(INT_MOUSE)
+    int_interrupt_handler(InterruptVector::Mouse)
 }
 
 interrupt_handler!(pci_interrupt_handler => pci_int_handler);
 fn pci_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(INT_PCI)
+    int_interrupt_handler(InterruptVector::PCI)
 }
 interrupt_handler!(com1_interrupt_handler => com1_int_handler);
 fn com1_interrupt_handler(_: InterruptStackFrame) {
-    int_interrupt_handler(INT_COM1)
+    int_interrupt_handler(InterruptVector::COM1)
 }
 
 static INTERRUPT_SOURCES: Lazy<[Arc<Spinlock<Vec<Arc<KInterruptHandle>>>>; 4]> = Lazy::new(|| {
@@ -162,38 +167,42 @@ static INTERRUPT_SOURCES: Lazy<[Arc<Spinlock<Vec<Arc<KInterruptHandle>>>>; 4]> =
     ]
 });
 
+struct InterruptService;
+
+impl InterruptsServiceImpl for InterruptService {
+    fn get_interrupt(
+        &mut self,
+        vector: kernel_userspace::interrupt::InterruptVector,
+    ) -> Option<kernel_userspace::interrupt::Interrupt> {
+        let h = Arc::new(KInterruptHandle::new());
+
+        let id = with_held_interrupts(|| unsafe {
+            let thread = CPULocalStorageRW::get_current_task();
+            Handle::from_id(thread.process().add_value(h.clone().into()))
+        });
+
+        INTERRUPT_SOURCES.get(vector as usize)?.lock().push(h);
+        Some(Interrupt::from_handle(id))
+    }
+}
+
 /// Returns true if there were any interrupt events dispatched
 pub fn check_interrupts() {
-    let (service, sright) = Channel::new();
-    sright.handle().publish("INTERRUPTS");
-
-    let mut data = Vec::with_capacity(100);
-    loop {
-        let mut handles = service.read::<1>(&mut data, false, true).unwrap();
-        let handle = Channel::from_handle(handles.pop().unwrap());
-
+    ServiceExecutor::with_name("INTERRUPTS", |channel| {
         sys_process_spawn_thread({
-            move || loop {
-                let (req, _) = handle.read_val::<0, usize>(true).unwrap();
-
-                if req > 3 {
-                    error!("INTERRUPTS service got invalid id");
-                    return;
-                }
-
-                let h = Arc::new(KInterruptHandle::new());
-
-                let id = with_held_interrupts(|| unsafe {
-                    let thread = CPULocalStorageRW::get_current_task();
-                    Handle::from_id(thread.process().add_value(h.clone().into()))
-                });
-
-                INTERRUPT_SOURCES[req].lock().push(h);
-
-                handle.write(&[], &[*id]).assert_ok();
+            move || match InterruptsServiceExecutor::new(
+                IPCChannel::from_channel(channel),
+                InterruptService,
+            )
+            .run()
+            {
+                Ok(()) => (),
+                Err(e) => error!("Error running service: {e}"),
             }
         });
-    }
+    })
+    .run()
+    .unwrap();
 }
 
 pub struct KInterruptHandle {

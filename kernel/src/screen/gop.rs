@@ -1,14 +1,8 @@
 use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::vec::Vec;
 use bootloader::gop::GopInfo;
 use conquer_once::spin::OnceCell;
-use core::fmt::Write;
-use core::ops::ControlFlow;
 use core::time::Duration;
 use kernel_sys::syscall::{sys_process_spawn_thread, sys_sleep};
-use kernel_sys::types::SyscallResult;
-use kernel_userspace::service::Service;
 
 #[derive(Clone, Copy)]
 pub struct Pos {
@@ -101,37 +95,6 @@ use crate::terminal::{Cell, Writer};
 
 use super::mouse::monitor_cursor_task;
 use super::psf1::PSF1Font;
-
-pub fn monitor_stdout_task() {
-    let mut data_buf = Vec::with_capacity(0x1000);
-    let mut service = Service::new(
-        "STDOUT",
-        || (),
-        |handle, ()| {
-            match handle.read::<0>(&mut data_buf, false, false) {
-                Ok(_) => (),
-                Err(SyscallResult::ChannelClosed) => return ControlFlow::Break(()),
-                e => {
-                    warn!("error recv {e:?}");
-                    return ControlFlow::Break(());
-                }
-            };
-            let s = String::from_utf8_lossy(&data_buf);
-            with_held_interrupts(|| {
-                let mut w = WRITER.get().unwrap().lock();
-                w.write_str(&s).unwrap();
-            });
-            match handle.write(&[], &[]) {
-                SyscallResult::Ok | SyscallResult::ChannelClosed => ControlFlow::Continue(()),
-                e => {
-                    warn!("error send {e:?}");
-                    return ControlFlow::Break(());
-                }
-            }
-        },
-    );
-    service.run();
-}
 
 fn redraw_screen_task() {
     let writer = WRITER.get().unwrap();

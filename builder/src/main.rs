@@ -1,13 +1,13 @@
 use std::{
     env::{self, args},
-    fs::{self, DirBuilder, copy},
+    fs::{self, copy, DirBuilder},
     io::BufReader,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result};
-use cargo_metadata::{Message, camino::Utf8PathBuf};
+use cargo_metadata::{camino::Utf8PathBuf, Message};
 use errors::BuildErrors;
 
 use crate::errors::QEMUErrors;

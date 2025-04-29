@@ -1,19 +1,20 @@
 use core::{
     fmt::Debug,
     mem::{size_of, transmute},
-    ops::ControlFlow,
 };
 
-use alloc::vec::Vec;
-use kernel_sys::{syscall::sys_process_spawn_thread, types::SyscallResult};
+use alloc::{sync::Arc, vec::Vec};
+use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_userspace::{
-    backoff_sleep,
     channel::Channel,
-    net::{ArpResponse, IPAddr, Networking, NotSameSubnetError},
-    process::get_handle,
-    service::{Service, deserialize, serialize},
+    ipc::IPCChannel,
+    net::{
+        IPAddr, NetServiceExecutor, NetServiceImpl, NetworkInterfaceService, NotSameSubnetError,
+    },
+    service::ServiceExecutor,
 };
 use modular_bitfield::{bitfield, specifiers::B48};
+use spin::Mutex;
 
 use crate::{
     net::arp::{ARP, ARP_TABLE},
@@ -70,7 +71,7 @@ const IP_ADDR: IPAddr = IPAddr::V4(10, 0, 2, 15);
 const SUBNET: u32 = 0xFF0000;
 
 pub fn send_arp(
-    service: &mut Channel,
+    service: &mut NetworkInterfaceService,
     mac_addr: u64,
     ip: IPAddr,
 ) -> Result<(), NotSameSubnetError> {
@@ -93,73 +94,57 @@ pub fn send_arp(
     let arp_req = ARPEth { header, arp };
     let buf: &[u8; size_of::<ARPEth>()] = &unsafe { transmute(arp_req) };
 
-    let mut buffer = Vec::new();
-    serialize(
-        &kernel_userspace::net::PhysicalNet::SendPacket(buf),
-        &mut buffer,
-    );
-
-    service.call::<0>(&mut buffer, &[]).unwrap();
+    service.send_packet(buf);
 
     Ok(())
 }
 
 pub fn userspace_networking_main() {
-    let mut pcnet = Channel::from_handle(backoff_sleep(|| get_handle("PCNET")));
+    let mut pcnet = NetworkInterfaceService::from_channel(IPCChannel::connect("PCNET"));
 
-    let mut buffer = Vec::with_capacity(100);
-
-    serialize(&kernel_userspace::net::PhysicalNet::MacAddrGet, &mut buffer);
-    pcnet.call::<0>(&mut buffer, &[]).unwrap();
-    let mac: u64 = deserialize(&buffer).unwrap();
+    let mac = pcnet.mac_address();
 
     let (listen_chan, listen_chan_right) = Channel::new();
 
-    serialize(
-        &kernel_userspace::net::PhysicalNet::ListenToPackets,
-        &mut buffer,
-    );
-    pcnet
-        .call::<0>(&mut buffer, &[**listen_chan_right.handle()])
-        .unwrap();
+    pcnet.listen_to_packets(listen_chan_right);
 
     sys_process_spawn_thread(move || monitor_packets(listen_chan));
 
-    Service::new(
-        "NETWORKING",
-        || (),
-        |handle, ()| {
-            match handle.read::<0>(&mut buffer, false, false) {
-                Ok(_) => (),
-                Err(SyscallResult::ChannelClosed) => return ControlFlow::Break(()),
-                Err(e) => {
-                    warn!("{e:?}");
-                    return ControlFlow::Break(());
-                }
+    let pcnet = Arc::new(Mutex::new(pcnet));
+
+    ServiceExecutor::with_name("NETWORKING", |chan| {
+        let network = pcnet.clone();
+
+        sys_process_spawn_thread(move || {
+            match NetServiceExecutor::new(
+                IPCChannel::from_channel(chan),
+                NetHandler { mac, network },
+            )
+            .run()
+            {
+                Ok(()) => (),
+                Err(e) => error!("Error running service: {e}"),
             }
+        });
+    })
+    .run()
+    .unwrap();
+}
 
-            match deserialize(&buffer) {
-                Ok(Networking::ArpRequest(ip)) => {
-                    let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
+struct NetHandler {
+    mac: u64,
+    network: Arc<Mutex<NetworkInterfaceService>>,
+}
 
-                    let resp = match mac_addr {
-                        Some(mac) => ArpResponse::Mac(mac),
-                        None => ArpResponse::Pending(send_arp(&mut pcnet, mac, ip)),
-                    };
+impl NetServiceImpl for NetHandler {
+    fn arp_request(&mut self, ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
+        let mac_addr = ARP_TABLE.lock().get(&ip).cloned();
 
-                    serialize(&resp, &mut buffer);
-                    handle.write(&buffer, &[]).assert_ok();
-                }
-                Err(e) => {
-                    warn!("Bad message: {e:?}");
-                    return ControlFlow::Break(());
-                }
-            };
-
-            ControlFlow::Continue(())
-        },
-    )
-    .run();
+        match mac_addr {
+            Some(mac) => Ok(Some(mac)),
+            None => send_arp(&mut self.network.lock(), self.mac, ip).map(|()| None),
+        }
+    }
 }
 
 pub fn monitor_packets(channel: Channel) {

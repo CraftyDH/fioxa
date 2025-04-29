@@ -11,7 +11,12 @@ use crate::{
 use alloc::{boxed::Box, sync::Arc};
 
 use kernel_sys::syscall::sys_process_spawn_thread;
-use kernel_userspace::{channel::Channel, process::clone_init_service};
+use kernel_userspace::{
+    channel::Channel,
+    ipc::IPCChannel,
+    pci::{PCIDeviceExecutor, PCIDeviceImpl},
+    process::INIT_HANDLE_SERVICE,
+};
 use mcfg::MCFG;
 mod express;
 mod legacy;
@@ -214,7 +219,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                 elf::load_elf(AMD_PCNET_DRIVER)
                     .unwrap()
                     .references(ProcessReferences::from_refs(&[
-                        **clone_init_service().handle(),
+                        **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
                         **sid.handle(),
                     ]))
                     .privilege(crate::scheduling::process::ProcessPrivilege::KERNEL)
@@ -263,6 +268,16 @@ trait PCIBus {
     ) -> Box<dyn PCIDevice>;
 }
 
+impl PCIDeviceImpl for Box<dyn PCIDevice> {
+    fn read(&mut self, offset: u32) -> u32 {
+        unsafe { self.read_u32(offset) }
+    }
+
+    fn write(&mut self, offset: u32, data: u32) {
+        unsafe { self.write_u32(offset, data) }
+    }
+}
+
 fn pci_dev_handler(
     pci_bus: &mut impl PCIBus,
     segment: u16,
@@ -270,28 +285,12 @@ fn pci_dev_handler(
     device: u8,
     function: u8,
 ) -> Channel {
-    let mut device = pci_bus.get_device_raw(segment, bus, device, function);
+    let device = pci_bus.get_device_raw(segment, bus, device, function);
     let (left, right) = Channel::new();
     sys_process_spawn_thread(move || {
-        loop {
-            let Ok((msg, _)) = left.read_val::<0, _>(true) else {
-                return;
-            };
-
-            match msg {
-                kernel_userspace::pci::PCIDevCmd::Read(offset) if offset <= 256 => unsafe {
-                    let resp = device.read_u32(offset);
-                    left.write_val(&resp, &[]).assert_ok();
-                },
-                kernel_userspace::pci::PCIDevCmd::Write(offset, data) if offset <= 256 => unsafe {
-                    device.write_u32(offset, data);
-                    left.write_val(&(), &[]).assert_ok();
-                },
-                _ => {
-                    error!("Bad args to pci");
-                    return;
-                }
-            };
+        match PCIDeviceExecutor::new(IPCChannel::from_channel(left), device).run() {
+            Ok(()) => (),
+            Err(e) => warn!("error handling  service: {e}"),
         }
     });
 

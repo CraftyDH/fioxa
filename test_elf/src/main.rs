@@ -3,9 +3,8 @@
 
 use kernel_userspace::{
     channel::Channel,
-    process::get_handle,
     sys::{
-        syscall::sys_read_args_string,
+        syscall::{sys_process_spawn_thread, sys_read_args_string},
         types::{ObjectSignal, SyscallResult},
     },
 };
@@ -20,39 +19,56 @@ init_userspace!(main);
 pub fn main() {
     let args = sys_read_args_string();
     let count: usize = if args.is_empty() {
-        usize::MAX
+        100000
     } else {
         args.parse().unwrap()
     };
     println!("Test elf, cnt = {count}");
 
-    let accepter = Channel::from_handle(get_handle("ACCEPTER").unwrap());
-
+    let (left, right) = Channel::new();
     let mut send_i = 0usize;
     let mut recv_i = 0usize;
 
-    while send_i < 1024 {
-        accepter.write_val(&send_i, &[]).assert_ok();
+    sys_process_spawn_thread(move || {
+        loop {
+            match right.read_val::<0, usize>(true) {
+                Ok((val, _)) => {
+                    right.write_val(&val, &[]).assert_ok();
+                }
+                Err(SyscallResult::ChannelClosed) => {
+                    return;
+                }
+                Err(e) => panic!("Error got {e:?}"),
+            }
+        }
+    });
+
+    while send_i < count.min(1024) {
+        left.write_val(&send_i, &[]).assert_ok();
         send_i += 1;
     }
 
     while recv_i < count {
-        match accepter.read_val::<0, usize>(true) {
+        match left.read_val::<0, usize>(true) {
             Ok((val, _)) => {
                 assert_eq!(val, recv_i);
+
                 recv_i += 1;
-                if recv_i >= count {
-                    break;
+                if recv_i % 100000 == 0 {
+                    println!("Received: {recv_i}");
                 }
+
                 if send_i < count {
-                    accepter.write_val(&send_i, &[]).assert_ok();
+                    left.write_val(&send_i, &[]).assert_ok();
                     send_i += 1;
                 }
             }
             Err(SyscallResult::ChannelEmpty) => {
-                accepter.handle().wait(ObjectSignal::READABLE).unwrap();
+                left.handle().wait(ObjectSignal::READABLE).unwrap();
             }
-            _ => todo!(),
+            Err(e) => panic!("Error got {e:?}"),
         }
     }
+
+    println!("Total received: {recv_i}");
 }

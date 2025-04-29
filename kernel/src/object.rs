@@ -1,18 +1,18 @@
 use core::u64;
 
-use alloc::{
-    collections::btree_map::BTreeMap,
-    string::{String, ToString},
-    sync::Arc,
-    vec::Vec,
-};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use hashbrown::HashMap;
-use kernel_sys::types::{
-    ObjectSignal, SysPortNotification, SysPortNotificationValue, SyscallResult,
+use kernel_sys::{
+    syscall::sys_process_spawn_thread,
+    types::{ObjectSignal, SysPortNotification, SysPortNotificationValue},
 };
 use kernel_userspace::{
-    channel::Channel, port::Port, process::InitHandleMessage, service::deserialize,
+    channel::Channel,
+    ipc::IPCChannel,
+    process::{InitHandleServiceExecutor, InitHandleServiceImpl},
+    service::Service,
 };
+use spin::Mutex;
 
 use crate::{port::KPort, scheduling::process::Thread};
 
@@ -85,98 +85,58 @@ pub trait KObject {
     fn signals<T>(&self, f: impl FnOnce(&mut KObjectSignal) -> T) -> T;
 }
 
-pub fn init_handle_new_proc(channels: Vec<Channel>) {
-    let port_handle = Port::new();
+struct InitSharedData {
+    handles: HashMap<String, Service>,
+}
 
-    let mut chans: BTreeMap<u64, Channel> = BTreeMap::new();
+pub fn init_handle_new_proc(mut channels: Vec<Channel>) {
+    let shared = Arc::new(Mutex::new(InitSharedData {
+        handles: HashMap::new(),
+    }));
 
-    for (i, chan) in channels.into_iter().enumerate() {
-        chan.handle()
-            .wait_port(&port_handle, ObjectSignal::READABLE, (i + 10) as u64)
-            .assert_ok();
-
-        chans.insert((i + 10) as u64, chan);
-    }
-
-    let mut handles: HashMap<String, Channel> = HashMap::new();
-
-    loop {
-        let notification = port_handle.wait().unwrap();
-        match notification.value {
-            SysPortNotificationValue::SignalOne { .. } => {
-                let chan = chans.remove(&notification.key).unwrap();
-                if work_on_chan(&chan, &mut handles, &mut chans, &port_handle) {
-                    let key = chans.last_key_value().unwrap().0 + 1;
-
-                    chan.handle()
-                        .wait_port(&port_handle, ObjectSignal::READABLE, key)
-                        .assert_ok();
-                    assert!(chans.insert(key, chan).is_none());
-                }
-            }
-            _ => panic!("bad channel handle passed"),
-        }
+    while let Some(c) = channels.pop() {
+        launch(c, shared.clone());
     }
 }
 
-fn work_on_chan(
-    chan: &Channel,
-    refs: &mut HashMap<String, Channel>,
-    chans: &mut BTreeMap<u64, Channel>,
-    port_handle: &Port,
-) -> bool {
-    let mut data = Vec::with_capacity(100);
-
-    loop {
-        let mut handles = match chan.read::<1>(&mut data, true, false) {
-            Ok(h) => h,
-            Err(SyscallResult::ChannelEmpty) => return true,
-            Err(e) => {
-                warn!("error recv: {e:?}");
-                return false;
-            }
-        };
-
-        let Ok(msg) = deserialize::<InitHandleMessage>(&data) else {
-            warn!("bad message");
-            return false;
-        };
-
-        match msg {
-            InitHandleMessage::GetHandle(h) => match refs.get(h) {
-                Some(handle) => {
-                    let (left, right) = Channel::new();
-
-                    handle.write(&[true as u8], &[**left.handle()]).assert_ok();
-                    chan.write(&[true as u8], &[**right.handle()]).assert_ok();
-                }
-                None => {
-                    chan.write(&[false as u8], &[]).assert_ok();
-                }
-            },
-            InitHandleMessage::PublishHandle(name) => {
-                if handles.len() != 1 {
-                    warn!("bad handles len");
-                    return false;
-                }
-
-                let old = refs.insert(
-                    name.to_string(),
-                    Channel::from_handle(handles.pop().unwrap()),
-                );
-
-                chan.write(&[old.is_some() as u8], &[]).assert_ok();
-            }
-            InitHandleMessage::Clone => {
-                let key = chans.last_key_value().unwrap().0 + 1;
-                let (left, right) = Channel::new();
-                left.handle()
-                    .wait_port(port_handle, ObjectSignal::READABLE, key)
-                    .assert_ok();
-                assert!(chans.insert(key, left).is_none());
-
-                chan.write(&[true as u8], &[**right.handle()]).assert_ok();
-            }
+fn launch(chan: Channel, shared: Arc<Mutex<InitSharedData>>) {
+    sys_process_spawn_thread(move || {
+        match InitHandleServiceExecutor::new(IPCChannel::from_channel(chan), InitHandler { shared })
+            .run()
+        {
+            Ok(()) => (),
+            Err(e) => warn!("error handling init service: {e}"),
         }
+    });
+}
+
+struct InitHandler {
+    shared: Arc<Mutex<InitSharedData>>,
+}
+
+impl InitHandleServiceImpl for InitHandler {
+    fn get_service(&mut self, name: &str) -> Option<Channel> {
+        let mut shared = self.shared.lock();
+        let channel = shared.handles.get_mut(name)?;
+
+        let (l, r) = Channel::new();
+        channel.send_consumer(r);
+
+        Some(l)
+    }
+
+    fn publish_service(&mut self, name: &str, handle: Channel) -> bool {
+        let mut shared = self.shared.lock();
+        let old = shared.handles.insert(
+            name.into(),
+            Service::from_channel(IPCChannel::from_channel(handle)),
+        );
+        old.is_some()
+    }
+
+    fn clone_init_service(&mut self) -> Channel {
+        let (l, r) = Channel::new();
+        launch(r, self.shared.clone());
+        l
     }
 }

@@ -1,6 +1,4 @@
-use kernel_userspace::{
-    backoff_sleep, channel::Channel, input::InputServiceMessage, process::get_handle,
-};
+use kernel_userspace::{backoff_sleep, input::InputServiceMessage, process::INIT_HANDLE_SERVICE};
 
 use input::mouse::MousePacket;
 
@@ -28,7 +26,7 @@ pub const MOUSE_POINTER: &[u16; 16] = &[
 ];
 
 pub fn monitor_cursor_task() {
-    let mouse = Channel::from_handle(backoff_sleep(|| get_handle("INPUT:MOUSE")));
+    let mouse = backoff_sleep(|| INIT_HANDLE_SERVICE.lock().get_service("INPUT:MOUSE"));
 
     let mut mouse_pos: Pos = Pos { x: 0, y: 0 };
 

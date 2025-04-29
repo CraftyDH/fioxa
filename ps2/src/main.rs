@@ -9,8 +9,11 @@ extern crate userspace_slaballoc;
 use alloc::vec::Vec;
 use kernel_sys::types::{ObjectSignal, SyscallResult};
 use kernel_userspace::{
-    INT_KB, INT_MOUSE, backoff_sleep, channel::Channel, interrupt::Interrupt, port::Port,
-    process::get_handle,
+    channel::Channel,
+    interrupt::{InterruptVector, InterruptsService},
+    ipc::IPCChannel,
+    port::Port,
+    process::INIT_HANDLE_SERVICE,
 };
 use userspace::log::info;
 use x86_64::instructions::port::{PortReadOnly, PortWriteOnly};
@@ -32,13 +35,12 @@ pub fn main() {
         panic!("PS2 Controller failed to init because: {}", e);
     }
 
-    let interrupts = Channel::from_handle(backoff_sleep(|| get_handle("INTERRUPTS")));
-
-    let (_, mut kb) = interrupts.call_val::<1, _, ()>(&INT_KB, &[]).unwrap();
-    let (_, mut ms) = interrupts.call_val::<1, _, ()>(&INT_MOUSE, &[]).unwrap();
-
-    let kb_ev = Interrupt::from_handle(kb.pop().unwrap());
-    let ms_ev = Interrupt::from_handle(ms.pop().unwrap());
+    let (kb_ev, ms_ev) = {
+        let mut interrupts = InterruptsService::from_channel(IPCChannel::connect("INTERRUPTS"));
+        let kb = interrupts.get_interrupt(InterruptVector::Keyboard).unwrap();
+        let ms = interrupts.get_interrupt(InterruptVector::Mouse).unwrap();
+        (kb, ms)
+    };
 
     let kb_cbk = 1;
     let ms_cbk = 2;
@@ -46,10 +48,20 @@ pub fn main() {
     let ms_srv_cbk = 4;
 
     let (kb_service, kb_right) = Channel::new();
-    kb_right.handle().publish("INPUT:KB");
+    assert!(
+        !INIT_HANDLE_SERVICE
+            .lock()
+            .publish_service("INPUT:KB", kb_right)
+    );
+    let mut kb_service = IPCChannel::from_channel(kb_service);
 
     let (ms_service, ms_right) = Channel::new();
-    ms_right.handle().publish("INPUT:MOUSE");
+    assert!(
+        !INIT_HANDLE_SERVICE
+            .lock()
+            .publish_service("INPUT:MOUSE", ms_right)
+    );
+    let mut ms_service = IPCChannel::from_channel(ms_service);
 
     let port = Port::new();
 
@@ -61,10 +73,12 @@ pub fn main() {
     info!("PS2 Ready");
 
     kb_service
+        .channel()
         .handle()
         .wait_port(&port, ObjectSignal::READABLE, kb_srv_cbk)
         .assert_ok();
     ms_service
+        .channel()
         .handle()
         .wait_port(&port, ObjectSignal::READABLE, ms_srv_cbk)
         .assert_ok();
@@ -87,11 +101,23 @@ pub fn main() {
             }
             ms_ev.acknowledge().assert_ok();
         } else if ev.key == kb_srv_cbk {
-            let (_, mut handles) = kb_service.read_val::<1, bool>(false).unwrap();
-            kb_listeners.push(Channel::from_handle(handles.pop().unwrap()));
+            let chan: Channel = kb_service.recv().unwrap().deserialize().unwrap();
+            kb_service.send(&()).assert_ok();
+            kb_listeners.push(chan);
+            kb_service
+                .channel()
+                .handle()
+                .wait_port(&port, ObjectSignal::READABLE, kb_srv_cbk)
+                .assert_ok();
         } else if ev.key == ms_srv_cbk {
-            let (_, mut handles) = ms_service.read_val::<1, bool>(false).unwrap();
-            ms_listeners.push(Channel::from_handle(handles.pop().unwrap()));
+            let chan: Channel = ms_service.recv().unwrap().deserialize().unwrap();
+            ms_service.send(&()).assert_ok();
+            ms_listeners.push(chan);
+            ms_service
+                .channel()
+                .handle()
+                .wait_port(&port, ObjectSignal::READABLE, ms_srv_cbk)
+                .assert_ok();
         }
     }
 }
