@@ -38,10 +38,9 @@ pub fn print_log(level: Level, target: &str, args: &fmt::Arguments) {
     if let Some(w) = WRITER.get() {
         let mut w = w.lock();
         let color = w.tty.set_fg_colour(get_color_for_level(level));
-        w.write_fmt(format_args!("{: <5} ", level)).unwrap();
+        w.write_fmt(format_args!("{level: <5} ")).unwrap();
         w.tty.set_fg_colour(0xFFFFFF);
-        w.write_fmt(format_args!("{} > {}\n", target, args))
-            .unwrap();
+        w.write_fmt(format_args!("{target} > {args}\n")).unwrap();
         w.tty.set_fg_colour(color);
     }
 }

@@ -1,39 +1,40 @@
 use std::{
     env::{self, args},
-    fs::{self, copy, DirBuilder},
+    fs::{self, DirBuilder, copy},
     io::BufReader,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
 use anyhow::{Context, Result};
-use cargo_metadata::{camino::Utf8PathBuf, Message};
+use cargo_metadata::{Message, camino::Utf8PathBuf};
 use errors::BuildErrors;
 
 use crate::errors::QEMUErrors;
 
 pub mod errors;
 
-const PURE_EFI_PATH: &'static str = "ovmf/OVMF-pure-efi.fd";
-const LOCAL_EFI_VARS: &'static str = "ovmf/VARS.fd";
-const SYSTEM_EFI_CODE: &'static str = "/usr/share/OVMF/OVMF_CODE.fd";
-const SYSTEM_EFI_VARS: &'static str = "/usr/share/OVMF/OVMF_VARS.fd";
+const PURE_EFI_PATH: &str = "ovmf/OVMF-pure-efi.fd";
+const LOCAL_EFI_VARS: &str = "ovmf/VARS.fd";
+const SYSTEM_EFI_CODE: &str = "/usr/share/OVMF/OVMF_CODE.fd";
+const SYSTEM_EFI_VARS: &str = "/usr/share/OVMF/OVMF_VARS.fd";
 
-const TO_BUILD: &[(&'static str, &'static str)] = &[
-    ("bootloader", "EFI/BOOT/BOOTx64.efi"),
-    ("test_elf", "elf.elf"),
-    ("amd_pcnet", "amd_pcnet.driver"),
-    ("calc", "calc.elf"),
-    ("net", "net.elf"),
-    ("ps2", "ps2.driver"),
-    ("terminal", "terminal.elf"),
+/// Workspace, name, output
+const TO_BUILD: &[(&str, Option<&str>, &str)] = &[
+    ("bootloader", None, "EFI/BOOT/BOOTx64.efi"),
+    ("apps", Some("calc"), "apps/calc"),
+    ("apps", Some("net"), "apps/net"),
+    ("apps", Some("test"), "apps/test"),
+    ("apps", Some("terminal"), "apps/terminal"),
+    ("drivers", Some("amd_pcnet"), "drivers/amd_pcnet"),
+    ("drivers", Some("ps2"), "drivers/ps2"),
     // ! MUST BE LAST
-    ("kernel", "fioxa.elf"),
+    ("kernel", None, "fioxa.elf"),
 ];
 
 fn main() -> Result<()> {
     if args().any(|a| a == "clean") {
-        for (package, _) in TO_BUILD {
+        for (package, _, _) in TO_BUILD {
             clean(package)?;
         }
         return Ok(());
@@ -42,16 +43,19 @@ fn main() -> Result<()> {
     let mut dirs = DirBuilder::new();
 
     dirs.recursive(true).create("fioxa/EFI/BOOT")?;
+    dirs.recursive(true).create("fioxa/apps")?;
+    dirs.recursive(true).create("fioxa/drivers")?;
+
     copy("assets/startup.nsh", "fioxa/startup.nsh")?;
     copy("assets/zap-light16.psf", "fioxa/font.psf")?;
 
     let release = args().any(|a| a == "--release");
 
-    for (package, out) in TO_BUILD {
-        let exec_path =
-            build(package, release).with_context(|| format!("Failed to build {}", package))?;
-        copy(exec_path, format!("fioxa/{}", out)).with_context(|| {
-            format!("Failed to copy the output of {} to fioxa/{}", package, out)
+    for (package, member, out) in TO_BUILD {
+        let exec_path = build(package, *member, release)
+            .with_context(|| format!("Failed to build {package}-{member:?}"))?;
+        copy(exec_path, format!("fioxa/{out}")).with_context(|| {
+            format!("Failed to copy the output of {package}-{member:?} to fioxa/{out}",)
         })?;
     }
 
@@ -115,7 +119,7 @@ fn qemu(with_screen: bool) -> Result<()> {
         println!("Using local OVFM");
 
         qemu_args.push("-drive".to_string());
-        qemu_args.push(format!("if=pflash,format=raw,file={}", PURE_EFI_PATH));
+        qemu_args.push(format!("if=pflash,format=raw,file={PURE_EFI_PATH}"));
     } else if let Ok(path) = env::var("OVMF") {
         println!("Using env OVMF");
 
@@ -125,15 +129,14 @@ fn qemu(with_screen: bool) -> Result<()> {
             let mut path = PathBuf::from(&path);
             path.push("OVMF_VARS.fd");
 
-            println!("{:?}", path);
+            println!("{path:?}");
 
             copy(path, "ovmf/VARS.fd").context("Could not copy VARS.fd into local directory")?;
         }
 
         qemu_args.push("-drive".to_string());
         qemu_args.push(format!(
-            "if=pflash,format=raw,readonly=on,file={}/OVMF_CODE.fd",
-            path
+            "if=pflash,format=raw,readonly=on,file={path}/OVMF_CODE.fd",
         ));
 
         qemu_args.push("-drive".to_string());
@@ -156,8 +159,7 @@ fn qemu(with_screen: bool) -> Result<()> {
 
         qemu_args.push("-drive".to_string());
         qemu_args.push(format!(
-            "if=pflash,format=raw,readonly=on,file={}",
-            SYSTEM_EFI_CODE
+            "if=pflash,format=raw,readonly=on,file={SYSTEM_EFI_CODE}",
         ));
 
         qemu_args.push("-drive".to_string());
@@ -186,7 +188,7 @@ fn qemu(with_screen: bool) -> Result<()> {
 fn clean(name: &str) -> Result<()> {
     // Build subprocess
     let mut cargo = Command::new("cargo")
-        .current_dir(format!("../{}", name))
+        .current_dir(format!("../{name}"))
         .args(["clean"])
         .stdout(Stdio::piped())
         .spawn()
@@ -199,15 +201,24 @@ fn clean(name: &str) -> Result<()> {
     }
 }
 
-fn build(name: &str, release: bool) -> Result<Utf8PathBuf> {
+fn build(name: &str, member: Option<&str>, release: bool) -> Result<Utf8PathBuf> {
     let mut args = vec!["build", "--message-format=json-render-diagnostics"];
     if release {
         args.push("--release");
     }
 
+    let executable_name = match member {
+        Some(n) => {
+            args.push("-p");
+            args.push(n);
+            n
+        }
+        None => name,
+    };
+
     // Build subprocess
     let mut cargo = Command::new("cargo")
-        .current_dir(format!("../{}", name))
+        .current_dir(format!("../{name}"))
         .args(args)
         .stdout(Stdio::piped())
         .spawn()
@@ -219,9 +230,9 @@ fn build(name: &str, release: bool) -> Result<Utf8PathBuf> {
     for message in Message::parse_stream(reader) {
         match message.unwrap() {
             // print messages to user
-            Message::CompilerMessage(msg) => println!("{}", msg),
+            Message::CompilerMessage(msg) => println!("{msg}"),
 
-            Message::CompilerArtifact(artifact) if artifact.target.name == name => {
+            Message::CompilerArtifact(artifact) if artifact.target.name == executable_name => {
                 // Save the path
                 path = artifact.executable
             }

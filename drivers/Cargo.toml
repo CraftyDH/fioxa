@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["amd_pcnet", "ps2"]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+kernel_sys = { path = "../libs/kernel_sys", features = ["iret"] }
+kernel_userspace = { path = "../libs/kernel_userspace" }
+userspace = { path = "../libs/userspace" }
+userspace_slaballoc = { path = "../libs/userspace_slaballoc" }
+
+spin = "0.10.0"
+x86_64 = "0.15"

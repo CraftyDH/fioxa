@@ -1,0 +1,17 @@
+[package]
+name = "ps2"
+version = "0.1.0"
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+kernel_sys.workspace = true
+kernel_userspace.workspace = true
+userspace_slaballoc.workspace = true
+userspace.workspace = true
+
+spin.workspace = true
+x86_64.workspace = true
+
+input = { path = "../../libs/input" }

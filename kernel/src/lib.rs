@@ -79,8 +79,7 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         // lowest context, no chance of recovery
         without_interrupts(|| {
             let mut w = WRITER.get().unwrap().lock();
-            w.write_fmt(format_args!("KERNEL PANIC: {}\n", info))
-                .unwrap();
+            w.write_fmt(format_args!("KERNEL PANIC: {info}\n")).unwrap();
             // since we drop context switch manually trigger redraw
             w.redraw_if_needed();
             crate::stack_trace(&mut w);

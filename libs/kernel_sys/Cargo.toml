@@ -1,0 +1,16 @@
+[package]
+name = "kernel_sys"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kernel_syscall = { path = "kernel_syscall" }
+
+bitflags.workspace = true
+num-derive.workspace = true
+num-traits.workspace = true
+heapless.workspace = true
+
+[features]
+iret = ["kernel_syscall/iret"]
+kernel = ["kernel_syscall/kernel"]

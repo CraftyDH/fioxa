@@ -286,7 +286,7 @@ unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
 
     let cr3 = sched.cr3_page;
 
-    CPULocalStorageRW::set_current_task(task, &sched);
+    CPULocalStorageRW::set_current_task(task, sched);
 
     let new_sp;
     let new_ip;

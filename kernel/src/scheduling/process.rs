@@ -535,7 +535,7 @@ impl Into<KernelValue> for Arc<KInterruptHandle> {
 
 impl Drop for Thread {
     fn drop(&mut self) {
-        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.tid.into_raw() as u64;
+        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.tid.into_raw();
 
         unsafe {
             self.process

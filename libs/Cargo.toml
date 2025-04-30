@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = ["input", "kernel_sys", "kernel_userspace", "userspace", "userspace_slaballoc"]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+input = { path = "input" }
+kernel_sys = { path = "kernel_sys" }
+kernel_userspace = { path = "kernel_userspace" }
+userspace = { path = "userspace" }
+userspace_slaballoc = { path = "userspace_slaballoc" }
+
+bitflags = { version = "2.9.0", default-features = false }
+conquer-once = { version = "0.4", default-features = false }
+heapless = "0.8.0"
+log = "0.4"
+num-derive = { version = "0.4.2" }
+num-traits = { version = "0.2.19", default-features = false }
+spin = "0.10.0"
+thiserror = { version = "2.0", default-features = false }

@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["calc", "net", "terminal", "test"]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+kernel_sys = { path = "../libs/kernel_sys" }
+kernel_userspace = { path = "../libs/kernel_userspace" }
+userspace = { path = "../libs/userspace", features = ["console"] }
+userspace_slaballoc = { path = "../libs/userspace_slaballoc" }
