@@ -37,7 +37,7 @@ pub type MemoryLoc = MemoryLoc64bit48bits;
 #[repr(u64)]
 #[allow(clippy::mixed_case_hex_literals)]
 pub enum MemoryLoc64bit48bits {
-    EndUserMem = 0x0000_FFFFFFFFFFFF,
+    EndUserMem = 0x0000_7FFFFFFFFFFF,
     GlobalMapping = 0xffff_A00000000000,
     /// Each cpu core is given 0x10_0000 (1mb) virtual memory
     PerCpuMem = 0xffff_AC0000000000,

@@ -54,6 +54,7 @@ pub mod syscall;
 pub mod terminal;
 pub mod time;
 pub mod uefi;
+pub mod user;
 
 pub static mut BOOT_INFO: *const BootInfo = 0 as *const BootInfo;
 unsafe extern "C" {
