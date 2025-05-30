@@ -1,7 +1,6 @@
 use core::u64;
 
 use alloc::{sync::Arc, vec::Vec};
-use conquer_once::spin::Lazy;
 use kernel_sys::{
     syscall::sys_process_spawn_thread,
     types::{SysPortNotification, SysPortNotificationValue, SyscallResult},
@@ -12,6 +11,7 @@ use kernel_userspace::{
     ipc::IPCChannel,
     service::ServiceExecutor,
 };
+use spin::Lazy;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 pub mod exceptions;

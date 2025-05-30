@@ -1,7 +1,6 @@
 use core::fmt::Write;
 
 use alloc::{string::String, vec::Vec};
-use conquer_once::spin::OnceCell;
 use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
 use kernel_userspace::{
     channel::Channel,
@@ -10,6 +9,7 @@ use kernel_userspace::{
     ipc::IPCChannel,
     process::{INIT_HANDLE_SERVICE, ProcessHandle},
 };
+use spin::Once;
 use x86_64::instructions::{interrupts::without_interrupts, port::Port};
 
 use crate::{
@@ -17,7 +17,7 @@ use crate::{
     scheduling::process::ProcessReferences,
 };
 
-pub static SERIAL: OnceCell<Spinlock<Serial>> = OnceCell::uninit();
+pub static SERIAL: Once<Spinlock<Serial>> = Once::new();
 
 pub const COM_1: u16 = 0x3f8;
 

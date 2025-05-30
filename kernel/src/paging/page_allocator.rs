@@ -1,5 +1,5 @@
 use bootloader::uefi::boot::MemoryType;
-use conquer_once::spin::OnceCell;
+use spin::Once;
 
 use crate::{
     memory::{MemoryMapIter, RESERVED_32BIT_MEM_PAGES},
@@ -12,7 +12,7 @@ use super::{
     virt_addr_for_phys, virt_addr_offset_mut,
 };
 
-static GLOBAL_FRAME_ALLOCATOR: OnceCell<Spinlock<PageFrameAllocator>> = OnceCell::uninit();
+static GLOBAL_FRAME_ALLOCATOR: Once<Spinlock<PageFrameAllocator>> = Once::new();
 
 pub fn frame_alloc_exec<T, F>(closure: F) -> T
 where
@@ -27,7 +27,7 @@ pub fn global_allocator() -> &'static impl PageAllocator {
 
 pub unsafe fn init(mmap: MemoryMapIter) {
     let alloc = unsafe { PageFrameAllocator::new(mmap.clone()).into() };
-    GLOBAL_FRAME_ALLOCATOR.init_once(|| alloc)
+    GLOBAL_FRAME_ALLOCATOR.call_once(|| alloc);
 }
 
 pub struct AllocatedPageOrder {

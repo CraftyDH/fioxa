@@ -1,8 +1,8 @@
 use alloc::collections::BTreeMap;
 use bootloader::gop::GopInfo;
-use conquer_once::spin::OnceCell;
 use core::time::Duration;
 use kernel_sys::syscall::{sys_process_spawn_thread, sys_sleep};
+use spin::Once;
 
 #[derive(Clone, Copy)]
 pub struct Pos {
@@ -76,7 +76,7 @@ impl Screen<'_> {
     }
 }
 
-pub static WRITER: OnceCell<Spinlock<Writer>> = OnceCell::uninit();
+pub static WRITER: Once<Spinlock<Writer>> = Once::new();
 
 #[macro_export]
 macro_rules! colour {

@@ -1,4 +1,4 @@
-use conquer_once::spin::Lazy;
+use spin::Lazy;
 use x86_64::{
     PrivilegeLevel, VirtAddr,
     instructions::{

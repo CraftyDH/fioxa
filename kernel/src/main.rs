@@ -72,7 +72,7 @@ pub fn main_stage1(info: *const BootInfo) -> ! {
             // Reset colors, clear screen and move to top left
             serial.write_str("\x1b[0m\x1b[2J\x1b[H");
             serial.write_str("Welcome to Fioxa...\n");
-            SERIAL.init_once(|| Spinlock::new(serial));
+            SERIAL.call_once(|| Spinlock::new(serial));
         }
 
         let boot_info = info.read();
@@ -126,7 +126,7 @@ unsafe extern "C" fn main_stage2() {
 
     // Initalize GOP stdout
     let font = psf1::load_psf1_font(DEFAULT_FONT).expect("cannot load psf1 font");
-    gop::WRITER.init_once(|| Writer::new(boot_info.gop, font).into());
+    gop::WRITER.call_once(|| Writer::new(boot_info.gop, font).into());
     // Test screen colours
     gop::WRITER.get().unwrap().lock().reset_screen(0xFF_00_00);
     gop::WRITER.get().unwrap().lock().reset_screen(0x00_FF_00);

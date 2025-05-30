@@ -1,4 +1,3 @@
-use conquer_once::spin::Lazy;
 use kernel_sys::{
     syscall::{sys_object_wait, sys_process_exit_code},
     types::{ObjectSignal, SyscallResult},
@@ -8,7 +7,7 @@ use rkyv::{
     rancor::{Error, Source},
     with::InlineAsBox,
 };
-use spin::Mutex;
+use spin::{Lazy, Mutex};
 
 use crate::{
     channel::Channel,

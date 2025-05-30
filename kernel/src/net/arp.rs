@@ -1,7 +1,7 @@
 use alloc::collections::BTreeMap;
-use conquer_once::spin::Lazy;
 use kernel_userspace::net::IPAddr;
 use modular_bitfield::{bitfield, specifiers::B48};
+use spin::Lazy;
 
 use crate::mutex::Spinlock;
 

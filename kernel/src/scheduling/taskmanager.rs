@@ -2,11 +2,11 @@ use core::{any::type_name, fmt::Write};
 
 use alloc::{boxed::Box, collections::BTreeMap, fmt, sync::Arc};
 
-use conquer_once::spin::Lazy;
 use kernel_sys::{
     syscall::sys_thread_bootstraper,
     types::{ObjectSignal, Pid, Tid},
 };
+use spin::Lazy;
 use x86_64::instructions::interrupts;
 
 use crate::{

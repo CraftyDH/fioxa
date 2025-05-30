@@ -10,9 +10,9 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use conquer_once::spin::Lazy;
 use hashbrown::HashMap;
 use kernel_sys::types::{Hid, KernelObjectType, Pid, RawValue, Tid};
+use spin::Lazy;
 use x86_64::{
     VirtAddr,
     registers::rflags::RFlags,
@@ -108,7 +108,7 @@ impl ProcessMemory {
         });
 
         // Slightly scary, but only init will not and it should map it itself
-        if HPET.is_initialized() {
+        if HPET.is_completed() {
             page_mapper
                 .insert_mapping_at_set(
                     HPET_LOCATION.0,

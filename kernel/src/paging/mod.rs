@@ -1,9 +1,9 @@
 use core::{mem::ManuallyDrop, ops::Deref, ptr};
 
-use conquer_once::spin::Lazy;
 use page::Size4KB;
 use page_allocator::global_allocator;
 use page_table::{PageTable, TableLevel3, TableLevel4};
+use spin::Lazy;
 
 use crate::mutex::Spinlock;
 

@@ -13,4 +13,4 @@ uefi = { version = "0.34", features = ["alloc", "logger"] }
 log = "0.4"
 
 x86_64 = "0.15"
-modular-bitfield = { version = "0.11", default-features = false}
+modular-bitfield = { version = "0.12", default-features = false }

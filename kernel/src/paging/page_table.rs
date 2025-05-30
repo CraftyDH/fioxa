@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use conquer_once::spin::Lazy;
+use spin::Lazy;
 use thiserror::Error;
 
 use crate::{mutex::Spinlock, paging::page::Page};

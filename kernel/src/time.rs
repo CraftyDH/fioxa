@@ -2,13 +2,13 @@ use core::cmp::Reverse;
 
 use acpi::AcpiTables;
 use alloc::{collections::binary_heap::BinaryHeap, sync::Arc};
-use conquer_once::spin::OnceCell;
+use spin::Once;
 
 use crate::{acpi::FioxaAcpiHandler, mutex::Spinlock, scheduling::process::Thread};
 
 pub mod hpet;
 
-pub static HPET: OnceCell<hpet::HPET> = OnceCell::uninit();
+pub static HPET: Once<hpet::HPET> = Once::new();
 
 pub fn spin_sleep_ms(time: u64) {
     HPET.get().unwrap().spin_ms(time)
@@ -17,7 +17,7 @@ pub fn spin_sleep_ms(time: u64) {
 pub fn init_time(acpi_tables: &AcpiTables<FioxaAcpiHandler>) {
     // PIC.lock().set_divisor(10000);
     if let Ok(hpet_info) = acpi::HpetInfo::new(acpi_tables) {
-        HPET.init_once(|| hpet::HPET::new(hpet_info));
+        HPET.call_once(|| hpet::HPET::new(hpet_info));
     };
 }
 

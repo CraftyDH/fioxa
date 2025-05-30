@@ -4,7 +4,6 @@ pub mod mbr;
 use core::{fmt::Debug, sync::atomic::AtomicU64};
 
 use alloc::{boxed::Box, collections::BTreeMap, string::String, sync::Arc, vec::Vec};
-use conquer_once::spin::Lazy;
 use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_userspace::{
     fs::{
@@ -15,6 +14,7 @@ use kernel_userspace::{
     message::MessageHandle,
     service::ServiceExecutor,
 };
+use spin::Lazy;
 
 use crate::{
     driver::disk::{DiskBusDriver, DiskDevice},

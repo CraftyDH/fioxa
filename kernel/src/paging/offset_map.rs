@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 use bootloader::{BootInfo, gop::GopInfo};
-use conquer_once::spin::OnceCell;
+use spin::Once;
 
 use crate::{
     kernel_memory_loc,
@@ -106,9 +106,9 @@ pub unsafe fn map_gop(
 }
 
 pub unsafe fn get_gop_range(gop: &GopInfo) -> (usize, Arc<PageMapping>) {
-    static GOP_RANGE: OnceCell<(usize, Arc<PageMapping>)> = OnceCell::uninit();
+    static GOP_RANGE: Once<(usize, Arc<PageMapping>)> = Once::new();
     GOP_RANGE
-        .get_or_init(|| unsafe {
+        .call_once(|| unsafe {
             let fb_ptr = *gop.buffer.as_ptr() as usize;
 
             let fb_base = fb_ptr & !0xFFF;
