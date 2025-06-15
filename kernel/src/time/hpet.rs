@@ -3,9 +3,10 @@ pub mod bitfields;
 use core::{arch::x86_64::_mm_pause, mem::transmute, ptr::read_volatile};
 
 use acpi::HpetInfo;
+use kernel_sys::types::VMMapFlags;
 
 use crate::paging::{
-    KERNEL_LVL4, MemoryLoc, MemoryMappingFlags,
+    KERNEL_LVL4, MemoryLoc,
     page::{Page, Size4KB},
     page_allocator::global_allocator,
     page_table::Mapper,
@@ -34,7 +35,7 @@ impl HPET {
             global_allocator(),
             Page::<Size4KB>::new(hpet_base_vaddr as u64),
             Page::<Size4KB>::new(hpet.base_address as u64),
-            MemoryMappingFlags::WRITEABLE,
+            VMMapFlags::WRITEABLE,
         ) {
             Ok(f) => f.flush(),
             Err(e) => panic!("cannot ident map because {e:?}"),

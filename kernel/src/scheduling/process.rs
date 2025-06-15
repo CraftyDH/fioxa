@@ -11,7 +11,7 @@ use alloc::{
     vec::Vec,
 };
 use hashbrown::HashMap;
-use kernel_sys::types::{Hid, KernelObjectType, Pid, RawValue, Tid};
+use kernel_sys::types::{Hid, KernelObjectType, Pid, RawValue, Tid, VMMapFlags, VMOAnonymousFlags};
 use spin::Lazy;
 use x86_64::{
     VirtAddr,
@@ -29,19 +29,19 @@ use crate::{
     mutex::Spinlock,
     object::{KObject, KObjectSignal},
     paging::{
-        AllocatedPage, GlobalPageAllocator, MemoryMappingFlags,
+        KERNEL_STACKS_MAP, MemoryLoc, PageAllocator,
+        page::{Page, Size4KB},
         page_allocator::global_allocator,
-        page_mapper::{PageMapperManager, PageMapping},
-        virt_addr_for_phys,
+        page_table::Mapper,
     },
     port::KPort,
     time::HPET,
+    vm::{VMO, VirtualMemoryRegion},
 };
 
 use super::taskmanager::{PROCESSES, SCHEDULER, ThreadSchedGlobalData};
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
-pub const KSTACK_ADDR: u64 = 0xffff_800_000_000_000;
 
 pub const STACK_SIZE: u64 = 0x20000;
 pub const KSTACK_SIZE: u64 = 0x10000;
@@ -51,6 +51,11 @@ pub const THREAD_TEMP_COUNT: usize = 8;
 fn generate_next_process_id() -> Pid {
     static PID: AtomicU64 = AtomicU64::new(1);
     Pid::from_raw(PID.fetch_add(1, Ordering::Relaxed)).unwrap()
+}
+
+fn generate_next_kstack_id() -> u64 {
+    static STACK: AtomicU64 = AtomicU64::new(0);
+    STACK.fetch_add(1, Ordering::Relaxed)
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -94,34 +99,30 @@ pub struct ProcessThreads {
 }
 
 pub struct ProcessMemory {
-    pub page_mapper: PageMapperManager,
-    pub owned32_pages: Vec<AllocatedPage<GlobalPageAllocator>>,
+    pub region: VirtualMemoryRegion,
 }
 
 impl ProcessMemory {
     pub fn new() -> Self {
-        let mut page_mapper = PageMapperManager::new(global_allocator());
+        let mut region = VirtualMemoryRegion::new(global_allocator());
 
-        static HPET_LOCATION: Lazy<(usize, Arc<PageMapping>)> = Lazy::new(|| unsafe {
+        static HPET_LOCATION: Lazy<(usize, Arc<Spinlock<VMO>>)> = Lazy::new(|| unsafe {
             let val = HPET.get().unwrap().info.base_address;
-            (val, PageMapping::new_mmap(val, 0x1000))
+            (val, Arc::new(Spinlock::new(VMO::new_mmap(val, 0x1000))))
         });
 
         // Slightly scary, but only init will not and it should map it itself
         if HPET.is_completed() {
-            page_mapper
-                .insert_mapping_at_set(
-                    HPET_LOCATION.0,
+            region
+                .map_vmo(
                     HPET_LOCATION.1.clone(),
-                    MemoryMappingFlags::WRITEABLE,
+                    VMMapFlags::WRITEABLE,
+                    Some(HPET_LOCATION.0),
                 )
                 .unwrap();
         }
 
-        Self {
-            page_mapper,
-            owned32_pages: Vec::new(),
-        }
+        Self { region }
     }
 }
 
@@ -343,30 +344,42 @@ impl Thread {
         // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.into_raw();
 
-        let stack = match process.privilege {
-            ProcessPrivilege::KERNEL => PageMapping::new_lazy_filled(STACK_SIZE as usize),
-            _ => PageMapping::new_lazy(STACK_SIZE as usize),
+        let stack_flags = match process.privilege {
+            ProcessPrivilege::KERNEL => VMOAnonymousFlags::PINNED,
+            _ => VMOAnonymousFlags::empty(),
         };
 
-        process
-            .memory
-            .lock()
-            .page_mapper
-            .insert_mapping_at_set(stack_base as usize, stack, MemoryMappingFlags::all())
-            .unwrap();
-
-        let kstack_base = KSTACK_ADDR + (KSTACK_SIZE + 0x1000) * tid.into_raw();
-        let kstack_top = (kstack_base + KSTACK_SIZE) as usize;
-        let stack = PageMapping::new_lazy_filled(KSTACK_SIZE as usize);
-        let kstack_ptr_for_start = stack.base_top_stack();
-        let kstack_base_virt = virt_addr_for_phys(kstack_ptr_for_start as u64) as usize;
+        let stack = Arc::new(Spinlock::new(VMO::new_anonymous(
+            STACK_SIZE as usize,
+            stack_flags,
+        )));
 
         process
             .memory
             .lock()
-            .page_mapper
-            .insert_mapping_at_set(kstack_base as usize, stack, MemoryMappingFlags::WRITEABLE)
+            .region
+            .map_vmo(
+                stack,
+                VMMapFlags::WRITEABLE | VMMapFlags::USERSPACE,
+                Some(stack_base as usize),
+            )
             .unwrap();
+
+        let kstack_id = generate_next_kstack_id();
+
+        let alloc = global_allocator();
+
+        let kbase = MemoryLoc::KernelStacks as u64 + KSTACK_SIZE * 2 * kstack_id;
+        for page in (kbase..kbase + KSTACK_SIZE).step_by(0x1000) {
+            let frame = alloc.allocate_page().unwrap();
+            KERNEL_STACKS_MAP
+                .lock()
+                .map(alloc, Page::new(page), frame, VMMapFlags::WRITEABLE)
+                .unwrap()
+                .ignore();
+        }
+
+        let kstack_base_virt = kbase + KSTACK_SIZE - 0x1000;
 
         let interrupt_frame = InterruptStackFrameValue::new(
             VirtAddr::from_ptr(entry_point),
@@ -386,11 +399,11 @@ impl Thread {
             sched: Spinlock::new(ThreadSched {
                 state: ThreadState::Runnable,
                 task_state: Some(SavedTaskState {
-                    sp: kstack_top - 0x1000,
+                    sp: kstack_base_virt as usize,
                     ip: start_new_task as usize,
                 }),
-                kstack_top: VirtAddr::from_ptr(kstack_top as *const ()),
-                cr3_page: unsafe { process.memory.lock().page_mapper.get_cr3() as u64 },
+                kstack_top: VirtAddr::from_ptr((kbase + KSTACK_SIZE) as *const ()),
+                cr3_page: process.memory.lock().region.get_cr3() as u64,
             }),
         });
 
@@ -477,6 +490,7 @@ pub enum KernelValue {
     Channel(Arc<KChannelHandle>),
     Port(Arc<KPort>),
     Interrupt(Arc<KInterruptHandle>),
+    VMO(Arc<Spinlock<VMO>>),
 }
 
 impl Debug for KernelValue {
@@ -487,6 +501,7 @@ impl Debug for KernelValue {
             Self::Channel(_) => f.debug_tuple("KernelValue::Channel").finish(),
             Self::Port(_) => f.debug_tuple("KernelValue::Port").finish(),
             Self::Interrupt(_) => f.debug_tuple("KernelValue::Interrupt").finish(),
+            Self::VMO(_) => f.debug_tuple("KernelValue::VMO").finish(),
         }
     }
 }
@@ -499,6 +514,7 @@ impl KernelValue {
             KernelValue::Channel(_) => KernelObjectType::Channel,
             KernelValue::Port(_) => KernelObjectType::Port,
             KernelValue::Interrupt(_) => KernelObjectType::Interrupt,
+            KernelValue::VMO(_) => KernelObjectType::VMO,
         }
     }
 }
@@ -533,6 +549,12 @@ impl Into<KernelValue> for Arc<KInterruptHandle> {
     }
 }
 
+impl Into<KernelValue> for Arc<Spinlock<VMO>> {
+    fn into(self) -> KernelValue {
+        KernelValue::VMO(self)
+    }
+}
+
 impl Drop for Thread {
     fn drop(&mut self) {
         let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.tid.into_raw();
@@ -541,9 +563,18 @@ impl Drop for Thread {
             self.process
                 .memory
                 .lock()
-                .page_mapper
-                .free_mapping(stack_base as usize..(stack_base + STACK_SIZE) as usize)
+                .region
+                .unmap(stack_base as usize, STACK_SIZE as usize)
                 .unwrap();
+            let alloc = global_allocator();
+            let ktop = self.sched.lock().kstack_top.as_u64();
+            for page in (ktop - KSTACK_SIZE..ktop).step_by(0x1000) {
+                let page = Page::<Size4KB>::new(page);
+                let mut m = KERNEL_STACKS_MAP.lock();
+                let phys = m.address_of(page).unwrap();
+                m.unmap(alloc, page).unwrap().flush();
+                alloc.free_page(phys);
+            }
         }
     }
 }

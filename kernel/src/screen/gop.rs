@@ -1,7 +1,10 @@
 use alloc::collections::BTreeMap;
 use bootloader::gop::GopInfo;
 use core::time::Duration;
-use kernel_sys::syscall::{sys_process_spawn_thread, sys_sleep};
+use kernel_sys::syscall::{
+    sys_handle_drop, sys_map, sys_process_spawn_thread, sys_sleep, sys_vmo_mmap_create,
+};
+use kernel_sys::types::VMMapFlags;
 use spin::Once;
 
 #[derive(Clone, Copy)]
@@ -86,11 +89,7 @@ macro_rules! colour {
 }
 
 use crate::BOOT_INFO;
-use crate::cpu_localstorage::CPULocalStorageRW;
 use crate::mutex::Spinlock;
-use crate::paging::MemoryMappingFlags;
-use crate::paging::offset_map::get_gop_range;
-use crate::scheduling::with_held_interrupts;
 use crate::terminal::{Cell, Writer};
 
 use super::mouse::monitor_cursor_task;
@@ -107,16 +106,23 @@ fn redraw_screen_task() {
 }
 
 pub fn gop_entry() {
-    // Map the GOP range
-    with_held_interrupts(|| unsafe {
-        let gop = get_gop_range(&(*BOOT_INFO).gop);
-        let proc = CPULocalStorageRW::get_current_task().process();
-        let mut mem = proc.memory.lock();
+    let gop = unsafe { &(*BOOT_INFO).gop };
 
-        mem.page_mapper
-            .insert_mapping_at_set(gop.0, gop.1, MemoryMappingFlags::WRITEABLE)
-            .unwrap();
-    });
+    let fb_ptr = unsafe { *gop.buffer.as_ptr() as usize };
+    let fb_base = fb_ptr & !0xFFF;
+    let fb_top = (fb_base + gop.buffer_size as usize + 0xFFF) & !0xFFF;
+
+    unsafe {
+        let handle = sys_vmo_mmap_create(fb_base as *mut (), fb_top - fb_base);
+        sys_map(
+            Some(handle),
+            VMMapFlags::WRITEABLE,
+            fb_base as *mut (),
+            fb_top - fb_base,
+        )
+        .unwrap();
+        sys_handle_drop(handle).assert_ok();
+    };
 
     sys_process_spawn_thread(monitor_cursor_task);
     redraw_screen_task();

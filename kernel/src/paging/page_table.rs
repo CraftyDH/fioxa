@@ -1,13 +1,16 @@
 use core::marker::PhantomData;
 
+use kernel_sys::types::VMMapFlags;
 use spin::Lazy;
 use thiserror::Error;
 
-use crate::{mutex::Spinlock, paging::page::Page};
+use crate::{
+    mutex::Spinlock,
+    paging::{KERNEL_STACKS_MAP, page::Page},
+};
 
 use super::{
-    KERNEL_DATA_MAP, KERNEL_HEAP_MAP, MemoryLoc, MemoryMappingFlags, OFFSET_MAP, PER_CPU_MAP,
-    PageAllocator,
+    KERNEL_DATA_MAP, KERNEL_HEAP_MAP, MemoryLoc, OFFSET_MAP, PER_CPU_MAP, PageAllocator,
     page::{PageSize, Size1GB, Size2MB, Size4KB},
     page_directory::PageDirectoryEntry,
     virt_addr_offset_mut,
@@ -121,7 +124,7 @@ pub trait Mapper<P: PageSize> {
         alloc: &impl PageAllocator,
         virtual_page: Page<P>,
         physical_page: Page<P>,
-        flags: MemoryMappingFlags,
+        flags: VMMapFlags,
     ) -> Result<Flusher, MapMemoryError>;
 
     fn unmap(
@@ -136,7 +139,7 @@ pub trait Mapper<P: PageSize> {
         &mut self,
         alloc: &impl PageAllocator,
         page: Page<P>,
-        flags: MemoryMappingFlags,
+        flags: VMMapFlags,
     ) -> Result<Flusher, MapMemoryError> {
         self.map(alloc, page, page, flags)
     }
@@ -150,7 +153,7 @@ macro_rules! gen_base_tables {
                     alloc: &impl PageAllocator,
                     virtual_page: Page<<$table as TableLevelMap>::Size>,
                     physical_page: Page<<$table as TableLevelMap>::Size>,
-                    flags: MemoryMappingFlags,
+                    flags: VMMapFlags,
                 ) -> Result<Flusher, MapMemoryError> {
                     self.map_inner(alloc, virtual_page, physical_page, flags)
                 }
@@ -189,6 +192,7 @@ impl PageTable<TableLevel4> {
         set(MemoryLoc::KernelStart as usize, &KERNEL_DATA_MAP);
         set(MemoryLoc::KernelHeap as usize, &KERNEL_HEAP_MAP);
         set(MemoryLoc::PerCpuMem as usize, &PER_CPU_MAP);
+        set(MemoryLoc::KernelStacks as usize, &KERNEL_STACKS_MAP);
         this
     }
 
@@ -231,7 +235,7 @@ impl<L: TableLevel + TableLevelMap> PageTable<L> {
         _: &impl PageAllocator,
         virtual_page: Page<L::Size>,
         physical_page: Page<L::Size>,
-        flags: MemoryMappingFlags,
+        flags: VMMapFlags,
     ) -> Result<Flusher, MapMemoryError> {
         let index = L::calculate_index_page(virtual_page);
         let table = self.table();
@@ -248,8 +252,8 @@ impl<L: TableLevel + TableLevelMap> PageTable<L> {
 
         e.set_present(true);
         e.set_larger_pages(L::LARGER_PAGES);
-        e.set_read_write(flags.contains(MemoryMappingFlags::WRITEABLE));
-        e.set_user_super(flags.contains(MemoryMappingFlags::USERSPACE));
+        e.set_read_write(flags.contains(VMMapFlags::WRITEABLE));
+        e.set_user_super(flags.contains(VMMapFlags::USERSPACE));
         e.set_address(physical_page.get_address());
         Ok(Flusher(virtual_page.get_address()))
     }
@@ -298,7 +302,7 @@ where
         alloc: &impl PageAllocator,
         virtual_page: Page<P>,
         physical_page: Page<P>,
-        flags: MemoryMappingFlags,
+        flags: VMMapFlags,
     ) -> Result<Flusher, MapMemoryError> {
         let index = L::calculate_index_page(virtual_page);
         let table = self.table();

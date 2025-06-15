@@ -1,12 +1,12 @@
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 use kernel_sys::{
     raw::{
         syscall::SYSCALL_NUMBER,
         types::{hid_t, pid_t, signals_t, sys_port_notification_t, tid_t, vaddr_t},
     },
     types::{
-        Hid, MapMemoryFlags, ObjectSignal, RawValue, SysPortNotification, SysPortNotificationValue,
-        SyscallResult,
+        Hid, ObjectSignal, RawValue, SysPortNotification, SysPortNotificationValue, SyscallResult,
+        VMMapFlags, VMOAnonymousFlags,
     },
 };
 use log::Level;
@@ -18,18 +18,16 @@ use crate::{
     interrupts::KInterruptHandle,
     logging::print_log,
     message::KMessage,
+    mutex::Spinlock,
     object::{KObject, KObjectSignal, SignalWaiter},
-    paging::{
-        AllocatedPage, GlobalPageAllocator, MemoryMappingFlags, page_allocator::frame_alloc_exec,
-        page_mapper::PageMapping,
-    },
     port::KPort,
     scheduling::{
-        process::{KernelValue, ProcessMemory, ProcessReferences, ThreadState},
+        process::{KernelValue, ProcessMemory, ProcessPrivilege, ProcessReferences, ThreadState},
         taskmanager::{self, enter_sched, kill_bad_task},
     },
     time::{SLEPT_PROCESSES, SleptProcess, uptime},
     user::{UserBytes, UserBytesMut, UserPtr, UserPtrMut, get_current_bounds},
+    vm::VMO,
 };
 
 pub fn set_syscall_idt(idt: &mut InterruptDescriptorTable) {
@@ -287,7 +285,7 @@ struct SyscallFn(pub *const ());
 
 unsafe impl Sync for SyscallFn {}
 
-static SYSCALL_FNS: [SyscallFn; 30] = [
+static SYSCALL_FNS: [SyscallFn; 33] = [
     // misc
     SyscallFn(handle_sys_echo as *const ()),
     SyscallFn(handle_sys_yield as *const ()),
@@ -326,6 +324,10 @@ static SYSCALL_FNS: [SyscallFn; 30] = [
     SyscallFn(handle_sys_message_create as *const ()),
     SyscallFn(handle_sys_message_size as *const ()),
     SyscallFn(handle_sys_message_read as *const ()),
+    // vmo
+    SyscallFn(handle_sys_vmo_mmap_create as *const ()),
+    SyscallFn(handle_sys_vmo_anonymous_create as *const ()),
+    SyscallFn(handle_sys_vmo_anonymous_pinned_addresses as *const ()),
 ];
 
 extern "C" fn out_of_bounds(number: usize) -> ! {
@@ -372,9 +374,10 @@ unsafe extern "C" fn handle_sys_exit() -> ! {
 }
 
 unsafe extern "C" fn handle_sys_map(
-    mut hint: vaddr_t,
-    length: usize,
+    vmo: hid_t,
     flags: u32,
+    hint: vaddr_t,
+    length: usize,
     result: *mut vaddr_t,
 ) -> SyscallResult {
     let task = unsafe { CPULocalStorageRW::get_current_task() };
@@ -383,44 +386,35 @@ unsafe extern "C" fn handle_sys_map(
     let mut result = kunwrap!(unsafe { UserPtrMut::new(result, bounds) });
 
     let memory: &mut ProcessMemory = &mut task.process().memory.lock();
+    let refs: &mut ProcessReferences = &mut task.process().references.lock();
 
-    let flags = MapMemoryFlags::from_bits_truncate(flags);
+    let flags = VMMapFlags::from_bits_truncate(flags);
 
-    let mapping = if flags.contains(MapMemoryFlags::ALLOC_32BITS) {
-        kassert!(length <= 0x1000);
-        let page = frame_alloc_exec(|a| a.allocate_page_32bit()).unwrap();
-
-        // when alloc 32 bit we identity map so userspace knows the addr
-        hint = page.get_address() as _;
-
-        unsafe {
-            PageMapping::new_lazy_prealloc(Box::new([Some(AllocatedPage::from_raw(
-                page,
-                GlobalPageAllocator,
-            ))]))
+    let vmo_handle = match Hid::from_raw(vmo) {
+        Ok(vmo) => {
+            let val = kunwrap!(refs.references().get(&vmo));
+            kenum_cast!(val, KernelValue::VMO).clone()
         }
-    } else if flags.contains(MapMemoryFlags::PREALLOC) {
-        PageMapping::new_lazy_filled((length + 0xFFF) & !0xFFF)
-    } else {
-        PageMapping::new_lazy((length + 0xFFF) & !0xFFF)
+        Err(_) => {
+            // allocate anonymous object for the mapping
+            Arc::new(Spinlock::new(VMO::new_anonymous(
+                length,
+                VMOAnonymousFlags::empty(),
+            )))
+        }
     };
 
-    let mut map_flags = MemoryMappingFlags::USERSPACE;
-
-    if flags.contains(MapMemoryFlags::WRITEABLE) {
-        map_flags |= MemoryMappingFlags::WRITEABLE;
-    }
-
-    if hint.is_null() {
-        let addr = memory.page_mapper.insert_mapping(mapping, map_flags);
-        result.write(addr as *mut ());
+    let hint = if hint.is_null() {
+        None
     } else {
-        match memory
-            .page_mapper
-            .insert_mapping_at(hint as usize, mapping, map_flags)
-        {
-            Some(()) => result.write(hint),
-            None => return SyscallResult::BadInputPointer,
+        Some(hint as usize)
+    };
+
+    match memory.region.map_vmo(vmo_handle, flags, hint) {
+        Ok(res) => result.write(res as *mut ()),
+        Err(e) => {
+            error!("Err {e:?}");
+            return SyscallResult::BadInputPointer;
         }
     }
 
@@ -434,11 +428,7 @@ unsafe extern "C" fn handle_sys_unmap(address: vaddr_t, length: usize) -> Syscal
 
     let memory: &mut ProcessMemory = &mut task.process().memory.lock();
 
-    match unsafe {
-        memory
-            .page_mapper
-            .free_mapping(address as usize..(address as usize + length + 0xFFF) & !0xFFF)
-    } {
+    match unsafe { memory.region.unmap(address as usize, length) } {
         Ok(()) => SyscallResult::Ok,
         Err(err) => {
             info!("Error unmapping: {address:?}-{length} {err:?}");
@@ -972,6 +962,82 @@ unsafe extern "C" fn handle_sys_message_read(
     );
 
     buffer.write(&message.data);
+
+    SyscallResult::Ok
+}
+
+// vmo
+
+unsafe extern "C" fn handle_sys_vmo_mmap_create(base: *mut (), length: usize) -> hid_t {
+    unsafe {
+        let thread = CPULocalStorageRW::get_current_task();
+
+        if thread.process().privilege != ProcessPrivilege::KERNEL {
+            warn!("MMAP is privileged");
+            kill_bad_task()
+        }
+
+        let vmo = Arc::new(Spinlock::new(VMO::new_mmap(base as usize, length)));
+        thread
+            .process()
+            .references
+            .lock()
+            .add_value(vmo.into())
+            .into_raw()
+    }
+}
+
+unsafe extern "C" fn handle_sys_vmo_anonymous_create(length: usize, flags: u32) -> hid_t {
+    let thread = unsafe { CPULocalStorageRW::get_current_task() };
+
+    let flags = VMOAnonymousFlags::from_bits_truncate(flags);
+
+    if flags.intersects(VMOAnonymousFlags::_PRIVILEGED)
+        && thread.process().privilege == ProcessPrivilege::USER
+    {
+        warn!("Only kernel can use privileged flags");
+        kill_bad_task();
+    }
+
+    let vmo = Arc::new(Spinlock::new(VMO::new_anonymous(length, flags)));
+    thread
+        .process()
+        .references
+        .lock()
+        .add_value(vmo.into())
+        .into_raw()
+}
+
+unsafe extern "C" fn handle_sys_vmo_anonymous_pinned_addresses(
+    handle: hid_t,
+    offset: usize,
+    length: usize,
+    result: *mut usize,
+) -> SyscallResult {
+    let thread = unsafe { CPULocalStorageRW::get_current_task() };
+
+    if thread.process().privilege == ProcessPrivilege::USER {
+        warn!("Only kernel can use");
+        kill_bad_task();
+    }
+
+    let handle = kunwrap!(Hid::from_raw(handle));
+
+    let mut refs = thread.process().references.lock();
+    let val = kunwrap!(refs.references().get(&handle));
+    let vmo = kenum_cast!(val, KernelValue::VMO);
+    match &*vmo.lock() {
+        VMO::MemoryMapped { .. } => kpanic!("not anonymous"),
+        VMO::Anonymous { flags, pages } => {
+            kassert!(flags.contains(VMOAnonymousFlags::PINNED));
+            let bounds = get_current_bounds(&thread.process());
+
+            for (i, p) in pages.iter().skip(offset).enumerate().take(length) {
+                let mut ptr = unsafe { kunwrap!(UserPtrMut::new(result.add(i), bounds)) };
+                ptr.write(p.map(|v| v.get_address() as usize).unwrap_or(0));
+            }
+        }
+    }
 
     SyscallResult::Ok
 }

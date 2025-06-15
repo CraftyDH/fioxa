@@ -1,9 +1,7 @@
 use alloc::{boxed::Box, sync::Arc};
+use kernel_sys::types::VMMapFlags;
 
-use crate::{
-    cpu_localstorage::CPULocalStorageRW,
-    paging::{MemoryMappingFlags, page_mapper::PageMapping},
-};
+use crate::{cpu_localstorage::CPULocalStorageRW, mutex::Spinlock, vm::VMO};
 
 use super::{PCIBus, PCIDevice, PCIHeaderCommon, mcfg::MCFG};
 
@@ -67,14 +65,15 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
         let address = self.get_address(segment, bus, device, function).unwrap();
 
         unsafe {
-            let mapping = PageMapping::new_mmap(address as usize, 0x1000);
+            let mapping = Arc::new(Spinlock::new(VMO::new_mmap(address as usize, 0x1000)));
             let proc = CPULocalStorageRW::get_current_task().process();
 
             let vaddr = proc
                 .memory
                 .lock()
-                .page_mapper
-                .insert_mapping_set(mapping, MemoryMappingFlags::WRITEABLE);
+                .region
+                .map_vmo(mapping, VMMapFlags::WRITEABLE, None)
+                .unwrap();
 
             PCIHeaderCommon {
                 device: Arc::new(PCIExpressDevice {
@@ -93,14 +92,15 @@ impl<'mcfg> PCIBus for ExpressPCI<'mcfg> {
         let address = self.get_address(segment, bus, device, function).unwrap();
 
         unsafe {
-            let mapping = PageMapping::new_mmap(address as usize, 0x1000);
+            let mapping = Arc::new(Spinlock::new(VMO::new_mmap(address as usize, 0x1000)));
             let proc = CPULocalStorageRW::get_current_task().process();
 
             let vaddr = proc
                 .memory
                 .lock()
-                .page_mapper
-                .insert_mapping_set(mapping, MemoryMappingFlags::WRITEABLE);
+                .region
+                .map_vmo(mapping, VMMapFlags::WRITEABLE, None)
+                .unwrap();
 
             Box::new(PCIExpressDevice {
                 address: vaddr as u64,

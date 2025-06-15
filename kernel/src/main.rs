@@ -9,6 +9,7 @@ extern crate alloc;
 extern crate log;
 
 use ::acpi::AcpiError;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bootloader::uefi::table::{set_system_table, system_table_raw};
 use bootloader::{BootInfo, entry_point};
@@ -30,10 +31,8 @@ use kernel::net::ethernet::userspace_networking_main;
 use kernel::object::init_handle_new_proc;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
 use kernel::paging::page_allocator::global_allocator;
-use kernel::paging::page_mapper::PageMapping;
 use kernel::paging::{
-    KERNEL_DATA_MAP, KERNEL_LVL4, MemoryLoc, MemoryMappingFlags, OFFSET_MAP, set_mem_offset,
-    virt_addr_offset,
+    KERNEL_DATA_MAP, KERNEL_LVL4, MemoryLoc, OFFSET_MAP, set_mem_offset, virt_addr_offset,
 };
 use kernel::pci::enumerate_pci;
 use kernel::scheduling::process::{
@@ -47,12 +46,13 @@ use kernel::serial::{COM_1, SERIAL, Serial, serial_monitor_stdin};
 use kernel::terminal::Writer;
 use kernel::time::init_time;
 use kernel::uefi::get_config_table;
+use kernel::vm::VMO;
 use kernel::{BOOT_INFO, elf, gdt, paging};
 
 use bootloader::uefi::table::cfg::{ACPI2_GUID, ConfigTableEntry};
 
 use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
-use kernel_sys::types::RawValue;
+use kernel_sys::types::{RawValue, VMMapFlags};
 use kernel_userspace::channel::Channel;
 
 // #[no_mangle]
@@ -158,11 +158,11 @@ unsafe fn get_and_map_config_table() -> &'static [ConfigTableEntry] {
     let mut mapper = process.memory.lock();
 
     let uefi_table_base = (boot_info.uefi_runtime_table as usize) & !0xFFF;
-    let uefi_table = unsafe { PageMapping::new_mmap(uefi_table_base, 0x1000) };
+    let uefi_table = unsafe { Arc::new(Spinlock::new(VMO::new_mmap(uefi_table_base, 0x1000))) };
 
     mapper
-        .page_mapper
-        .insert_mapping_at_set(uefi_table_base, uefi_table, MemoryMappingFlags::empty())
+        .region
+        .map_vmo(uefi_table, VMMapFlags::empty(), Some(uefi_table_base))
         .unwrap();
 
     info!("UEFI Table addr: {uefi_table_base:#x}");
@@ -185,15 +185,12 @@ unsafe fn get_and_map_config_table() -> &'static [ConfigTableEntry] {
     }
 
     if size > 0 {
-        let config_tables_mapping = unsafe { PageMapping::new_mmap(base_addr, size) };
+        let config_tables_mapping =
+            unsafe { Arc::new(Spinlock::new(VMO::new_mmap(base_addr, size))) };
 
         mapper
-            .page_mapper
-            .insert_mapping_at_set(
-                base_addr,
-                config_tables_mapping,
-                MemoryMappingFlags::empty(),
-            )
+            .region
+            .map_vmo(config_tables_mapping, VMMapFlags::empty(), Some(base_addr))
             .unwrap();
     }
 

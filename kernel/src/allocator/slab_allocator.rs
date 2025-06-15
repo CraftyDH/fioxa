@@ -1,9 +1,11 @@
 use core::alloc::{GlobalAlloc, Layout};
 
+use kernel_sys::types::VMMapFlags;
+
 use crate::{
     locked_mutex::Locked,
     paging::{
-        KERNEL_HEAP_MAP, MemoryMappingFlags, PageAllocator,
+        KERNEL_HEAP_MAP, PageAllocator,
         page::{Page, Size4KB},
         page_allocator::global_allocator,
         page_table::Mapper,
@@ -63,7 +65,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
 
                         KERNEL_HEAP_MAP
                             .lock()
-                            .map(alloc, Page::new(base), frame, MemoryMappingFlags::WRITEABLE)
+                            .map(alloc, Page::new(base), frame, VMMapFlags::WRITEABLE)
                             .unwrap()
                             .flush();
 
@@ -92,7 +94,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
 
                         KERNEL_HEAP_MAP
                             .lock()
-                            .map(alloc, Page::new(page), frame, MemoryMappingFlags::WRITEABLE)
+                            .map(alloc, Page::new(page), frame, VMMapFlags::WRITEABLE)
                             .unwrap()
                             .flush();
                     }

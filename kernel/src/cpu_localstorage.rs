@@ -3,13 +3,14 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+use kernel_sys::types::VMMapFlags;
 use x86_64::instructions::interrupts;
 
 use crate::{
     gdt::CPULocalGDT,
     paging::{
-        MemoryLoc, MemoryMappingFlags, PER_CPU_MAP, PageAllocator, page::Page,
-        page_allocator::global_allocator, page_table::Mapper, virt_addr_for_phys,
+        MemoryLoc, PER_CPU_MAP, PageAllocator, page::Page, page_allocator::global_allocator,
+        page_table::Mapper, virt_addr_for_phys,
     },
     scheduling::process::{Thread, ThreadSched},
     syscall::syscall_kernel_handler,
@@ -194,7 +195,7 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
         let phys = alloc.allocate_page().unwrap();
         PER_CPU_MAP
             .lock()
-            .map(alloc, Page::new(page), phys, MemoryMappingFlags::WRITEABLE)
+            .map(alloc, Page::new(page), phys, VMMapFlags::WRITEABLE)
             .unwrap()
             .flush();
     }

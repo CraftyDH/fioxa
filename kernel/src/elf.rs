@@ -1,8 +1,10 @@
+use alloc::sync::Arc;
 use kernel_sys::syscall::sys_process_spawn_thread;
+use kernel_sys::types::{VMMapFlags, VMOAnonymousFlags};
 use kernel_userspace::elf::{ElfLoaderServiceExecutor, ElfLoaderServiceImpl};
 use kernel_userspace::service::ServiceExecutor;
 use kernel_userspace::{
-    elf::{validate_elf_header, Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD},
+    elf::{Elf64Ehdr, Elf64Phdr, LoadElfError, PT_LOAD, validate_elf_header},
     handle::Handle,
     ipc::IPCChannel,
     process::ProcessHandle,
@@ -10,9 +12,10 @@ use kernel_userspace::{
 
 use x86_64::{align_down, align_up};
 
+use crate::mutex::Spinlock;
+use crate::vm::VMO;
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
-    paging::{page_mapper::PageMapping, MemoryMappingFlags},
     scheduling::{
         process::{ProcessBuilder, ProcessMemory, ProcessReferences},
         with_held_interrupts,
@@ -28,10 +31,10 @@ bitflags::bitflags! {
 }
 
 impl ElfSegmentFlags {
-    pub fn to_mapping_flags(&self) -> MemoryMappingFlags {
-        let mut flags = MemoryMappingFlags::USERSPACE;
+    pub fn to_mapping_flags(&self) -> VMMapFlags {
+        let mut flags = VMMapFlags::USERSPACE;
         if self.contains(ElfSegmentFlags::PF_W) {
-            flags |= MemoryMappingFlags::WRITEABLE;
+            flags |= VMMapFlags::WRITEABLE;
         }
         flags
     }
@@ -60,23 +63,27 @@ pub fn load_elf(data: &[u8]) -> Result<ProcessBuilder, LoadElfError> {
             let vend = align_up(program_header.p_vaddr + program_header.p_memsz, 0x1000);
 
             let size = (vend - vstart) as usize;
-            let mem = PageMapping::new_lazy(size);
+            let mem = Arc::new(Spinlock::new(VMO::new_anonymous(
+                size,
+                VMOAnonymousFlags::empty(),
+            )));
 
             let flags = ElfSegmentFlags::from_bits_truncate(program_header.p_flags);
 
             // Map into the new processes address space
             memory
-                .page_mapper
-                .insert_mapping_at(vstart as usize, mem.clone(), flags.to_mapping_flags())
-                .ok_or(LoadElfError::InternalError)?;
+                .region
+                .map_vmo(mem.clone(), flags.to_mapping_flags(), Some(vstart as usize))
+                .map_err(|_| LoadElfError::InternalError)?;
 
             unsafe {
                 // Map into our address space
                 let base = with_held_interrupts(|| {
                     this_mem
                         .lock()
-                        .page_mapper
-                        .insert_mapping(mem, MemoryMappingFlags::all())
+                        .region
+                        .map_vmo(mem, VMMapFlags::WRITEABLE, None)
+                        .unwrap()
                 });
 
                 assert_eq!(
@@ -93,10 +100,7 @@ pub fn load_elf(data: &[u8]) -> Result<ProcessBuilder, LoadElfError> {
                 );
 
                 // Unmap from our address space
-                with_held_interrupts(|| {
-                    this_mem.lock().page_mapper.free_mapping(base..base + size)
-                })
-                .unwrap();
+                with_held_interrupts(|| this_mem.lock().region.unmap(base, size)).unwrap();
             }
         }
     }

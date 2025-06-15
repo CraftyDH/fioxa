@@ -20,6 +20,7 @@ pub mod pci;
 pub mod port;
 pub mod process;
 pub mod service;
+pub mod vm;
 
 pub use kernel_sys as sys;
 pub use rkyv;

@@ -5,7 +5,7 @@ use core::{
 
 use kernel_sys::{
     syscall::{sys_map, sys_unmap},
-    types::MapMemoryFlags,
+    types::VMMapFlags,
 };
 
 use crate::locked_mutex::Locked;
@@ -53,7 +53,13 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     // Only works if all blocks are powers of 2
 
                     let base = unsafe {
-                        sys_map(null_mut(), 0x1000, MapMemoryFlags::WRITEABLE).unwrap() as usize
+                        sys_map(
+                            None,
+                            VMMapFlags::USERSPACE | VMMapFlags::WRITEABLE,
+                            null_mut(),
+                            0x1000,
+                        )
+                        .unwrap() as usize
                     };
 
                     let mut current_node = None;
@@ -69,9 +75,14 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                 }
             },
             None => unsafe {
-                sys_map(null_mut(), min_size, MapMemoryFlags::WRITEABLE)
-                    .unwrap()
-                    .cast()
+                sys_map(
+                    None,
+                    VMMapFlags::USERSPACE | VMMapFlags::WRITEABLE,
+                    null_mut(),
+                    min_size,
+                )
+                .unwrap()
+                .cast()
             },
         }
     }

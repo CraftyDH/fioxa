@@ -1,11 +1,12 @@
 use core::sync::atomic::AtomicU32;
 
+use kernel_sys::types::VMMapFlags;
 use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     paging::{
-        MemoryLoc, MemoryMappingFlags,
+        MemoryLoc,
         page::{Page, Size4KB},
         page_allocator::global_allocator,
         page_table::{MapMemoryError, Mapper, PageTable, TableLevel4},
@@ -23,7 +24,7 @@ pub fn map_lapic(mapper: &mut PageTable<TableLevel4>) {
         global_allocator(),
         Page::<Size4KB>::new(LAPIC_ADDR),
         Page::new(PHYS_LAPIC_ADDR),
-        MemoryMappingFlags::WRITEABLE,
+        VMMapFlags::WRITEABLE,
     ) {
         Ok(f) => f.flush(),
         Err(MapMemoryError::MemAlreadyMapped {

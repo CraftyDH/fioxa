@@ -13,7 +13,6 @@ pub mod offset_map;
 pub mod page;
 pub mod page_allocator;
 pub mod page_directory;
-pub mod page_mapper;
 pub mod page_table;
 
 /// KERNEL map for context 0 / scheduler
@@ -24,7 +23,8 @@ pub static OFFSET_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
     Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
 pub static KERNEL_DATA_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
     Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
-
+pub static KERNEL_STACKS_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
+    Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
 pub static KERNEL_HEAP_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
     Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
 pub static PER_CPU_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
@@ -43,16 +43,9 @@ pub enum MemoryLoc64bit48bits {
     PerCpuMem = 0xffff_AC0000000000,
     PhysMapOffset = 0xffff_E00000000000,     // 448 (16tb)
     _EndPhysMapOffset = 0xffff_EFFFFFFFFFFF, // <450 (10tb)
+    KernelStacks = 0xffff_FE8000000000,      // 509
     KernelHeap = 0xffff_FF0000000000,        // 510
     KernelStart = 0xffff_FF8000000000,       // 511
-}
-
-bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy)]
-    pub struct MemoryMappingFlags: u8 {
-        const WRITEABLE  = 1 << 0;
-        const USERSPACE  = 1 << 1;
-    }
 }
 
 static mut MEM_OFFSET: u64 = 0;

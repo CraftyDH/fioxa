@@ -1,6 +1,7 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)] // We need to be able to create the error handler
+#![feature(iter_map_windows)]
 //* Testing
 // #![feature(custom_test_frameworks)]
 // #![test_runner(test_runner)]
@@ -55,6 +56,7 @@ pub mod terminal;
 pub mod time;
 pub mod uefi;
 pub mod user;
+pub mod vm;
 
 pub static mut BOOT_INFO: *const BootInfo = 0 as *const BootInfo;
 unsafe extern "C" {

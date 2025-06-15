@@ -12,8 +12,11 @@ use core::{iter::Cycle, mem::size_of, ops::Range, ptr::null_mut, slice};
 
 use alloc::{sync::Arc, vec::Vec};
 use kernel_sys::{
-    syscall::{sys_map, sys_process_spawn_thread, sys_yield},
-    types::{Hid, KernelObjectType, MapMemoryFlags, SyscallResult},
+    syscall::{
+        sys_handle_drop, sys_map, sys_process_spawn_thread, sys_vmo_anonymous_create,
+        sys_vmo_anonymous_pinned_addresses, sys_yield,
+    },
+    types::{Hid, KernelObjectType, SyscallResult, VMMapFlags, VMOAnonymousFlags},
 };
 use kernel_userspace::{
     interrupt::InterruptsService,
@@ -191,21 +194,11 @@ pub struct PCNET<'b> {
     init_block: &'b mut InitBlock,
     send_buffer_desc: &'b mut [BufferDescriptor],
     send_buffer_pos: Cycle<Range<usize>>,
+    send_buffer_buffers: &'b mut [[u8; 2048]],
     recv_buffer_desc: &'b mut [BufferDescriptor],
     revc_buffer_pos: Cycle<Range<usize>>,
-    owned_pages: Vec<u32>,
+    recv_buffer_buffers: &'b mut [[u8; 2048]],
     listeners: Vec<Channel>,
-}
-
-fn mmap_page32() -> u32 {
-    unsafe {
-        sys_map(
-            null_mut(),
-            0x1000,
-            MapMemoryFlags::WRITEABLE | MapMemoryFlags::ALLOC_32BITS,
-        )
-        .unwrap() as u32
-    }
 }
 
 impl PCNET<'_> {
@@ -232,29 +225,61 @@ impl PCNET<'_> {
 
         assert!(header_mem_size <= 0x1000);
 
-        let mut owned_pages = Vec::new();
-
-        let (init_block, send_buffer_desc, recv_buffer_desc) = unsafe {
+        let (
+            init_block,
+            init_block_paddr,
+            send_buffer_desc,
+            send_buffer_paddr,
+            recv_buffer_desc,
+            recv_buffer_paddr,
+        ) = unsafe {
             // Allocate (identity mapped) page below 4gb location.
-            let buffer = mmap_page32();
 
-            let buffer_start = buffer;
-            owned_pages.push(buffer);
+            let map = sys_vmo_anonymous_create(
+                0x1000,
+                VMOAnonymousFlags::PINNED | VMOAnonymousFlags::BELOW_32,
+            );
+            let mut phys = [0usize];
+            sys_vmo_anonymous_pinned_addresses(map, 0, &mut phys).assert_ok();
+            let paddr = phys[0].try_into().unwrap();
+            let vaddr = sys_map(
+                Some(map),
+                VMMapFlags::USERSPACE | VMMapFlags::WRITEABLE,
+                null_mut(),
+                0x1000,
+            )
+            .unwrap();
+            sys_handle_drop(map).assert_ok();
 
-            let mut buffer_start = buffer_start as *const u8;
+            let buffer_start = vaddr;
+
+            let mut buf_start = 0;
 
             // Init block
             let init_block = &mut *(buffer_start as *mut InitBlock);
 
-            buffer_start = buffer_start.add(size_of::<InitBlock>());
+            buf_start += size_of::<InitBlock>() as u32;
 
-            let send_buffer_desc =
-                slice::from_raw_parts_mut(buffer_start as *mut BufferDescriptor, SEND_BUFFER_CNT);
+            let send_buffer_desc = slice::from_raw_parts_mut(
+                buffer_start.byte_add(buf_start as usize) as *mut BufferDescriptor,
+                SEND_BUFFER_CNT,
+            );
+            let send_byffer_paddr = paddr + buf_start;
 
-            buffer_start = buffer_start.add(size_of::<[BufferDescriptor; SEND_BUFFER_CNT]>());
-            let recv_buffer_desc =
-                slice::from_raw_parts_mut(buffer_start as *mut BufferDescriptor, RECV_BUFFER_CNT);
-            (init_block, send_buffer_desc, recv_buffer_desc)
+            buf_start += size_of::<[BufferDescriptor; SEND_BUFFER_CNT]>() as u32;
+            let recv_buffer_desc = slice::from_raw_parts_mut(
+                buffer_start.byte_add(buf_start as usize) as *mut BufferDescriptor,
+                RECV_BUFFER_CNT,
+            );
+            let recv_buffer_paddr = paddr + buf_start;
+            (
+                init_block,
+                paddr,
+                send_buffer_desc,
+                send_byffer_paddr,
+                recv_buffer_desc,
+                recv_buffer_paddr,
+            )
         };
 
         // init_block.set_mode(0x8000); // promiscours mode = true;
@@ -263,51 +288,72 @@ impl PCNET<'_> {
         init_block.set_num_recv_buffers(RECV_BUFFER_CNT_LOG);
         init_block.set_physical_address(mac);
         init_block.set_logical_address(IP_ADDR.into());
-        init_block
-            .set_send_buffer_desc_addr(&send_buffer_desc[0] as *const BufferDescriptor as u32);
+        init_block.set_send_buffer_desc_addr(send_buffer_paddr);
+        init_block.set_recv_buffer_desc_addr(recv_buffer_paddr);
 
-        init_block
-            .set_recv_buffer_desc_addr(&recv_buffer_desc[0] as *const BufferDescriptor as u32);
+        let pages = (SEND_BUFFER_CNT + 1) / 2;
+        let send_map = sys_vmo_anonymous_create(
+            pages * 0x1000,
+            VMOAnonymousFlags::PINNED | VMOAnonymousFlags::BELOW_32,
+        );
+        let mut send_paddrs = [0usize; SEND_BUFFER_CNT / 2];
+        sys_vmo_anonymous_pinned_addresses(send_map, 0, &mut send_paddrs).assert_ok();
+        let send_buffer_buffers = unsafe {
+            let base = sys_map(
+                Some(send_map),
+                VMMapFlags::USERSPACE | VMMapFlags::WRITEABLE,
+                null_mut(),
+                pages * 0x1000,
+            )
+            .unwrap();
+            core::slice::from_raw_parts_mut(base as _, SEND_BUFFER_CNT)
+        };
 
         // Alloc buffer each 2 buffer
-        for i in (0..SEND_BUFFER_CNT).step_by(2) {
-            // Allocate page below 4gb location.
-            let buffer = mmap_page32();
-            owned_pages.push(buffer);
-
-            send_buffer_desc[i].address = buffer;
+        for (i, paddr) in send_paddrs.iter().flat_map(|&x| [x, x + 2048]).enumerate() {
+            send_buffer_desc[i].address = paddr as u32;
             send_buffer_desc[i].flags = BUFFER_SIZE_MASK;
-            send_buffer_desc[i + 1].address = buffer + 2048;
-            send_buffer_desc[i + 1].flags = BUFFER_SIZE_MASK;
         }
+
+        let pages = (RECV_BUFFER_CNT + 1) / 2;
+        let recv_map = sys_vmo_anonymous_create(
+            pages * 0x1000,
+            VMOAnonymousFlags::PINNED | VMOAnonymousFlags::BELOW_32,
+        );
+        let mut recv_paddrs = [0usize; RECV_BUFFER_CNT / 2];
+        sys_vmo_anonymous_pinned_addresses(recv_map, 0, &mut recv_paddrs).assert_ok();
+        let recv_buffer_buffers = unsafe {
+            let base = sys_map(
+                Some(recv_map),
+                VMMapFlags::USERSPACE,
+                null_mut(),
+                pages * 0x1000,
+            )
+            .unwrap();
+            core::slice::from_raw_parts_mut(base as _, RECV_BUFFER_CNT)
+        };
+
         // Alloc buffer each 2 buffer
-        for i in (0..RECV_BUFFER_CNT).step_by(2) {
-            // Allocate page below 4gb location.
-            let buffer = mmap_page32();
-            owned_pages.push(buffer);
-
-            recv_buffer_desc[i].address = buffer;
+        for (i, paddr) in recv_paddrs.iter().flat_map(|&x| [x, x + 2048]).enumerate() {
+            recv_buffer_desc[i].address = paddr as u32;
             recv_buffer_desc[i].flags = BUFFER_SIZE_MASK | 0x80000000;
-            recv_buffer_desc[i + 1].address = buffer + 2048;
-            recv_buffer_desc[i + 1].flags = BUFFER_SIZE_MASK | 0x80000000;
         }
-
-        let init_block_addr = init_block as *const InitBlock as u32;
 
         let mut this = Self {
             io: port,
             init_block,
             send_buffer_pos: (0..send_buffer_desc.len()).cycle(),
             send_buffer_desc,
+            send_buffer_buffers,
             revc_buffer_pos: (0..recv_buffer_desc.len()).cycle(),
             recv_buffer_desc,
-            owned_pages,
+            recv_buffer_buffers,
             listeners: Vec::new(),
         };
 
         // Write regs
-        this.io.write_csr_32(1, init_block_addr);
-        this.io.write_csr_32(2, init_block_addr >> 16);
+        this.io.write_csr_32(1, init_block_paddr);
+        this.io.write_csr_32(2, init_block_paddr >> 16);
 
         // Set init
         this.io.write_csr_32(0, 1);
@@ -373,13 +419,7 @@ impl PCNET<'_> {
             let buffer_desc = &mut self.send_buffer_desc[buffer];
             // Find a buffer which we own
             if buffer_desc.flags & 0x80000000 == 0 {
-                let send_buffer = unsafe {
-                    slice::from_raw_parts_mut(
-                        buffer_desc.address as *mut u8,
-                        BUFFER_ENTRY_SIZE as usize,
-                    )
-                };
-                send_buffer[..data.len()].clone_from_slice(data);
+                self.send_buffer_buffers[buffer][..data.len()].clone_from_slice(data);
 
                 buffer_desc.avail = 0;
                 buffer_desc.flags_2 = 0;
@@ -410,8 +450,7 @@ impl PCNET<'_> {
             if flags & 0x80000000 == 0 {
                 if flags & 0x40000000 == 0 && flags & 0x03000000 > 0 {
                     let size: usize = buffer_desc.flags_2 as usize & 0xFFFF;
-                    let packet =
-                        unsafe { slice::from_raw_parts(buffer_desc.address as *const u8, size) };
+                    let packet = &self.recv_buffer_buffers[buffer][..size];
                     self.listeners
                         .retain(|l| l.write(packet, &[]) == SyscallResult::Ok);
                 }

@@ -5,14 +5,15 @@ pub mod port;
 use alloc::{sync::Arc, vec::Vec};
 use bit_field::BitField;
 
+use kernel_sys::types::VMMapFlags;
 use volatile::Volatile;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
     driver::{disk::DiskDevice, driver::Driver},
     mutex::Spinlock,
-    paging::{MemoryMappingFlags, page_mapper::PageMapping},
     pci::{PCIHeader0, PCIHeaderCommon},
+    vm::VMO,
 };
 
 use self::{
@@ -129,13 +130,14 @@ impl Driver for AHCIDriver {
         let abar = header0.get_bar(5);
 
         let abar_vaddr = unsafe {
-            let map = PageMapping::new_mmap(abar as usize, 0x1000);
+            let map = VMO::new_mmap(abar as usize, 0x1000);
             CPULocalStorageRW::get_current_task()
                 .process()
                 .memory
                 .lock()
-                .page_mapper
-                .insert_mapping_set(map, MemoryMappingFlags::WRITEABLE)
+                .region
+                .map_vmo(Arc::new(Spinlock::new(map)), VMMapFlags::WRITEABLE, None)
+                .unwrap()
         };
 
         let abar = unsafe { &mut *(abar_vaddr as *mut HBAMemory) };

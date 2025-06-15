@@ -130,16 +130,6 @@ impl RawValue for SyscallResult {
     }
 }
 
-bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy)]
-    pub struct MapMemoryFlags: u32 {
-        const WRITEABLE     = 1 << 0;
-
-        const PREALLOC      = 1 << 1;
-        const ALLOC_32BITS  = 1 << 2;
-    }
-}
-
 #[derive(Debug, FromPrimitive, ToPrimitive, Clone, Copy, PartialEq, Eq)]
 pub enum KernelObjectType {
     None,
@@ -148,6 +138,7 @@ pub enum KernelObjectType {
     Channel,
     Port,
     Interrupt,
+    VMO,
 }
 
 bitflags::bitflags! {
@@ -230,5 +221,28 @@ impl RawValue for SysPortNotification {
                 value,
             })
         }
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct VMOAnonymousFlags: u32 {
+        /// Once allocated, the physical address will stay the same (and will always be allocated)
+        const PINNED = 1 << 0;
+
+        /// All physical addresses will be continuous
+        const CONTINUOUS = 1 << 1 | Self::PINNED.bits();
+
+        /// All physical addresses will be 32 bits
+        const BELOW_32 = 1 << 2;
+
+        /// Only kernel can use
+        const _PRIVILEGED = Self::PINNED.bits() | Self::CONTINUOUS.bits() | Self::BELOW_32.bits();
+    }
+
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct VMMapFlags: u32 {
+        const USERSPACE = 1 << 0;
+        const WRITEABLE = 1 << 1;
     }
 }

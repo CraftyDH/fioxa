@@ -1,6 +1,5 @@
-use alloc::sync::Arc;
 use bootloader::{BootInfo, gop::GopInfo};
-use spin::Once;
+use kernel_sys::types::VMMapFlags;
 
 use crate::{
     kernel_memory_loc,
@@ -14,9 +13,8 @@ use crate::{
 };
 
 use super::{
-    MemoryMappingFlags, PageAllocator,
+    PageAllocator,
     page::Size4KB,
-    page_mapper::PageMapping,
     page_table::{PageTable, TableLevel3, TableLevel4},
 };
 
@@ -49,7 +47,7 @@ pub unsafe fn create_offset_map(
                         alloc,
                         Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),
                         page,
-                        MemoryMappingFlags::WRITEABLE,
+                        VMMapFlags::WRITEABLE,
                     )
                     .unwrap()
                     .ignore();
@@ -63,7 +61,7 @@ pub unsafe fn create_offset_map(
                         alloc,
                         Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),
                         page,
-                        MemoryMappingFlags::WRITEABLE,
+                        VMMapFlags::WRITEABLE,
                     )
                     .unwrap()
                     .ignore();
@@ -76,7 +74,7 @@ pub unsafe fn create_offset_map(
                     alloc,
                     Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),
                     page,
-                    MemoryMappingFlags::WRITEABLE,
+                    VMMapFlags::WRITEABLE,
                 )
                 .unwrap()
                 .ignore();
@@ -95,29 +93,10 @@ pub unsafe fn map_gop(
 
     for i in (fb_base..fb_size + 0xFFF).step_by(0x1000) {
         mapper
-            .identity_map(
-                alloc,
-                Page::<Size4KB>::new(i),
-                MemoryMappingFlags::WRITEABLE,
-            )
+            .identity_map(alloc, Page::<Size4KB>::new(i), VMMapFlags::WRITEABLE)
             .unwrap()
             .ignore();
     }
-}
-
-pub unsafe fn get_gop_range(gop: &GopInfo) -> (usize, Arc<PageMapping>) {
-    static GOP_RANGE: Once<(usize, Arc<PageMapping>)> = Once::new();
-    GOP_RANGE
-        .call_once(|| unsafe {
-            let fb_ptr = *gop.buffer.as_ptr() as usize;
-
-            let fb_base = fb_ptr & !0xFFF;
-
-            let fb_top = (fb_base + gop.buffer_size as usize + 0xFFF) & !0xFFF;
-
-            (fb_base, PageMapping::new_mmap(fb_base, fb_top - fb_base))
-        })
-        .clone()
 }
 
 pub unsafe fn create_kernel_map(
@@ -137,7 +116,7 @@ pub unsafe fn create_kernel_map(
                 alloc,
                 Page::<Size4KB>::new(MemoryLoc::KernelStart as u64 + i),
                 Page::<Size4KB>::new(base + i),
-                MemoryMappingFlags::WRITEABLE,
+                VMMapFlags::WRITEABLE,
             )
             .unwrap()
             .ignore();

@@ -8,7 +8,7 @@ kernel_syscall::define_syscalls! {
     raw_sys_yield(),
     raw_sys_sleep(ms: u64) -> u64,
     raw_sys_exit() -> !,
-    raw_sys_map(hint: vaddr_t, length: usize, flags: u32, result: *mut vaddr_t) -> result_t,
+    raw_sys_map(vmo: /*optional*/ hid_t, flags: u32, hint: vaddr_t, length: usize, result: *mut vaddr_t) -> result_t,
     raw_sys_unmap(address: vaddr_t, length: usize) -> result_t,
     raw_sys_read_args(buffer: *mut u8, len: usize) -> usize,
     raw_sys_pid() -> pid_t,
@@ -48,4 +48,9 @@ kernel_syscall::define_syscalls! {
     raw_sys_message_create(data: *const u8, data_len: usize) -> hid_t,
     raw_sys_message_size(handle: hid_t, size: *mut usize) -> result_t,
     raw_sys_message_read(handle: hid_t, buf: *mut u8, buf_len: usize) -> result_t,
+
+    // vmo
+    raw_sys_vmo_mmap_create(base: *mut (), length: usize) -> hid_t,
+    raw_sys_vmo_anonymous_create(length: usize, flags: u32) -> hid_t,
+    raw_sys_vmo_anonymous_pinned_addresses(handle: hid_t, offset: usize, length: usize, result: *mut usize) -> result_t,
 }

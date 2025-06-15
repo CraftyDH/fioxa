@@ -47,7 +47,7 @@ unsafe fn get_phys_addr_from_vaddr(address: u64) -> Option<u64> {
     unsafe {
         let thread = CPULocalStorageRW::get_current_task();
         let mem = thread.process().memory.lock();
-        mem.page_mapper.get_phys_addr_from_vaddr(address)
+        mem.region.get_phys_addr_from_vaddr(address)
     }
 }
 

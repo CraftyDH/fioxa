@@ -4,8 +4,9 @@ use core::{
 };
 
 use acpi::{AcpiTable, sdt::SdtHeader};
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 use bit_field::BitField;
+use kernel_sys::types::VMMapFlags;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
@@ -13,7 +14,8 @@ use crate::{
         com1_int_handler, keyboard_int_handler, mouse_int_handler, pci_int_handler, set_irq_handler,
     },
     lapic::LAPIC_ADDR,
-    paging::{MemoryMappingFlags, page_mapper::PageMapping},
+    mutex::Spinlock,
+    vm::VMO,
 };
 
 pub unsafe fn enable_apic(madt: &Madt) {
@@ -28,12 +30,20 @@ pub unsafe fn enable_apic(madt: &Madt) {
     }
 
     let curr_proc = unsafe { CPULocalStorageRW::get_current_task().process() };
-    let mapper = &mut curr_proc.memory.lock().page_mapper;
+    let mut mem = curr_proc.memory.lock();
 
     let apic = io_apics.first().unwrap();
-    let apic_mapping = unsafe { PageMapping::new_mmap(apic.apic_addr as usize, 0x1000) };
+    let apic_mapping = unsafe {
+        Arc::new(Spinlock::new(VMO::new_mmap(
+            apic.apic_addr as usize,
+            0x1000,
+        )))
+    };
 
-    let apic_addr = mapper.insert_mapping_set(apic_mapping.clone(), MemoryMappingFlags::WRITEABLE);
+    let apic_addr = mem
+        .region
+        .map_vmo(apic_mapping, VMMapFlags::WRITEABLE, None)
+        .unwrap();
 
     // Timer is usually overridden to irq 2
     // TODO: Parse overides and use those
@@ -53,11 +63,7 @@ pub unsafe fn enable_apic(madt: &Madt) {
     set_irq_handler(53, com1_int_handler);
     set_redirect_entry(apic_addr, 0, 4, 53, true);
 
-    unsafe {
-        mapper
-            .free_mapping(apic_addr..(apic_addr + apic_mapping.size()))
-            .unwrap()
-    }
+    unsafe { mem.region.unmap(apic_addr, 0x1000).unwrap() }
 }
 
 pub fn send_ipi_to(apic_id: u8, vector: u8) {

@@ -33,13 +33,21 @@ pub fn sys_exit() -> ! {
 
 #[inline]
 pub unsafe fn sys_map(
+    vmo: Option<Hid>,
+    flags: VMMapFlags,
     hint: vaddr_t,
     length: usize,
-    flags: MapMemoryFlags,
 ) -> Result<vaddr_t, SyscallResult> {
     let mut result = null_mut();
     unsafe {
-        SyscallResult::create(raw_sys_map(hint, length, flags.bits(), &mut result)).map(|()| result)
+        SyscallResult::create(raw_sys_map(
+            vmo.map(|v| v.into_raw()).unwrap_or(0),
+            flags.bits(),
+            hint,
+            length,
+            &mut result,
+        ))
+        .map(|()| result)
     }
 }
 
@@ -389,6 +397,35 @@ pub fn sys_message_read(handle: Hid, buf: &mut [u8]) -> SyscallResult {
             handle.into_raw(),
             buf.as_mut_ptr(),
             buf.len(),
+        ))
+        .unwrap()
+    }
+}
+
+// vmo
+
+#[inline]
+pub fn sys_vmo_mmap_create(base: *mut (), length: usize) -> Hid {
+    unsafe { Hid::from_raw(raw_sys_vmo_mmap_create(base, length)).unwrap() }
+}
+
+#[inline]
+pub fn sys_vmo_anonymous_create(length: usize, flags: VMOAnonymousFlags) -> Hid {
+    unsafe { Hid::from_raw(raw_sys_vmo_anonymous_create(length, flags.bits())).unwrap() }
+}
+
+#[inline]
+pub fn sys_vmo_anonymous_pinned_addresses(
+    handle: Hid,
+    offset: usize,
+    result: &mut [usize],
+) -> SyscallResult {
+    unsafe {
+        SyscallResult::from_raw(raw_sys_vmo_anonymous_pinned_addresses(
+            handle.into_raw(),
+            offset,
+            result.len(),
+            result.as_mut_ptr(),
         ))
         .unwrap()
     }

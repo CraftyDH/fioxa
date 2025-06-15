@@ -4,6 +4,9 @@ use core::{
     sync::atomic::AtomicU32,
 };
 
+use alloc::sync::Arc;
+use kernel_sys::types::VMMapFlags;
+
 use crate::{
     assembly::AP_TRAMPOLINE,
     cpu_localstorage::{CPULocalStorageRW, new_cpu},
@@ -11,15 +14,16 @@ use crate::{
     interrupts::IDT,
     ioapic::Madt,
     lapic::{LAPIC_ADDR, enable_localapic},
+    mutex::Spinlock,
     paging::{
-        KERNEL_LVL4, MemoryLoc, MemoryMappingFlags,
+        KERNEL_LVL4, MemoryLoc,
         page::{Page, Size4KB},
         page_allocator::{frame_alloc_exec, global_allocator},
-        page_mapper::PageMapping,
         page_table::Mapper,
     },
     scheduling::taskmanager::core_start_multitasking,
     time::spin_sleep_ms,
+    vm::VMO,
 };
 
 /// It is assumed that 0x8000 is identity mapped before this point
@@ -42,17 +46,19 @@ pub unsafe fn boot_aps(madt: &Madt) {
 
         // we need to set 0x8000 for the trampoline
         unsafe {
-            mem.page_mapper.insert_mapping_at_set(
-                0x8000,
-                PageMapping::new_mmap(0x8000, 0x1000),
-                MemoryMappingFlags::WRITEABLE,
-            )
+            mem.region
+                .map_vmo(
+                    Arc::new(Spinlock::new(VMO::new_mmap(0x8000, 0x1000))),
+                    VMMapFlags::WRITEABLE,
+                    Some(0x8000),
+                )
+                .unwrap();
         };
         kernel_mem
             .identity_map(
                 global_allocator(),
                 Page::<Size4KB>::new(0x8000),
-                MemoryMappingFlags::WRITEABLE,
+                VMMapFlags::WRITEABLE,
             )
             .unwrap()
             .ignore();

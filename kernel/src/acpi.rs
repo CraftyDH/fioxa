@@ -1,11 +1,10 @@
 use core::ptr::NonNull;
 
 use acpi::{AcpiHandler, PhysicalMapping};
+use alloc::sync::Arc;
+use kernel_sys::types::VMMapFlags;
 
-use crate::{
-    cpu_localstorage::CPULocalStorageRW,
-    paging::{MemoryMappingFlags, page_mapper::PageMapping},
-};
+use crate::{cpu_localstorage::CPULocalStorageRW, mutex::Spinlock, vm::VMO};
 
 #[derive(Clone)]
 pub struct FioxaAcpiHandler;
@@ -25,10 +24,13 @@ impl AcpiHandler for FioxaAcpiHandler {
         let mut mem = thread.process().memory.lock();
 
         let vaddr_base = unsafe {
-            mem.page_mapper.insert_mapping_set(
-                PageMapping::new_mmap(base, mapped_size),
-                MemoryMappingFlags::WRITEABLE,
-            )
+            mem.region
+                .map_vmo(
+                    Arc::new(Spinlock::new(VMO::new_mmap(base, mapped_size))),
+                    VMMapFlags::WRITEABLE,
+                    None,
+                )
+                .unwrap()
         };
 
         unsafe {
@@ -49,9 +51,7 @@ impl AcpiHandler for FioxaAcpiHandler {
             let base = (region.virtual_start().as_ptr() as usize) & !0xFFF;
             let mut mem = thread.process().memory.lock();
 
-            mem.page_mapper
-                .free_mapping(base..base + region.mapped_length())
-                .unwrap()
+            mem.region.unmap(base, region.mapped_length()).unwrap()
         }
     }
 }

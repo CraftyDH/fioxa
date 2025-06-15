@@ -115,7 +115,7 @@ impl PageFrameAllocator {
                 .step_by(0x1000)
                 .take(taken_amount)
                 .filter(|&p| p != 0x8000)
-                .for_each(|p| unsafe { this.free_32bit_reserved_page(p) });
+                .for_each(|p| unsafe { this.free_32bit_reserved_page(Page::new(p as u64)) });
 
             if free_found == RESERVED_32BIT_MEM_PAGES {
                 let amount_left = entry.page_count as usize - taken_amount;
@@ -212,11 +212,12 @@ impl PageFrameAllocator {
         Some(AllocatedPageOrder { order, base })
     }
 
-    pub unsafe fn free_32bit_reserved_page(&mut self, page: usize) {
-        let meta = unsafe { &mut *virt_addr_offset_mut(page as *mut PageMetadata32) };
+    pub unsafe fn free_32bit_reserved_page(&mut self, page: Page<Size4KB>) {
+        let page = page.get_address() as *mut PageMetadata32;
+        let meta = unsafe { &mut *virt_addr_offset_mut(page) };
 
         meta.next_node = self.reserved_32bit.take();
-        self.reserved_32bit = Some(page as *mut PageMetadata32);
+        self.reserved_32bit = Some(page);
     }
 
     pub fn free_page_of_order(&mut self, pages: AllocatedPageOrder) {
