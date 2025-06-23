@@ -232,7 +232,7 @@ pub struct FSServiceHandler {
 }
 
 impl FSServiceImpl for FSServiceHandler {
-    fn stat(&mut self, disk: u64, path: &str) -> Result<StatResponse, FSServiceError> {
+    fn stat(&mut self, disk: u64, path: &str) -> Result<StatResponse<'_>, FSServiceError> {
         let file = get_file_from_path(PartitionId(disk), path)?;
         let stat = match file.specialized {
             VFileSpecialized::Folder(children) => {

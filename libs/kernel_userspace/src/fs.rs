@@ -208,7 +208,7 @@ impl<I: FSServiceImpl> FSServiceExecuter<I> {
 }
 
 pub trait FSServiceImpl {
-    fn stat(&mut self, disk: u64, path: &str) -> Result<StatResponse, FSServiceError>;
+    fn stat(&mut self, disk: u64, path: &str) -> Result<StatResponse<'_>, FSServiceError>;
 
     fn read_file_sector(
         &mut self,

@@ -12,7 +12,7 @@ impl<A> Locked<A> {
         }
     }
 
-    pub fn lock(&self) -> SpinlockGuard<A> {
+    pub fn lock(&self) -> SpinlockGuard<'_, A> {
         self.inner.lock()
     }
 }
