@@ -21,6 +21,7 @@ log = { version = "0.4", default-features = false }
 modular-bitfield = { version = "0.12", default-features = false }
 num-derive = { version = "0.4.2" }
 num-traits = { version = "0.2.19", default-features = false }
+slab = { version = "0.4.10", default-features = false }
 spin = "0.10.0"
 thiserror = { version = "2.0", default-features = false }
 volatile = "0.3"

@@ -392,7 +392,7 @@ unsafe extern "C" fn handle_sys_map(
 
     let vmo_handle = match Hid::from_raw(vmo) {
         Ok(vmo) => {
-            let val = kunwrap!(refs.references().get(&vmo));
+            let val = kunwrap!(refs.get(vmo));
             kenum_cast!(val, KernelValue::VMO).clone()
         }
         Err(_) => {
@@ -521,7 +521,7 @@ unsafe extern "C" fn handle_sys_handle_drop(handle: hid_t) -> SyscallResult {
 
     let handle = kunwrap!(Hid::from_raw(handle));
 
-    match refs.references().remove(&handle) {
+    match refs.remove(handle) {
         Some(_) => SyscallResult::Ok,
         None => SyscallResult::UnknownHandle,
     }
@@ -536,9 +536,9 @@ unsafe extern "C" fn handle_sys_handle_clone(handle: hid_t, cloned: *mut hid_t) 
 
     let handle = kunwrap!(Hid::from_raw(handle));
 
-    match refs.references().get(&handle).cloned() {
+    match refs.get(handle).cloned() {
         Some(h) => {
-            let new = refs.add_value(h);
+            let new = refs.insert(h);
             cloned.write(new.0.get());
             SyscallResult::Ok
         }
@@ -557,7 +557,7 @@ unsafe extern "C" fn handle_sys_object_type(handle: hid_t, ty: *mut usize) -> Sy
 
     let handle = kunwrap!(Hid::from_raw(handle));
 
-    match refs.references().get(&handle) {
+    match refs.get(handle) {
         Some(h) => {
             ty.write(h.object_type() as usize);
             SyscallResult::Ok
@@ -574,11 +574,11 @@ unsafe extern "C" fn handle_sys_object_wait(
     let bounds = get_current_bounds(&thread.process());
     let mut result = unsafe { kunwrap!(UserPtrMut::new(result, bounds)) };
 
-    let mut refs = thread.process().references.lock();
+    let refs = thread.process().references.lock();
 
     let handle = kunwrap!(Hid::from_raw(handle));
 
-    let Some(val) = refs.references().get(&handle).cloned() else {
+    let Some(val) = refs.get(handle).cloned() else {
         return SyscallResult::UnknownHandle;
     };
 
@@ -631,12 +631,11 @@ unsafe extern "C" fn handle_sys_object_wait_port(
     let handle = kunwrap!(Hid::from_raw(handle));
     let port = kunwrap!(Hid::from_raw(port));
 
-    let refs = refs.references();
-    let Some(handle) = refs.get(&handle) else {
+    let Some(handle) = refs.get(handle) else {
         return SyscallResult::UnknownHandle;
     };
 
-    let Some(port) = refs.get(&port) else {
+    let Some(port) = refs.get(port) else {
         return SyscallResult::UnknownHandle;
     };
 
@@ -765,11 +764,11 @@ unsafe extern "C" fn handle_sys_channel_write(
 
     let handles = if !handles.is_null() && handles_len > 0 {
         let mut handles_res = Vec::with_capacity(handles_len);
-        let mut refs = thread.process().references.lock();
+        let refs = thread.process().references.lock();
         for i in 0..handles_len {
             let h = unsafe { kunwrap!(UserPtr::new(handles.wrapping_add(i), bounds)) };
             let r = kunwrap!(Hid::from_raw(h.read()));
-            handles_res.push(kunwrap!(refs.references().get(&r)).clone());
+            handles_res.push(kunwrap!(refs.get(r)).clone());
         }
         Some(handles_res.into_boxed_slice())
     } else {
@@ -982,7 +981,7 @@ unsafe extern "C" fn handle_sys_vmo_mmap_create(base: *mut (), length: usize) ->
             .process()
             .references
             .lock()
-            .add_value(vmo.into())
+            .insert(vmo.into())
             .into_raw()
     }
 }
@@ -1004,7 +1003,7 @@ unsafe extern "C" fn handle_sys_vmo_anonymous_create(length: usize, flags: u32) 
         .process()
         .references
         .lock()
-        .add_value(vmo.into())
+        .insert(vmo.into())
         .into_raw()
 }
 
@@ -1023,8 +1022,8 @@ unsafe extern "C" fn handle_sys_vmo_anonymous_pinned_addresses(
 
     let handle = kunwrap!(Hid::from_raw(handle));
 
-    let mut refs = thread.process().references.lock();
-    let val = kunwrap!(refs.references().get(&handle));
+    let refs = thread.process().references.lock();
+    let val = kunwrap!(refs.get(handle));
     let vmo = kenum_cast!(val, KernelValue::VMO);
     match &*vmo.lock() {
         VMO::MemoryMapped { .. } => kpanic!("not anonymous"),

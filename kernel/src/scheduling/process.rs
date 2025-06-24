@@ -10,8 +10,8 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use hashbrown::HashMap;
 use kernel_sys::types::{Hid, KernelObjectType, Pid, RawValue, Tid, VMMapFlags, VMOAnonymousFlags};
+use slab::Slab;
 use spin::Lazy;
 use x86_64::{
     VirtAddr,
@@ -126,17 +126,11 @@ impl ProcessMemory {
     }
 }
 
-pub struct ProcessReferences {
-    references: HashMap<Hid, KernelValue>,
-    next_id: usize,
-}
+pub struct ProcessReferences(Slab<KernelValue>);
 
 impl ProcessReferences {
-    pub fn new() -> Self {
-        Self {
-            references: HashMap::new(),
-            next_id: 1,
-        }
+    pub const fn new() -> Self {
+        Self(Slab::new())
     }
 
     pub fn from_refs(refs_to_clone: &[Hid]) -> Self {
@@ -144,12 +138,11 @@ impl ProcessReferences {
 
         unsafe {
             let this = CPULocalStorageRW::get_current_task();
-            let mut this_refs = this.process().references.lock();
+            let this_refs = this.process().references.lock();
             for r in refs_to_clone {
-                refs.add_value(
+                refs.insert(
                     this_refs
-                        .references()
-                        .get(r)
+                        .get(*r)
                         .expect("the references should belong to the calling process")
                         .clone(),
                 );
@@ -158,15 +151,20 @@ impl ProcessReferences {
         refs
     }
 
-    pub fn references(&mut self) -> &mut HashMap<Hid, KernelValue> {
-        &mut self.references
+    pub fn get(&self, hid: Hid) -> Option<&KernelValue> {
+        self.0.get(hid.0.get() - 1)
     }
 
-    pub fn add_value(&mut self, value: KernelValue) -> Hid {
-        let id = Hid(NonZeroUsize::new(self.next_id).unwrap());
-        self.next_id += 1;
-        assert!(self.references.insert(id, value).is_none());
-        id
+    pub fn get_mut(&mut self, hid: Hid) -> Option<&mut KernelValue> {
+        self.0.get_mut(hid.0.get() - 1)
+    }
+
+    pub fn remove(&mut self, hid: Hid) -> Option<KernelValue> {
+        self.0.try_remove(hid.0.get() - 1)
+    }
+
+    pub fn insert(&mut self, value: KernelValue) -> Hid {
+        Hid(NonZeroUsize::new(self.0.insert(value) + 1).unwrap())
     }
 }
 
@@ -198,11 +196,11 @@ impl Process {
     }
 
     pub fn add_value(&self, value: KernelValue) -> Hid {
-        self.references.lock().add_value(value)
+        self.references.lock().insert(value)
     }
 
     pub fn get_value(&self, id: Hid) -> Option<KernelValue> {
-        self.references.lock().references.get(&id).cloned()
+        self.references.lock().get(id).cloned()
     }
 }
 
