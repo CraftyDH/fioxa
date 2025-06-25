@@ -1,7 +1,4 @@
-use core::{
-    mem::size_of,
-    sync::atomic::{AtomicBool, Ordering},
-};
+use core::mem::size_of;
 
 use kernel_sys::types::VMMapFlags;
 use x86_64::instructions::interrupts;
@@ -16,16 +13,21 @@ use crate::{
     syscall::syscall_kernel_handler,
 };
 
-// Do we probe the task manager for a new task?
-pub static LS_ENABLED: AtomicBool = AtomicBool::new(false);
-
-pub fn set_ls_enabled() {
-    LS_ENABLED.store(true, Ordering::Relaxed)
-}
-
-pub fn is_ls_enabled() -> bool {
-    LS_ENABLED.load(Ordering::Relaxed)
-}
+// Minimal boot stuff so that locks can hold the interrupts
+pub static mut BOOTCPULS: CPULocalStorage = CPULocalStorage {
+    stack_top: 0,
+    kernel_syscall_entry: 0,
+    core_id: 0,
+    current_context: 0,
+    scratch_stack_top: 0,
+    current_task_ptr: 0,
+    current_task_kernel_stack_top: 0,
+    sched_task_sp: 0,
+    sched_task_ip: 0,
+    hold_interrupts_initial: 0,
+    hold_interrupts_depth: 1,
+    gdt_pointer: 0,
+};
 
 #[repr(C)]
 pub struct CPULocalStorage {
@@ -221,15 +223,25 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     vaddr_base
 }
 
+pub unsafe fn init_bsp_boot_ls() {
+    unsafe { set_ls(&raw mut BOOTCPULS as u64) }
+}
+
 pub unsafe fn init_bsp_localstorage() {
+    assert_eq!(CPULocalStorageRW::hold_interrupts_depth(), 1);
     let gs_base = unsafe { new_cpu(0) };
 
     // Load new core GDT
     // TODO: Remove old GDT
     let gdt = unsafe { &mut *((gs_base + 0x1000) as *mut CPULocalGDT) };
 
-    unsafe { gdt.load() };
+    unsafe {
+        gdt.load();
+        set_ls(gs_base)
+    };
+}
 
+unsafe fn set_ls(gs_base: u64) {
     let gs_upper = (gs_base >> 32) as u32;
     let gs_lower = gs_base as u32;
 
@@ -244,8 +256,6 @@ pub unsafe fn init_bsp_localstorage() {
             ", in(reg) 0, in("edx") gs_upper, in("eax") gs_lower, lateout("edx") _,  lateout("ecx") _
         )
     }
-
-    set_ls_enabled();
 }
 
 pub const CPU_STACK_SIZE_PAGES: usize = 10;

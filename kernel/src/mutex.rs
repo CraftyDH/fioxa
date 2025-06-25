@@ -2,7 +2,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use lock_api::{GuardNoSend, RawMutex};
 
-use crate::cpu_localstorage::{CPULocalStorageRW, is_ls_enabled};
+use crate::cpu_localstorage::CPULocalStorageRW;
 
 pub type Spinlock<T> = lock_api::Mutex<RawSpinlock, T>;
 pub type SpinlockGuard<'a, T> = lock_api::MutexGuard<'a, RawSpinlock, T>;
@@ -16,9 +16,7 @@ unsafe impl RawMutex for RawSpinlock {
     type GuardMarker = GuardNoSend;
 
     fn lock(&self) {
-        if is_ls_enabled() {
-            unsafe { CPULocalStorageRW::inc_hold_interrupts() };
-        }
+        unsafe { CPULocalStorageRW::inc_hold_interrupts() };
 
         while self
             .0
@@ -33,16 +31,13 @@ unsafe impl RawMutex for RawSpinlock {
     }
 
     fn try_lock(&self) -> bool {
-        let ls = is_ls_enabled();
-        if ls {
-            unsafe { CPULocalStorageRW::inc_hold_interrupts() };
-        }
+        unsafe { CPULocalStorageRW::inc_hold_interrupts() };
         let lock = self
             .0
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok();
         // Decrease stay scheduled if we didn't get the lock
-        if !lock && ls {
+        if !lock {
             unsafe { CPULocalStorageRW::dec_hold_interrupts() };
         }
         lock
@@ -51,10 +46,8 @@ unsafe impl RawMutex for RawSpinlock {
     unsafe fn unlock(&self) {
         self.0.store(false, Ordering::Release);
 
-        if is_ls_enabled() {
-            // Safety: we increased it when it was locked
-            unsafe { CPULocalStorageRW::dec_hold_interrupts() };
-        }
+        // Safety: we increased it when it was locked
+        unsafe { CPULocalStorageRW::dec_hold_interrupts() };
     }
 
     fn is_locked(&self) -> bool {

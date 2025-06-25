@@ -17,7 +17,7 @@ use kernel::acpi::FioxaAcpiHandler;
 use kernel::boot_aps::boot_aps;
 use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER};
 use kernel::console::run_console;
-use kernel::cpu_localstorage::{CPULocalStorageRW, init_bsp_localstorage};
+use kernel::cpu_localstorage::{CPULocalStorageRW, init_bsp_boot_ls, init_bsp_localstorage};
 use kernel::elf::load_elf;
 use kernel::fs::{self, FSDRIVES};
 use kernel::interrupts::{self, check_interrupts};
@@ -65,6 +65,7 @@ pub fn main_stage1(info: *const BootInfo) -> ! {
         // init gdt & idt
         gdt::init_bootgdt();
         interrupts::init_idt();
+        init_bsp_boot_ls();
 
         // Try connecting to COM1
         let mut serial = Serial::new(COM_1);
