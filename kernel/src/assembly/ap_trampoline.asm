@@ -82,7 +82,7 @@ LONG_MODE:
     mov ecx, 0xC0000102
     wrmsr
 
-    mov rsp, gs:1
+    mov rsp, gs:0
     push rdi
 wait_on_boot:
     pause

@@ -14,7 +14,7 @@ use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
 use crate::{
     channel::{ChannelMessage, ReadError, channel_create},
-    cpu_localstorage::CPULocalStorageRW,
+    cpu_localstorage::{CPULocalStorage, CPULocalStorageRW},
     interrupts::KInterruptHandle,
     logging::print_log,
     message::KMessage,
@@ -138,7 +138,7 @@ extern "C" fn bad_interrupts_held() {
 pub unsafe extern "C" fn syscall_kernel_handler() {
     core::arch::naked_asm!(
         // check interrupts
-        "cmp qword ptr gs:0x32, 0",
+        "cmp qword ptr gs:{int_depth}, 0",
         "jne {bad_interrupts_held}",
 
         // save regs
@@ -149,9 +149,9 @@ pub unsafe extern "C" fn syscall_kernel_handler() {
 
         // set cpu context
         "mov r11b, 1",
-        "mov gs:0x9, r11b",
+        "mov gs:{ctx}, r11b",
         "mov r15, rsp",     // save caller rsp
-        "mov rsp, gs:0x1A", // load kstack top
+        "mov rsp, gs:{kstack}", // load kstack top
         "sti",
 
         // check bounds of syscall
@@ -168,7 +168,7 @@ pub unsafe extern "C" fn syscall_kernel_handler() {
         // set cpu context
         "cli",
         "mov cl, 2",
-        "mov gs:0x9, cl", // set cpu context
+        "mov gs:{ctx}, cl", // set cpu context
 
         // restore regs
         "mov rsp, r15",   // restore caller rip
@@ -180,6 +180,9 @@ pub unsafe extern "C" fn syscall_kernel_handler() {
         syscall_fns = sym SYSCALL_FNS,
         out_of_bounds = sym out_of_bounds,
         bad_interrupts_held = sym bad_interrupts_held,
+        int_depth = const core::mem::offset_of!(CPULocalStorage, hold_interrupts_depth),
+        ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
+        kstack = const core::mem::offset_of!(CPULocalStorage, current_task_kernel_stack_top),
     );
 }
 
@@ -189,7 +192,7 @@ extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
     core::arch::naked_asm!(
         // set cpu context
         "mov r11b, 1",
-        "mov gs:0x9, r11b",
+        "mov gs:{ctx}, r11b",
         "sti",
 
         // check bounds of syscall
@@ -206,7 +209,7 @@ extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
         // set cpu context
         "cli",
         "mov cl, 2",
-        "mov gs:0x9, cl",
+        "mov gs:{ctx}, cl",
 
         // clear scratch registers (we don't want leaks)
         "xor r11d, r11d",
@@ -221,6 +224,7 @@ extern "x86-interrupt" fn wrapped_syscall_handler(_: InterruptStackFrame) {
         syscall_len = const SYSCALL_FNS.len(),
         syscall_fns = sym SYSCALL_FNS,
         out_of_bounds = sym out_of_bounds,
+        ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
     );
 }
 
@@ -230,11 +234,11 @@ pub unsafe extern "C" fn syscall_sysret_handler() {
     core::arch::naked_asm!(
         // set cpu context
         "mov r12d, 1",
-        "mov gs:0x9, r12d",
+        "mov gs:{ctx}, r12d",
 
         // swap stack
         "mov r12, rsp",
-        "mov rsp, gs:0x1A",
+        "mov rsp, gs:{kstack}",
         "sti",
 
         // save registers
@@ -266,7 +270,7 @@ pub unsafe extern "C" fn syscall_sysret_handler() {
         // set cpu context
         "cli",
         "mov cl, 2",
-        "mov gs:0x9, cl",
+        "mov gs:{ctx}, cl",
 
         // restore registers
         "pop rcx",
@@ -276,6 +280,8 @@ pub unsafe extern "C" fn syscall_sysret_handler() {
         syscall_len = const SYSCALL_FNS.len(),
         syscall_fns = sym SYSCALL_FNS,
         out_of_bounds = sym out_of_bounds,
+        ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
+        kstack = const core::mem::offset_of!(CPULocalStorage, current_task_kernel_stack_top),
     );
 }
 

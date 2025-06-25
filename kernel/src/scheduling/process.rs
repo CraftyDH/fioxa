@@ -22,7 +22,7 @@ use x86_64::{
 use crate::{
     assembly::registers::SavedTaskState,
     channel::KChannelHandle,
-    cpu_localstorage::CPULocalStorageRW,
+    cpu_localstorage::{CPULocalStorage, CPULocalStorageRW},
     gdt,
     interrupts::KInterruptHandle,
     message::KMessage,
@@ -222,7 +222,7 @@ pub unsafe extern "C" fn start_new_task(arg: usize) {
 
     core::arch::naked_asm!(
         "mov cl, 2",
-        "mov gs:0x9, cl", // set cpu context
+        "mov gs:{ctx}, cl", // set cpu context
         "call {}",
         "pop rdi",
         // Zero registers (except rdi which has arg)
@@ -242,7 +242,8 @@ pub unsafe extern "C" fn start_new_task(arg: usize) {
         "xor ebp,  ebp",
         // start
         "iretq",
-        sym after_start_cleanup
+        sym after_start_cleanup,
+        ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
     );
 }
 

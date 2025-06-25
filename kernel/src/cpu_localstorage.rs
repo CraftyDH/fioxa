@@ -27,22 +27,28 @@ pub fn is_ls_enabled() -> bool {
     LS_ENABLED.load(Ordering::Relaxed)
 }
 
-#[repr(C, packed)]
+#[repr(C)]
 pub struct CPULocalStorage {
-    core_id: u8,
-    stack_top: u64,
-    current_context: u8,
-    scratch_stack_top: u64,
-    current_task_ptr: u64,
-    current_task_kernel_stack_top: u64,
-    sched_task_sp: u64,
-    sched_task_ip: u64,
-    hold_interrupts_depth: u64,
-    hold_interrupts_initial: u8,
-    kernel_syscall_entry: usize,
-    gdt_pointer: usize,
+    // pinned locations
+    pub stack_top: u64,
+    pub kernel_syscall_entry: usize,
+
+    pub core_id: u8,
+    pub current_context: u8,
+    pub scratch_stack_top: u64,
+    pub current_task_ptr: u64,
+    pub current_task_kernel_stack_top: u64,
+    pub sched_task_sp: u64,
+    pub sched_task_ip: u64,
+    pub hold_interrupts_initial: u8,
+    pub hold_interrupts_depth: u64,
+    pub gdt_pointer: usize,
     // at 0x1000 (1 page down is GDT)
 }
+
+// Ensure that locations directly accessed outside kernel are in the expected location
+const _: () = assert!(core::mem::offset_of!(CPULocalStorage, stack_top) == 0);
+const _: () = assert!(core::mem::offset_of!(CPULocalStorage, kernel_syscall_entry) == 8);
 
 /// Reads the contents of the localstorage struct at offset $value, with given size
 macro_rules! localstorage_read {

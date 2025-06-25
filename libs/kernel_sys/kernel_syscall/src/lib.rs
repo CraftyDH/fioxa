@@ -110,7 +110,7 @@ pub fn define_syscalls(tokens: TokenStream) -> TokenStream {
     let mut clobbers = quote!();
     let asm_call = if cfg!(feature = "kernel") {
         // ! Slightly sketch reading into CPU local storage
-        quote! {"mov r11, gs: 0x3B; call r11"}
+        quote! {"mov r11, gs:0x8; call r11"}
     } else if cfg!(feature = "iret") {
         quote! {"int 0x80"}
     } else {

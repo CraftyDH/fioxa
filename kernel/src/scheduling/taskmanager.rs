@@ -11,7 +11,7 @@ use x86_64::instructions::interrupts;
 
 use crate::{
     assembly::{registers::SavedTaskState, wrmsr},
-    cpu_localstorage::CPULocalStorageRW,
+    cpu_localstorage::{CPULocalStorage, CPULocalStorageRW},
     gdt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR},
     mutex::{Spinlock, SpinlockGuard},
     scheduling::process::ThreadState,
@@ -144,9 +144,10 @@ pub unsafe fn core_start_multitasking() {
 
         core::arch::asm!(
             "sti",
-            "mov rsp, gs:1",
+            "mov rsp, gs:{stack}",
             "jmp {}",
             sym scheduler,
+            stack = const core::mem::offset_of!(CPULocalStorage, stack_top),
         )
     }
 }
@@ -299,10 +300,10 @@ unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
             "mov r9, cr3", // save current cr3
             "push r9",
             "mov cr3, r8",
-            "mov gs:0x9, cl",
+            "mov gs:{ctx}, cl",
             "lea r8, [rip+2f]",
-            "mov gs:0x22, rsp",
-            "mov gs:0x2A, r8",
+            "mov gs:{sp}, rsp",
+            "mov gs:{ip}, r8",
             "mov rsp, rsi",
             "jmp rdi",
             "2:",
@@ -328,6 +329,9 @@ unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
             lateout("rsi") new_sp,
             lateout("rdx") _,
             lateout("rcx") _,
+            ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
+            sp = const core::mem::offset_of!(CPULocalStorage, sched_task_sp),
+            ip = const core::mem::offset_of!(CPULocalStorage, sched_task_ip),
         )
     };
     CPULocalStorageRW::clear_current_task();
@@ -350,11 +354,11 @@ pub fn enter_sched(_: &mut SpinlockGuard<ThreadSched>) {
             "push rbp",
             "pushfq",
             "cli",
-            "mov gs:0x9, cl",
+            "mov gs:{ctx}, cl",
             "lea rdi, [rip+2f]", // ret addr
             "mov rsi, rsp",      // save rsp
-            "mov rsp, gs:0x22",  // load new stack
-            "mov rax, gs:0x2A",
+            "mov rsp, gs:{sp}",  // load new stack
+            "mov rax, gs:{ip}",
             "jmp rax",
             "2:",
             "popfq",
@@ -374,6 +378,9 @@ pub fn enter_sched(_: &mut SpinlockGuard<ThreadSched>) {
             lateout("rsi") _,
             lateout("rdx") _,
             lateout("rcx") _,
+            ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
+            sp = const core::mem::offset_of!(CPULocalStorage, sched_task_sp),
+            ip = const core::mem::offset_of!(CPULocalStorage, sched_task_ip),
         );
     }
 }
