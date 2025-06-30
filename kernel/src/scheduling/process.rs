@@ -2,25 +2,33 @@ use core::{
     cell::UnsafeCell,
     fmt::Debug,
     num::NonZeroUsize,
+    ops::ControlFlow,
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use alloc::{
+    boxed::Box,
     collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
 };
-use kernel_sys::types::{Hid, KernelObjectType, Pid, RawValue, Tid, VMMapFlags, VMOAnonymousFlags};
+use kernel_sys::{
+    raw::syscall::{KernelSyscallHandlerBreak, SyscallHandler},
+    types::{Hid, KernelObjectType, Pid, RawValue, Tid, VMMapFlags, VMOAnonymousFlags},
+};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive;
 use slab::Slab;
 use spin::Lazy;
 use x86_64::{
     VirtAddr,
+    instructions::interrupts::without_interrupts,
     registers::rflags::RFlags,
     structures::{gdt::SegmentSelector, idt::InterruptStackFrameValue},
 };
 
 use crate::{
-    assembly::registers::SavedTaskState,
+    assembly::registers::Registers,
     channel::KChannelHandle,
     cpu_localstorage::{CPULocalStorage, CPULocalStorageRW},
     gdt,
@@ -35,6 +43,8 @@ use crate::{
         page_table::Mapper,
     },
     port::KPort,
+    scheduling::taskmanager::enter_sched,
+    syscall::KernelSyscallHandler,
     time::HPET,
     vm::{VMO, VirtualMemoryRegion},
 };
@@ -210,41 +220,345 @@ impl KObject for Process {
     }
 }
 
-#[unsafe(naked)]
-pub unsafe extern "C" fn start_new_task(arg: usize) {
-    unsafe extern "C" fn after_start_cleanup() {
-        unsafe {
-            let thread = CPULocalStorageRW::get_current_task();
-            // We must unlock the mutex after return from scheduler
-            thread.sched().force_unlock();
+pub enum VMEnterState {
+    Full(VMCompleteState),
+    IntSyscall(VMEnterIntSyscall),
+    Syscall(VMEnterStateSyscall),
+    Kernel(VMEnterKernelSyscall),
+}
+
+pub enum VMExitState {
+    Complete(VMCompleteState),
+    IntSyscall(VMExitStateIntSyscall),
+    Syscall(VMExitStateSyscall),
+    Kernel(VMExitKernelSyscall),
+}
+
+#[derive(Debug, FromPrimitive)]
+pub enum VMExitStateID {
+    Complete,
+    IntSyscall,
+    Syscall,
+    Kernel,
+}
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct VMCompleteState {
+    pub regs: Registers,
+    pub ret: InterruptStackFrameValue,
+}
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct PreservedSyscallRegisters {
+    pub rbx: usize,
+    pub rbp: usize,
+    pub r12: usize,
+    pub r13: usize,
+    pub r14: usize,
+    pub r15: usize,
+}
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct VMExitStateIntSyscall {
+    pub args: [usize; 7],
+    pub preserved: PreservedSyscallRegisters,
+    pub ret: InterruptStackFrameValue,
+}
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct VMEnterIntSyscall {
+    pub result: usize,
+    pub preserved: PreservedSyscallRegisters,
+    pub ret: InterruptStackFrameValue,
+}
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct VMExitStateSyscall {
+    pub regs: [usize; 7],
+    pub preserved: PreservedSyscallRegisters,
+    pub rcx: usize, // RIP
+    pub r11: usize, // RFLAGS
+    pub rsp: usize,
+}
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct VMEnterStateSyscall {
+    pub result: usize,
+    pub preserved: PreservedSyscallRegisters,
+    pub rcx: usize, // RIP
+    pub r11: usize, // RFLAGS
+    pub rsp: usize,
+}
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct VMEnterKernelSyscall {
+    pub result: usize,
+    pub ret_stack: usize,
+}
+
+#[derive(Clone)]
+#[repr(C)]
+pub struct VMExitKernelSyscall {
+    pub regs: [usize; 7],
+    pub ret_stack: usize,
+}
+
+pub unsafe fn run_vm_tick<'a>(state: &VMEnterState) -> VMExitState {
+    without_interrupts(|| unsafe {
+        let depth = CPULocalStorageRW::hold_interrupts_depth();
+        let initial = CPULocalStorageRW::hold_interrupts_initial();
+        CPULocalStorageRW::set_hold_interrupts_depth(0);
+
+        CPULocalStorageRW::set_context(2);
+
+        let mut res_type: usize;
+        let mut res_ptr: usize;
+        match state {
+            VMEnterState::Full(state) => {
+                core::arch::asm!(
+                    "lea rax, [rip+2f]",
+                    "push rbx",
+                    "push rbp",
+                    "pushfq",
+                    "push rax",
+                    "mov gs:{vm_sp}, rsp",
+
+                    "mov rsp, rdi",
+                    "pop r15",
+                    "pop r14",
+                    "pop r13",
+                    "pop r12",
+                    "pop r11",
+                    "pop r10",
+                    "pop r9",
+                    "pop r8",
+                    "pop rdi",
+                    "pop rsi",
+                    "pop rdx",
+                    "pop rcx",
+                    "pop rbx",
+                    "pop rax",
+                    "pop rbp",
+                    "iretq",
+
+                    "2:",
+                    "popfq",
+                    "pop rbp",
+                    "pop rbx",
+                    in("rdi") state,
+                    lateout("rax") res_type,
+                    lateout("rdx") res_ptr,
+                    lateout("r15") _,
+                    lateout("r14") _,
+                    lateout("r13") _,
+                    lateout("r12") _,
+                    lateout("r11") _,
+                    lateout("r10") _,
+                    lateout("r9") _,
+                    lateout("r8") _,
+                    lateout("rdi") _,
+                    lateout("rsi") _,
+                    lateout("rcx") _,
+                    vm_sp = const core::mem::offset_of!(CPULocalStorage, vm_exit_sp),
+                );
+            }
+            VMEnterState::IntSyscall(state) => {
+                core::arch::asm!(
+                    "lea rax, [rip+2f]",
+                    "push rbx",
+                    "push rbp",
+                    "pushfq",
+                    "push rax",
+                    "mov gs:{vm_sp}, rsp",
+
+                    "mov rsp, rdi",
+                    "pop rax", // result
+                    "pop r15",
+                    "pop r14",
+                    "pop r13",
+                    "pop r12",
+                    "pop rbp",
+                    "pop rbx",
+
+                    // clear scratch registers
+                    "xor r11d, r11d",
+                    "xor r10d, r10d",
+                    "xor r9d,  r9d",
+                    "xor r8d,  r8d",
+                    "xor edi,  edi",
+                    "xor esi,  esi",
+                    "xor edx,  edx",
+                    "xor ecx,  ecx",
+                    "iretq",
+
+                    "2:",
+                    "popfq",
+                    "pop rbp",
+                    "pop rbx",
+                    in("rdi") state,
+                    lateout("rax") res_type,
+                    lateout("rdx") res_ptr,
+                    lateout("r15") _,
+                    lateout("r14") _,
+                    lateout("r13") _,
+                    lateout("r12") _,
+                    lateout("r11") _,
+                    lateout("r10") _,
+                    lateout("r9") _,
+                    lateout("r8") _,
+                    lateout("rdi") _,
+                    lateout("rsi") _,
+                    lateout("rcx") _,
+                    vm_sp = const core::mem::offset_of!(CPULocalStorage, vm_exit_sp),
+                );
+            }
+            VMEnterState::Syscall(state) => {
+                core::arch::asm!(
+                    "lea rax, [rip+2f]",
+                    "push rbx",
+                    "push rbp",
+                    "pushfq",
+                    "push rax",
+                    "mov gs:{vm_sp}, rsp",
+
+                    "mov rsp, rdi",
+
+                    // result
+                    "pop rax",
+                    // saved registers
+                    "pop r15",
+                    "pop r14",
+                    "pop r13",
+                    "pop r12",
+                    "pop rbp",
+                    "pop rbx",
+
+                    // syscall registers
+                    "pop rcx",
+                    "pop r11",
+                    "pop rsp",
+
+                    // clear scratch registers
+                    "xor r10d, r10d",
+                    "xor r9d,  r9d",
+                    "xor r8d,  r8d",
+                    "xor edi,  edi",
+                    "xor esi,  esi",
+                    "xor edx,  edx",
+
+                    "sysretq",
+
+                    "2:",
+                    "popfq",
+                    "pop rbp",
+                    "pop rbx",
+                    in("rdi") state,
+                    lateout("rax") res_type,
+                    lateout("rdx") res_ptr,
+                    lateout("r15") _,
+                    lateout("r14") _,
+                    lateout("r13") _,
+                    lateout("r12") _,
+                    lateout("r11") _,
+                    lateout("r10") _,
+                    lateout("r9") _,
+                    lateout("r8") _,
+                    lateout("rdi") _,
+                    lateout("rsi") _,
+                    lateout("rcx") _,
+                    vm_sp = const core::mem::offset_of!(CPULocalStorage, vm_exit_sp),
+                );
+            }
+            VMEnterState::Kernel(state) => {
+                core::arch::asm!(
+                    "lea rsi, [rip+2f]",
+                    "push rbx",
+                    "push rbp",
+                    "pushfq",
+                    "push rsi",
+                    "mov gs:{vm_sp}, rsp",
+
+                    "mov rsp, rdi",
+                    "pop r15",
+                    "pop r14",
+                    "pop r13",
+                    "pop r12",
+                    "pop rbp",
+                    "pop rbx",
+                    "popfq",
+                    "ret",
+
+                    "2:",
+                    "popfq",
+                    "pop rbp",
+                    "pop rbx",
+                    in("rax") state.result,
+                    in("rdi") state.ret_stack,
+                    lateout("rax") res_type,
+                    lateout("rdx") res_ptr,
+                    lateout("r15") _,
+                    lateout("r14") _,
+                    lateout("r13") _,
+                    lateout("r12") _,
+                    lateout("r11") _,
+                    lateout("r10") _,
+                    lateout("r9") _,
+                    lateout("r8") _,
+                    lateout("rdi") _,
+                    lateout("rsi") _,
+                    lateout("rcx") _,
+                    vm_sp = const core::mem::offset_of!(CPULocalStorage, vm_exit_sp),
+                )
+            }
+        };
+        CPULocalStorageRW::set_hold_interrupts_initial(initial);
+        CPULocalStorageRW::set_hold_interrupts_depth(depth);
+        CPULocalStorageRW::set_context(1);
+
+        // We must read the states before we exit held interrupts or an interrupt could override them
+        use VMExitStateID as ID;
+        match ID::from_usize(res_type).expect("The vm exit type should be valid.") {
+            ID::Complete => VMExitState::Complete(core::ptr::read_volatile(res_ptr as _)),
+            ID::IntSyscall => VMExitState::IntSyscall(core::ptr::read_volatile(res_ptr as _)),
+            ID::Syscall => VMExitState::Syscall(core::ptr::read_volatile(res_ptr as _)),
+            ID::Kernel => VMExitState::Kernel(core::ptr::read_volatile(res_ptr as _)),
         }
+    })
+}
+
+#[unsafe(naked)]
+unsafe extern "C" fn thread_run_bootstrap() {
+    /// We need extern "C" to pass the pointer in arg 1, but it was set by rust code so probably fine?
+    #[allow(improper_ctypes_definitions)]
+    extern "C" fn thread_runner(runner: &RawRunner) -> ! {
+        unsafe { CPULocalStorageRW::set_context(1) };
+        let thread = unsafe { CPULocalStorageRW::get_current_task() };
+
+        // We must unlock the mutex after return from scheduler
+        unsafe { thread.sched().force_unlock() };
+
+        // get the stored runner
+        let runner = unsafe { Box::from_raw(*runner) };
+        (runner)(thread);
+
+        let mut sched = thread.sched().lock();
+        sched.state = ThreadState::Killed;
+        enter_sched(&mut sched);
+        unreachable!("exit thread shouldn't return")
     }
 
     core::arch::naked_asm!(
-        "mov cl, 2",
-        "mov gs:{ctx}, cl", // set cpu context
-        "call {}",
-        "pop rdi",
-        // Zero registers (except rdi which has arg)
-        "xor r15d, r15d",
-        "xor r14d, r14d",
-        "xor r13d, r13d",
-        "xor r12d, r12d",
-        "xor r11d, r11d",
-        "xor r10d, r10d",
-        "xor r9d,  r9d",
-        "xor r8d,  r8d",
-        "xor esi,  esi",
-        "xor edx,  edx",
-        "xor ecx,  ecx",
-        "xor ebx,  ebx",
-        "xor eax,  eax",
-        "xor ebp,  ebp",
-        // start
-        "iretq",
-        sym after_start_cleanup,
-        ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
-    );
+        "mov rdi, rsp",
+        "jmp {runner}",
+        runner = sym thread_runner
+    )
 }
 
 pub struct ProcessBuilder {
@@ -335,6 +649,79 @@ impl Debug for Thread {
     }
 }
 
+type RawRunner = *mut (dyn FnOnce(&Thread) + 'static);
+
+fn thread_runner(entry_point: *const u64, stack_base: u64, arg: usize) -> impl FnOnce(&Thread) {
+    move |thread| {
+        let mut state = VMEnterState::Full(VMCompleteState {
+            regs: Registers {
+                rdi: arg,
+                ..Default::default()
+            },
+            ret: InterruptStackFrameValue::new(
+                VirtAddr::from_ptr(entry_point),
+                thread.process.privilege.get_code_segment(),
+                RFlags::INTERRUPT_FLAG,
+                VirtAddr::new(stack_base + STACK_SIZE),
+                thread.process.privilege.get_data_segment(),
+            ),
+        });
+
+        let mut handler = KernelSyscallHandler { thread };
+
+        let mut run = || -> ControlFlow<KernelSyscallHandlerBreak, !> {
+            loop {
+                let res = unsafe { run_vm_tick(&state) };
+                match res {
+                    VMExitState::Complete(vmstate_yield) => {
+                        state = VMEnterState::Full(vmstate_yield);
+
+                        let mut sched = thread.sched().lock();
+                        enter_sched(&mut sched);
+                    }
+                    VMExitState::IntSyscall(syscall) => {
+                        state = VMEnterState::IntSyscall(VMEnterIntSyscall {
+                            result: handler.handle(&syscall.args)?,
+                            preserved: syscall.preserved,
+                            ret: syscall.ret,
+                        });
+                    }
+                    VMExitState::Syscall(syscall) => {
+                        state = VMEnterState::Syscall(VMEnterStateSyscall {
+                            result: handler.handle(&syscall.regs)?,
+                            preserved: syscall.preserved,
+                            rcx: syscall.rcx,
+                            r11: syscall.r11,
+                            rsp: syscall.rsp,
+                        })
+                    }
+                    VMExitState::Kernel(syscall) => {
+                        state = VMEnterState::Kernel(VMEnterKernelSyscall {
+                            result: handler.handle(&syscall.regs)?,
+                            ret_stack: syscall.ret_stack,
+                        })
+                    }
+                }
+            }
+        };
+
+        let ControlFlow::Break(exit) = run();
+
+        match exit {
+            KernelSyscallHandlerBreak::AssertFailed => (),
+            KernelSyscallHandlerBreak::UnknownSyscall => warn!("unknown syscall"),
+            KernelSyscallHandlerBreak::Exit => return,
+        }
+
+        warn!(
+            "TASK EXITING FROM ERROR: PID: {:?}, TID: {:?}, PRIV: {:?}",
+            thread.process().pid,
+            thread.tid(),
+            thread.process().privilege
+        );
+    }
+}
+
 impl Thread {
     pub fn new(process: Arc<Process>, entry_point: *const u64, arg: usize) -> Option<Arc<Thread>> {
         let mut threads = process.threads.lock();
@@ -378,18 +765,16 @@ impl Thread {
                 .ignore();
         }
 
-        let kstack_base_virt = kbase + KSTACK_SIZE - 0x1000;
+        let mut kstack_top = (kbase + KSTACK_SIZE) as usize;
 
-        let interrupt_frame = InterruptStackFrameValue::new(
-            VirtAddr::from_ptr(entry_point),
-            process.privilege.get_code_segment(),
-            RFlags::INTERRUPT_FLAG,
-            VirtAddr::new(stack_base + STACK_SIZE),
-            process.privilege.get_data_segment(),
-        );
+        let runner = Box::new(thread_runner(entry_point, stack_base, arg));
 
-        unsafe { *(kstack_base_virt as *mut usize) = arg };
-        unsafe { *((kstack_base_virt + 8) as *mut InterruptStackFrameValue) = interrupt_frame }
+        unsafe {
+            kstack_top -= size_of::<RawRunner>();
+            *(kstack_top as *mut RawRunner) = Box::into_raw(runner);
+            kstack_top -= size_of::<usize>();
+            *(kstack_top as *mut usize) = thread_run_bootstrap as usize;
+        };
         let thread = Arc::new_cyclic(|this| Thread {
             weak_self: this.clone(),
             process: process.clone(),
@@ -397,10 +782,7 @@ impl Thread {
             sched_global: ThreadSchedGlobal::new(),
             sched: Spinlock::new(ThreadSched {
                 state: ThreadState::Runnable,
-                task_state: Some(SavedTaskState {
-                    sp: kstack_base_virt as usize,
-                    ip: start_new_task as usize,
-                }),
+                saved_sp: Some(kstack_top),
                 kstack_top: VirtAddr::from_ptr((kbase + KSTACK_SIZE) as *const ()),
                 cr3_page: process.memory.lock().region.get_cr3() as u64,
             }),
@@ -462,7 +844,7 @@ impl ThreadSchedGlobal {
 
 pub struct ThreadSched {
     pub state: ThreadState,
-    pub task_state: Option<SavedTaskState>,
+    pub saved_sp: Option<usize>,
     pub kstack_top: VirtAddr,
     pub cr3_page: u64,
 }
@@ -473,13 +855,6 @@ pub enum ThreadState {
     Runnable,
     Sleeping,
     Killed,
-}
-
-impl ThreadSched {
-    pub fn save(&mut self, state: SavedTaskState) {
-        assert!(self.task_state.is_none());
-        self.task_state = Some(state);
-    }
 }
 
 #[derive(Clone)]

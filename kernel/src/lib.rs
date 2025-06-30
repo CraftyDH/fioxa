@@ -2,6 +2,7 @@
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)] // We need to be able to create the error handler
 #![feature(iter_map_windows)]
+#![feature(never_type)]
 //* Testing
 // #![feature(custom_test_frameworks)]
 // #![test_runner(test_runner)]

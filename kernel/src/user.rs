@@ -41,7 +41,7 @@ impl<T: Copy> UserPtr<T> {
 
 impl<T: Copy> UserPtrMut<T> {
     pub unsafe fn new(ptr: *mut T, bounds: UserPtrBounds) -> Option<Self> {
-        if ptr as usize + size_of::<T>() > bounds.0 {
+        if ptr.is_null() || ptr as usize + size_of::<T>() > bounds.0 {
             return None;
         }
         Some(Self(ptr))
@@ -63,7 +63,7 @@ pub struct UserBytes {
 
 impl UserBytes {
     pub unsafe fn new(ptr: *const u8, len: usize, bounds: UserPtrBounds) -> Option<Self> {
-        if ptr as usize + len > bounds.0 {
+        if ptr.is_null() || ptr as usize + len > bounds.0 {
             return None;
         }
 

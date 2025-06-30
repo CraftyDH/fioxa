@@ -56,10 +56,8 @@ pub static SLEPT_PROCESSES: Spinlock<BinaryHeap<Reverse<SleptProcess>>> =
     Spinlock::new(BinaryHeap::new());
 
 pub fn check_sleep() {
-    let uptime = HPET.get().unwrap().get_uptime();
-
-    // if over the target, try waking up processes
-    if let Some(mut procs) = SLEPT_PROCESSES.try_lock() {
+    if let Some((hpet, mut procs)) = HPET.get().zip(SLEPT_PROCESSES.try_lock()) {
+        let uptime = hpet.get_uptime();
         // pop elements from the heap if they should be woken up
         while procs.peek().is_some_and(|p| p.0.wakeup <= uptime) {
             procs.pop().unwrap().0.thread.wake();

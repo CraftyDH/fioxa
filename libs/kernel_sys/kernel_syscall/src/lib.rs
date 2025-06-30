@@ -1,8 +1,4 @@
-use core::{
-    cfg,
-    convert::Into,
-    iter::{IntoIterator, Iterator},
-};
+use core::{cfg, convert::Into, iter::Iterator};
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -10,6 +6,9 @@ use syn::{
     Attribute, Ident, Token, Type, parenthesized, parse::Parse, parse_macro_input,
     punctuated::Punctuated,
 };
+
+#[cfg(feature = "kernel")]
+use quote::TokenStreamExt;
 
 #[cfg(all(feature = "kernel", feature = "iret"))]
 const _: () = compile_error!("kernel and iret syscall types are incompatable");
@@ -101,10 +100,7 @@ const PARAMETER_REGISTERS: [&str; 6] = if cfg!(feature = "kernel") || cfg!(featu
 
 const SCRATCH_REGISTERS: [&str; 8] = ["r11", "r10", "r9", "r8", "rdi", "rsi", "rdx", "rcx"];
 
-#[proc_macro]
-pub fn define_syscalls(tokens: TokenStream) -> TokenStream {
-    let syscalls = parse_macro_input!(tokens as Syscalls);
-
+fn generate_syscall_fn(syscalls: &Syscalls) -> proc_macro2::TokenStream {
     let mut result = Vec::new();
 
     let mut clobbers = quote!();
@@ -118,9 +114,9 @@ pub fn define_syscalls(tokens: TokenStream) -> TokenStream {
         quote! {"syscall" }
     };
 
-    for (num, syscall) in syscalls.syscalls.into_iter().enumerate() {
+    for (num, syscall) in syscalls.syscalls.iter().enumerate() {
         let attrs = syscall.attrs.iter();
-        let name = syscall.name;
+        let name = &syscall.name;
 
         let args = syscall.args.iter().map(|arg| {
             let name = &arg.name;
@@ -139,7 +135,7 @@ pub fn define_syscalls(tokens: TokenStream) -> TokenStream {
 
         let scratch = SCRATCH_REGISTERS.iter().map(|r| quote!(lateout(#r) _));
 
-        match syscall.res {
+        match &syscall.res {
             SyscallResult::None => {
                 result.push(quote!(
                     #(#attrs)*
@@ -194,5 +190,73 @@ pub fn define_syscalls(tokens: TokenStream) -> TokenStream {
         }
     }
 
-    quote!(#(#result)*).into()
+    quote!(#(#result)*)
+}
+
+#[cfg(feature = "kernel")]
+fn generate_handler(syscalls: &Syscalls) -> proc_macro2::TokenStream {
+    let mut functions = Vec::new();
+
+    let mut handlers = Vec::new();
+
+    for (num, syscall) in syscalls.syscalls.iter().enumerate() {
+        let name = &syscall.name;
+
+        let args = syscall.args.iter().map(|arg| {
+            let name = &arg.name;
+            let ty = &arg.ty;
+            quote!(#name: #ty)
+        });
+
+        let (res, cast) = match &syscall.res {
+            SyscallResult::None => (quote!(), quote!(core::ops::ControlFlow::Continue(0))),
+            SyscallResult::Never => (quote!(!), quote!()),
+            SyscallResult::One(ty) => (
+                quote!(#ty),
+                quote!(core::ops::ControlFlow::Continue(val as usize)),
+            ),
+        };
+
+        functions.push(quote!(
+            fn #name(&mut self, #(#args,)*) -> core::ops::ControlFlow<KernelSyscallHandlerBreak, #res>;
+        ));
+
+        let args = syscall.args.iter().zip(1usize..).map(|(arg, num)| {
+            let ty = &arg.ty;
+            quote!(args[#num] as #ty)
+        });
+
+        handlers.push(quote!(
+            #num => {
+                let val = self.#name(#(#args),*)?;
+                #cast
+            }
+        ));
+    }
+
+    quote!(
+        pub trait SyscallHandler {
+            fn handle(&mut self, args: &[usize; 7]) -> core::ops::ControlFlow<KernelSyscallHandlerBreak, usize> {
+                match args[0] {
+                    #(#handlers)*
+                    _ => core::ops::ControlFlow::Break(KernelSyscallHandlerBreak::UnknownSyscall),
+                }
+            }
+
+            #(#functions)*
+        }
+    )
+}
+
+#[proc_macro]
+pub fn define_syscalls(tokens: TokenStream) -> TokenStream {
+    let syscalls = parse_macro_input!(tokens as Syscalls);
+
+    #[allow(unused_mut)]
+    let mut result = generate_syscall_fn(&syscalls);
+
+    #[cfg(feature = "kernel")]
+    result.append_all(generate_handler(&syscalls));
+
+    result.into()
 }

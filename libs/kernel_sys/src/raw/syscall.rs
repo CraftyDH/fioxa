@@ -54,3 +54,11 @@ kernel_syscall::define_syscalls! {
     raw_sys_vmo_anonymous_create(length: usize, flags: u32) -> hid_t,
     raw_sys_vmo_anonymous_pinned_addresses(handle: hid_t, offset: usize, length: usize, result: *mut usize) -> result_t,
 }
+
+#[cfg(feature = "kernel")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelSyscallHandlerBreak {
+    AssertFailed,
+    UnknownSyscall,
+    Exit,
+}

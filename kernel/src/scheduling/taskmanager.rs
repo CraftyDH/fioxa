@@ -7,15 +7,15 @@ use kernel_sys::{
     types::{ObjectSignal, Pid, Tid},
 };
 use spin::Lazy;
-use x86_64::instructions::interrupts;
 
 use crate::{
-    assembly::{registers::SavedTaskState, wrmsr},
+    assembly::wrmsr,
     cpu_localstorage::{CPULocalStorage, CPULocalStorageRW},
     gdt::{KERNEL_CODE_SELECTOR, USER_CODE_SELECTOR},
     mutex::{Spinlock, SpinlockGuard},
     scheduling::process::ThreadState,
-    syscall::syscall_sysret_handler,
+    syscall::exit_userspace::syscall_sysret_handler,
+    time::check_sleep,
 };
 
 use super::process::{Process, ProcessBuilder, ProcessMemory, Thread, ThreadSched};
@@ -157,6 +157,8 @@ unsafe extern "C" fn scheduler() {
     info!("Starting scheduler on core: {}", id);
 
     loop {
+        check_sleep();
+
         let task = SCHEDULER.lock().pop_thread();
         if let Some(task) = task {
             let mut sched = task.sched().lock();
@@ -167,9 +169,8 @@ unsafe extern "C" fn scheduler() {
 
             if CPULocalStorageRW::hold_interrupts_depth() != 1 {
                 error!("Thread shouldn't be holding interrupts when yielding");
-                exit_thread_inner(&task, &mut sched);
-                CPULocalStorageRW::set_hold_interrupts_depth(1);
-                continue;
+                unsafe { CPULocalStorageRW::set_hold_interrupts_depth(1) };
+                sched.state = ThreadState::Killed;
             }
 
             match sched.state {
@@ -189,14 +190,6 @@ unsafe extern "C" fn scheduler() {
         } else {
             // nothing can run so sleep
             unsafe { core::arch::asm!("hlt") };
-        }
-
-        if CPULocalStorageRW::hold_interrupts_depth() != 0 {
-            warn!("interrupts?");
-        }
-
-        if !interrupts::are_enabled() {
-            warn!("interrupts??");
         }
     }
 }
@@ -280,42 +273,45 @@ pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Tid {
 }
 
 unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
-    let SavedTaskState { sp, ip } = sched.task_state.take().unwrap();
-
-    let tss = &mut CPULocalStorageRW::get_gdt().tss;
-    tss.privilege_stack_table[0] = sched.kstack_top;
+    let sp = sched.saved_sp.take().unwrap();
 
     let cr3 = sched.cr3_page;
 
-    CPULocalStorageRW::set_current_task(task, sched);
-
-    let new_sp;
-    let new_ip;
-
     unsafe {
+        CPULocalStorageRW::set_current_task(task);
+        CPULocalStorageRW::set_context(1);
+
+        let new_sp;
+
         core::arch::asm!(
             "push rbx",
             "push rbp",
             "pushfq",
-            "mov r9, cr3", // save current cr3
-            "push r9",
-            "mov cr3, r8",
-            "mov gs:{ctx}, cl",
-            "lea r8, [rip+2f]",
+
+            // save current cr3
+            "mov rax, cr3",
+            "mov cr3, rsi",
+            "push rax",
+
+            // save context
+            "lea rdx, [rip+2f]",
+            "push rdx",
             "mov gs:{sp}, rsp",
-            "mov gs:{ip}, r8",
-            "mov rsp, rsi",
-            "jmp rdi",
+
+            // jump to thread
+            "mov rsp, rdi",
+            "ret",
+
             "2:",
+            // restore cr3
             "pop rax",
             "mov cr3, rax",
+
             "popfq",
             "pop rbp",
             "pop rbx",
-            in("cl") 1u8,
-            in("rdi") ip,
-            in("rsi") sp,
-            in("r8") cr3,
+            in("rdi") sp,
+            in("rsi") cr3,
             lateout("rax") _,
             lateout("r15") _,
             lateout("r14") _,
@@ -325,25 +321,22 @@ unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
             lateout("r10") _,
             lateout("r9") _,
             lateout("r8") _,
-            lateout("rdi") new_ip,
-            lateout("rsi") new_sp,
+            lateout("rdi") new_sp,
+            lateout("rsi") _,
             lateout("rdx") _,
             lateout("rcx") _,
-            ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
             sp = const core::mem::offset_of!(CPULocalStorage, sched_task_sp),
-            ip = const core::mem::offset_of!(CPULocalStorage, sched_task_ip),
-        )
+        );
+
+        CPULocalStorageRW::set_context(0);
+        CPULocalStorageRW::clear_current_task();
+
+        // we want interrupts to be enabled in the scheduler once the counter drops to zero,
+        // and by running tick a interrupt handler could have set this to false
+        CPULocalStorageRW::set_hold_interrupts_initial(true);
+
+        sched.saved_sp = Some(new_sp);
     };
-    CPULocalStorageRW::clear_current_task();
-
-    // we want interrupts to be enabled in the scheduler once the counter drops to zero,
-    // and by running tick a interrupt handler could have set this to false
-    CPULocalStorageRW::set_hold_interrupts_initial(true);
-
-    sched.task_state = Some(SavedTaskState {
-        sp: new_sp,
-        ip: new_ip,
-    });
 }
 
 /// We need to hold the threads spinlock before enter, and it will be held after return
@@ -354,17 +347,20 @@ pub fn enter_sched(_: &mut SpinlockGuard<ThreadSched>) {
             "push rbp",
             "pushfq",
             "cli",
-            "mov gs:{ctx}, cl",
-            "lea rdi, [rip+2f]", // ret addr
-            "mov rsi, rsp",      // save rsp
+
+            // save context
+            "lea rax, [rip+2f]", // ret addr
+            "push rax",
+            "mov rdi, rsp",      // save rsp
+
+            // return to sched
             "mov rsp, gs:{sp}",  // load new stack
-            "mov rax, gs:{ip}",
-            "jmp rax",
+            "ret",
+
             "2:",
             "popfq",
             "pop rbp",
             "pop rbx",
-            in("cl") 0u8,
             lateout("rax") _,
             lateout("r15") _,
             lateout("r14") _,
@@ -378,9 +374,7 @@ pub fn enter_sched(_: &mut SpinlockGuard<ThreadSched>) {
             lateout("rsi") _,
             lateout("rdx") _,
             lateout("rcx") _,
-            ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
             sp = const core::mem::offset_of!(CPULocalStorage, sched_task_sp),
-            ip = const core::mem::offset_of!(CPULocalStorage, sched_task_ip),
         );
     }
 }

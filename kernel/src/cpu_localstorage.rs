@@ -1,4 +1,4 @@
-use core::mem::size_of;
+use core::mem::{MaybeUninit, size_of};
 
 use kernel_sys::types::VMMapFlags;
 use x86_64::instructions::interrupts;
@@ -9,9 +9,11 @@ use crate::{
         MemoryLoc, PER_CPU_MAP, PageAllocator, page::Page, page_allocator::global_allocator,
         page_table::Mapper, virt_addr_for_phys,
     },
-    scheduling::process::{Thread, ThreadSched},
-    syscall::syscall_kernel_handler,
+    scheduling::process::Thread,
+    syscall::exit_userspace::syscall_kernel_handler,
 };
+
+pub const CPU_STACK_SIZE_PAGES: usize = 10;
 
 // Minimal boot stuff so that locks can hold the interrupts
 pub static mut BOOTCPULS: CPULocalStorage = CPULocalStorage {
@@ -21,9 +23,8 @@ pub static mut BOOTCPULS: CPULocalStorage = CPULocalStorage {
     current_context: 0,
     scratch_stack_top: 0,
     current_task_ptr: 0,
-    current_task_kernel_stack_top: 0,
     sched_task_sp: 0,
-    sched_task_ip: 0,
+    vm_exit_sp: 0,
     hold_interrupts_initial: 0,
     hold_interrupts_depth: 1,
     gdt_pointer: 0,
@@ -39,9 +40,8 @@ pub struct CPULocalStorage {
     pub current_context: u8,
     pub scratch_stack_top: u64,
     pub current_task_ptr: u64,
-    pub current_task_kernel_stack_top: u64,
     pub sched_task_sp: u64,
-    pub sched_task_ip: u64,
+    pub vm_exit_sp: usize,
     pub hold_interrupts_initial: u8,
     pub hold_interrupts_depth: u64,
     pub gdt_pointer: usize,
@@ -93,7 +93,7 @@ impl CPULocalStorageRW {
     }
 
     #[inline]
-    pub fn set_core_id(val: u8) {
+    pub unsafe fn set_core_id(val: u8) {
         unsafe { localstorage_write!(val => core_id: u8) }
     }
 
@@ -108,7 +108,7 @@ impl CPULocalStorageRW {
     }
 
     #[inline]
-    pub fn set_hold_interrupts_depth(val: u64) {
+    pub unsafe fn set_hold_interrupts_depth(val: u64) {
         unsafe { localstorage_write!(val => hold_interrupts_depth: u64) }
     }
 
@@ -118,30 +118,32 @@ impl CPULocalStorageRW {
     }
 
     #[inline]
-    pub fn set_hold_interrupts_initial(val: bool) {
+    pub unsafe fn set_hold_interrupts_initial(val: bool) {
         unsafe { localstorage_write!(val as u8 => hold_interrupts_initial: u8) }
     }
 
     pub unsafe fn inc_hold_interrupts() {
-        let depth = Self::hold_interrupts_depth();
+        unsafe {
+            let depth = Self::hold_interrupts_depth();
 
-        // time to disable and save interrupts state
-        if depth == 0 {
-            let enabled = interrupts::are_enabled();
+            // time to disable and save interrupts state
+            if depth == 0 {
+                let enabled = interrupts::are_enabled();
 
-            if enabled {
-                interrupts::disable();
+                if enabled {
+                    interrupts::disable();
+                }
+
+                Self::set_hold_interrupts_initial(enabled);
             }
 
-            Self::set_hold_interrupts_initial(enabled);
+            Self::set_hold_interrupts_depth(depth + 1);
         }
-
-        Self::set_hold_interrupts_depth(depth + 1);
     }
 
     pub unsafe fn dec_hold_interrupts() {
         let depth = Self::hold_interrupts_depth() - 1;
-        Self::set_hold_interrupts_depth(depth);
+        unsafe { Self::set_hold_interrupts_depth(depth) };
 
         // reset interrupt state
         if depth == 0 {
@@ -161,7 +163,7 @@ impl CPULocalStorageRW {
         }
     }
 
-    pub fn clear_current_task() {
+    pub unsafe fn clear_current_task() {
         unsafe {
             let ptr = localstorage_read_imm!(current_task_ptr: u64);
             assert_ne!(ptr, 0);
@@ -169,19 +171,20 @@ impl CPULocalStorageRW {
         }
     }
 
-    pub fn set_current_task(task: &Thread, sched: &ThreadSched) {
+    pub unsafe fn set_current_task(task: &Thread) {
         unsafe {
             let old_ptr = localstorage_read_imm!(current_task_ptr: u64);
             assert_eq!(old_ptr, 0);
-
-            let kstack_top = sched.kstack_top.as_u64();
-            localstorage_write!(kstack_top => current_task_kernel_stack_top: u64);
             localstorage_write!(task as *const Thread as u64 => current_task_ptr: u64);
         }
     }
 
-    pub fn get_gdt() -> &'static mut CPULocalGDT {
+    pub unsafe fn get_gdt() -> &'static mut CPULocalGDT {
         unsafe { &mut *(localstorage_read_imm!(gdt_pointer: u64) as *mut CPULocalGDT) }
+    }
+
+    pub unsafe fn set_context(ctx: u8) {
+        unsafe { localstorage_write!(ctx => current_context: u8) };
     }
 
     pub fn get_context() -> u8 {
@@ -189,7 +192,7 @@ impl CPULocalStorageRW {
     }
 }
 
-pub unsafe fn init_core(core_id: u8) -> u64 {
+pub unsafe fn new_cpu(core_id: u8) -> u64 {
     let vaddr_base = MemoryLoc::PerCpuMem as u64 + 0x100_0000 * core_id as u64;
 
     let cpu_lsize = size_of::<CPULocalStorage>() as u64;
@@ -208,15 +211,31 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
             .flush();
     }
 
-    let ls = unsafe { &mut *(vaddr_base as *mut CPULocalStorage) };
-    ls.core_id = core_id;
-    ls.hold_interrupts_depth = 1; // to be decremented to 0 in `core_start_multitasking`
-    ls.hold_interrupts_initial = 0;
-    ls.gdt_pointer = (vaddr_base + 0x1000) as usize;
-    ls.current_context = 0;
-    ls.current_task_kernel_stack_top = 0;
-    ls.current_task_ptr = 0;
-    ls.kernel_syscall_entry = syscall_kernel_handler as usize;
+    let stack_base = global_allocator()
+        .allocate_pages(CPU_STACK_SIZE_PAGES)
+        .unwrap()
+        .get_address();
+
+    let stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE_PAGES as u64 * 0x1000;
+
+    let scratch_stack_base = global_allocator().allocate_page().unwrap().get_address();
+
+    let scratch_stack_top = virt_addr_for_phys(scratch_stack_base) + 0x1000;
+
+    let ls = unsafe { &mut *(vaddr_base as *mut MaybeUninit<CPULocalStorage>) };
+    ls.write(CPULocalStorage {
+        stack_top,
+        kernel_syscall_entry: syscall_kernel_handler as usize,
+        core_id,
+        current_context: 0,
+        scratch_stack_top,
+        current_task_ptr: 0,
+        sched_task_sp: 0,
+        vm_exit_sp: 0,
+        hold_interrupts_initial: 0,
+        hold_interrupts_depth: 1, // to be decremented to 0 in `core_start_multitasking`
+        gdt_pointer: vaddr_base as usize + 0x1000,
+    });
 
     unsafe { crate::gdt::create_gdt_for_core(&mut *((vaddr_base + 0x1000) as *mut CPULocalGDT)) };
 
@@ -229,15 +248,11 @@ pub unsafe fn init_bsp_boot_ls() {
 
 pub unsafe fn init_bsp_localstorage() {
     assert_eq!(CPULocalStorageRW::hold_interrupts_depth(), 1);
-    let gs_base = unsafe { new_cpu(0) };
-
-    // Load new core GDT
-    // TODO: Remove old GDT
-    let gdt = unsafe { &mut *((gs_base + 0x1000) as *mut CPULocalGDT) };
 
     unsafe {
-        gdt.load();
-        set_ls(gs_base)
+        set_ls(new_cpu(0));
+        // Load new core GDT
+        CPULocalStorageRW::get_gdt().load();
     };
 }
 
@@ -256,26 +271,4 @@ unsafe fn set_ls(gs_base: u64) {
             ", in(reg) 0, in("edx") gs_upper, in("eax") gs_lower, lateout("edx") _,  lateout("ecx") _
         )
     }
-}
-
-pub const CPU_STACK_SIZE_PAGES: usize = 10;
-
-pub unsafe fn new_cpu(core_id: u8) -> u64 {
-    let vaddr = unsafe { init_core(core_id) };
-    let ls = unsafe { &mut *(vaddr as *mut CPULocalStorage) };
-
-    let stack_base = global_allocator()
-        .allocate_pages(CPU_STACK_SIZE_PAGES)
-        .unwrap()
-        .get_address();
-
-    ls.stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE_PAGES as u64 * 0x1000;
-
-    let stack_base = global_allocator()
-        .allocate_pages(CPU_STACK_SIZE_PAGES)
-        .unwrap()
-        .get_address();
-
-    ls.scratch_stack_top = virt_addr_for_phys(stack_base) + CPU_STACK_SIZE_PAGES as u64 * 0x1000;
-    vaddr
 }

@@ -20,7 +20,8 @@ pub mod pic;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
-    kassert, lapic,
+    gdt::VM_HANDLER_FUNCS_IST_INDEX,
+    lapic,
     mutex::Spinlock,
     port::KPort,
     scheduling::{
@@ -108,12 +109,14 @@ pub fn set_irq_handler(irq: u8, func: extern "x86-interrupt" fn(InterruptStackFr
 
 pub fn init_idt() {
     unsafe {
-        let i = IDT.lock();
+        let mut i = IDT.lock();
         i.load_unsafe();
         disable_pic();
+        i[LAPIC_INT]
+            .set_handler_fn(lapic::tick_handler)
+            .set_stack_index(VM_HANDLER_FUNCS_IST_INDEX);
     };
 
-    IDT.lock()[LAPIC_INT].set_handler_fn(lapic::tick_handler);
     // set_irq_handler(101, task_switch_handler);
     set_irq_handler(100, ipi_interrupt_handler);
     set_irq_handler(0xFF, spurious_handler);
@@ -264,7 +267,10 @@ impl KInterruptHandle {
         loop {
             let mut this = self.inner.lock();
 
-            kassert!(matches!(this.waiter, InterruptWaiter::None));
+            if !matches!(this.waiter, InterruptWaiter::None) {
+                warn!("Wait should be called without an existing waiter");
+                return SyscallResult::SystemError;
+            }
 
             this.waiting_ack = false;
 

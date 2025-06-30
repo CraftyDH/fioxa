@@ -5,8 +5,7 @@ use crate::{
     cpu_localstorage::CPULocalStorageRW,
     mutex::Spinlock,
     scheduling::{
-        process::{Thread, ThreadState},
-        taskmanager::enter_sched,
+        process::{Thread, ThreadState}, taskmanager::enter_sched,
     },
 };
 

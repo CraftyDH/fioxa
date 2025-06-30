@@ -1,5 +1,3 @@
-use x86_64::structures::idt::{InterruptStackFrame, InterruptStackFrameValue};
-
 // See: https://github.com/xfoxfu/rust-xos/blob/8a07a69ef/kernel/src/interrupts/handlers.rs#L92
 #[repr(align(8), C)]
 #[derive(Debug, Clone, Default)]
@@ -72,28 +70,4 @@ macro_rules! wrap_function_registers {
             }
         }
     };
-}
-
-#[derive(Debug)]
-pub struct SavedTaskState {
-    pub sp: usize,
-    pub ip: usize,
-}
-
-/// The order is very important
-#[derive(Debug)]
-#[repr(C)]
-pub struct SavedThreadState {
-    pub register_state: Registers,
-    // Rest of the data inclusing rip & rsp
-    pub interrupt_frame: InterruptStackFrameValue,
-}
-
-impl SavedThreadState {
-    pub fn new(stack_frame: &InterruptStackFrame, reg: &Registers) -> Self {
-        SavedThreadState {
-            register_state: reg.clone(),
-            interrupt_frame: **stack_frame,
-        }
-    }
 }

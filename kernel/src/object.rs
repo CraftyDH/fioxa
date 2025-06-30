@@ -116,6 +116,7 @@ struct InitHandler {
 
 impl InitHandleServiceImpl for InitHandler {
     fn get_service(&mut self, name: &str) -> Option<Channel> {
+        trace!("Get service: {name}");
         let mut shared = self.shared.lock();
         let channel = shared.handles.get_mut(name)?;
 
@@ -126,6 +127,7 @@ impl InitHandleServiceImpl for InitHandler {
     }
 
     fn publish_service(&mut self, name: &str, handle: Channel) -> bool {
+        trace!("Publish service: {name}");
         let mut shared = self.shared.lock();
         let old = shared.handles.insert(
             name.into(),
@@ -135,6 +137,7 @@ impl InitHandleServiceImpl for InitHandler {
     }
 
     fn clone_init_service(&mut self) -> Channel {
+        trace!("Clone init service");
         let (l, r) = Channel::new();
         launch(r, self.shared.clone());
         l

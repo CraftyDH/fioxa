@@ -13,6 +13,7 @@ use x86_64::{
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 pub const PAGE_FAULT_IST_INDEX: u16 = 1;
+pub const VM_HANDLER_FUNCS_IST_INDEX: u16 = 2;
 pub const TSS_STACK_SIZE: usize = 0x1000 * 5;
 
 // GDT Segment Selectors
@@ -56,7 +57,7 @@ pub unsafe fn init_bootgdt() {
 pub struct CPULocalGDT {
     pub gdt: GlobalDescriptorTable,
     pub tss: TaskStateSegment,
-    pub tss_stack: [[u8; TSS_STACK_SIZE]; 10],
+    pub tss_stack: [[u8; TSS_STACK_SIZE]; 4],
 }
 
 impl CPULocalGDT {
@@ -89,6 +90,9 @@ pub unsafe fn create_gdt_for_core(gdt: &'static mut CPULocalGDT) {
 
         gdt.tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] =
             VirtAddr::from_ptr(gdt.tss_stack[2].as_ptr().add(TSS_STACK_SIZE));
+
+        gdt.tss.interrupt_stack_table[VM_HANDLER_FUNCS_IST_INDEX as usize] =
+            VirtAddr::from_ptr(gdt.tss_stack[3].as_ptr().add(TSS_STACK_SIZE));
     }
 
     gdt.gdt.append(Descriptor::tss_segment(&gdt.tss));

@@ -10,13 +10,12 @@ use kernel_sys::types::VMMapFlags;
 use crate::{
     assembly::AP_TRAMPOLINE,
     cpu_localstorage::{CPULocalStorageRW, new_cpu},
-    gdt::CPULocalGDT,
     interrupts::IDT,
     ioapic::Madt,
     lapic::{LAPIC_ADDR, enable_localapic},
     mutex::Spinlock,
     paging::{
-        KERNEL_LVL4, MemoryLoc,
+        KERNEL_LVL4,
         page::{Page, Size4KB},
         page_allocator::{frame_alloc_exec, global_allocator},
         page_table::Mapper,
@@ -156,13 +155,9 @@ pub unsafe fn boot_aps(madt: &Madt) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn ap_startup_f(core_id: u32) {
-    let vaddr_base = MemoryLoc::PerCpuMem as u64 + 0x100_0000 * core_id as u64;
-
     unsafe {
-        let gdt = &mut *((vaddr_base + 0x1000) as *mut CPULocalGDT);
-
         // Load GDT
-        gdt.load();
+        CPULocalStorageRW::get_gdt().load();
 
         // Load IDT
         IDT.lock().load_unsafe();
@@ -173,6 +168,5 @@ pub extern "C" fn ap_startup_f(core_id: u32) {
 
     info!("Core: {core_id} booted");
 
-    // loop {}
     unsafe { core_start_multitasking() }
 }

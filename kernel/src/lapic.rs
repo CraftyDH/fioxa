@@ -4,15 +4,15 @@ use kernel_sys::types::VMMapFlags;
 use x86_64::structures::idt::InterruptStackFrame;
 
 use crate::{
-    cpu_localstorage::CPULocalStorageRW,
+    cpu_localstorage::CPULocalStorage,
     paging::{
         MemoryLoc,
         page::{Page, Size4KB},
         page_allocator::global_allocator,
         page_table::{MapMemoryError, Mapper, PageTable, TableLevel4},
     },
-    scheduling::{taskmanager::enter_sched, with_held_interrupts},
-    time::{HPET, check_sleep},
+    scheduling::{process::VMExitStateID, with_held_interrupts},
+    time::HPET,
 };
 
 // Local APIC
@@ -77,17 +77,49 @@ pub unsafe fn enable_localapic() {
     });
 }
 
+#[unsafe(naked)]
 pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
-    unsafe {
-        // Ack interrupt
-        *((LAPIC_ADDR + 0xb0) as *mut u32) = 0;
+    // Only context switch if in context 2 (AKA userspace)
+    core::arch::naked_asm!(
+        "cmp byte ptr gs:{ctx}, 2",
+        "je 2f",
 
-        check_sleep();
+        // ack interrupt
+        "push rax",
+        "mov rax, {clr_int}",
+        "mov dword ptr [rax], 0",
+        "pop rax",
+        "iretq",
 
-        // if we are not in sched yield to it
-        if CPULocalStorageRW::get_context() > 0 {
-            let mut sched = CPULocalStorageRW::get_current_task().sched().lock();
-            enter_sched(&mut sched);
-        }
-    }
+        "2:",
+        // registers
+        "push rbp",
+        "push rax",
+        "push rbx",
+        "push rcx",
+        "push rdx",
+        "push rsi",
+        "push rdi",
+        "push r8",
+        "push r9",
+        "push r10",
+        "push r11",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+
+        // ack interrupt
+        "mov rax, {clr_int}",
+        "mov dword ptr [rax], 0",
+
+        "mov rdx, rsp",
+        "mov rsp, gs:{vm_sp}",
+        "mov eax, {exit_type}",
+        "ret",
+        clr_int = const LAPIC_ADDR + 0xb0,
+        ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
+        vm_sp = const core::mem::offset_of!(CPULocalStorage, vm_exit_sp),
+        exit_type = const VMExitStateID::Complete as u32,
+    );
 }
