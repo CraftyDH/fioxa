@@ -69,21 +69,20 @@ impl<S: PageSize> Clone for Page<S> {
     }
 }
 
-pub fn get_chunked_page_range(
-    mut start: u64,
-    mut end: u64,
-) -> (
-    PageRange<Size4KB>,
-    PageRange<Size2MB>,
-    PageRange<Size1GB>,
-    PageRange<Size2MB>,
-    PageRange<Size4KB>,
-) {
+pub struct ChunkedPageRange {
+    pub lower_align_4kb: PageRange<Size4KB>,
+    pub lower_align_2mb: PageRange<Size2MB>,
+    pub middle: PageRange<Size1GB>,
+    pub upper_align_2mb: PageRange<Size2MB>,
+    pub upper_align_4kb: PageRange<Size4KB>,
+}
+
+pub fn get_chunked_page_range(mut start: u64, mut end: u64) -> ChunkedPageRange {
     assert!(start & 0xFFF == 0);
     assert!(end & 0xFFF == 0);
 
     // Normalize 4kb chunks
-    let s4kb = if start & 0x1f_ffff > 0 {
+    let lower_align_4kb = if start & 0x1f_ffff > 0 {
         let new_start = core::cmp::min((start & !0x1f_ffff) + 0x200000, end);
         let tmp = PageRange::new(
             start,
@@ -95,7 +94,7 @@ pub fn get_chunked_page_range(
         PageRange::empty()
     };
 
-    let e4kb = if end & 0x1f_ffff > 0 && start != end {
+    let upper_align_4kb = if end & 0x1f_ffff > 0 && start != end {
         let new_end = core::cmp::max(end & !0x1f_ffff, start);
         let tmp = PageRange::new(
             new_end,
@@ -108,7 +107,7 @@ pub fn get_chunked_page_range(
     };
 
     // Normalize 2mb chunks
-    let s2mb = if start & 0x3fffffff > 0 && start != end {
+    let lower_align_2mb = if start & 0x3fffffff > 0 && start != end {
         let new_start = core::cmp::min((start & !0x3fffffff) + 0x40000000, end);
         let tmp = PageRange::new(
             start,
@@ -120,7 +119,7 @@ pub fn get_chunked_page_range(
         PageRange::empty()
     };
 
-    let e2mb = if end & 0x3fffffff > 0 && start != end {
+    let upper_align_2mb = if end & 0x3fffffff > 0 && start != end {
         let new_end = core::cmp::max(end & !0x3fffffff, start);
 
         let tmp = PageRange::new(
@@ -133,13 +132,19 @@ pub fn get_chunked_page_range(
         PageRange::empty()
     };
 
-    let gb = if start < end && start != end {
+    let middle = if start < end && start != end {
         PageRange::new(start, ((end - start) / Size1GB::PAGE_SIZE) as usize)
     } else {
         PageRange::empty()
     };
 
-    (s4kb, s2mb, gb, e2mb, e4kb)
+    ChunkedPageRange {
+        lower_align_4kb,
+        lower_align_2mb,
+        middle,
+        upper_align_2mb,
+        upper_align_4kb,
+    }
 }
 
 #[derive(Debug)]

@@ -5,6 +5,8 @@
 //* Testing
 // #![feature(custom_test_frameworks)]
 // #![test_runner(test_runner)]
+#![allow(clippy::missing_safety_doc)] // TODO: Fix
+#![allow(clippy::cast_enum_truncation)] // TODO: Fix
 
 use core::fmt::Write;
 

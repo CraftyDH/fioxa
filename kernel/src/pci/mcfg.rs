@@ -4,6 +4,7 @@ use acpi::{
 };
 use alloc::slice;
 
+#[allow(clippy::upper_case_acronyms)]
 #[repr(C, packed)]
 pub struct MCFG {
     header: SdtHeader,

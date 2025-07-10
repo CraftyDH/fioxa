@@ -1,7 +1,7 @@
 use crate::{
     acpi::FioxaAcpiHandler,
     bootfs::AMD_PCNET_DRIVER,
-    driver::{disk::ahci::AHCIDriver, driver::Driver},
+    driver::{Driver, disk::ahci::AHCIDriver},
     elf,
     fs::FSDRIVES,
     mutex::Spinlock,
@@ -150,7 +150,7 @@ pub fn enumerate_pci(acpi_tables: acpi::AcpiTables<FioxaAcpiHandler>) {
             }
             return;
         }
-        Err(e) => error!("Error with getting MCFG table: {:?}", e),
+        Err(e) => error!("Error with getting MCFG table: {e:?}"),
     }
     // Enumerate using legacy port based
     {
@@ -184,6 +184,7 @@ fn enumerate_device(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: u8
     }
 }
 
+#[allow(clippy::single_match)]
 fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: u8, function: u8) {
     let pci_header = pci_bus.get_device(segment, bus, device, function);
 

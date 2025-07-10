@@ -5,7 +5,7 @@ use kernel_userspace::disk::ata::ATADiskIdentify;
 
 use crate::mutex::Spinlock;
 
-use super::driver::Driver;
+use super::Driver;
 
 pub trait DiskBusDriver: Driver {
     fn get_disks(&mut self) -> Vec<Arc<Spinlock<dyn DiskDevice>>>;

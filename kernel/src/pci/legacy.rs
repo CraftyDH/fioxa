@@ -43,11 +43,10 @@ impl LegacyPCI {
     /// Returnes the base address of the given bus device and function
     fn get_address(bus: u8, device: u8, function: u8) -> u32 {
         // Get the 32 bit address
-        let id = (1 << 31) // Enable bit
+        (1 << 31) // Enable bit
             | (bus as u32) << 16
             | (device as u32) << 11
-            | (function as u32) << 8;
-        id
+            | (function as u32) << 8
     }
 }
 
@@ -90,12 +89,12 @@ impl PCILegacyDevice {
 impl PCIDevice for PCILegacyDevice {
     unsafe fn read_u8(&self, offset: u32) -> u8 {
         let block = unsafe { self.read_u32(offset & !0b11) };
-        ((block >> 8 * (offset & 0b11)) & 0xFF) as u8
+        ((block >> (8 * (offset & 0b11))) & 0xFF) as u8
     }
 
     unsafe fn read_u16(&self, offset: u32) -> u16 {
         let block = unsafe { self.read_u32(offset & !0b11) };
-        ((block >> 8 * (offset & 0b11)) & 0xFFFF) as u16
+        ((block >> (8 * (offset & 0b11))) & 0xFFFF) as u16
     }
 
     unsafe fn read_u32(&self, offset: u32) -> u32 {
@@ -104,15 +103,15 @@ impl PCIDevice for PCILegacyDevice {
 
     unsafe fn write_u8(&mut self, offset: u32, data: u8) {
         let mut block = unsafe { self.read_u32(offset & !0b11) };
-        block &= !(0xFF << 8 * (offset & 0b11));
-        block |= (data as u32) << 8 * (offset & 0b11);
+        block &= !(0xFF << (8 * (offset & 0b11)));
+        block |= (data as u32) << (8 * (offset & 0b11));
         unsafe { self.write_u32(offset & !0b11, block) };
     }
 
     unsafe fn write_u16(&mut self, offset: u32, data: u16) {
         let mut block = unsafe { self.read_u32(offset & !0b10) };
-        block &= !(0xFFFF << 8 * (offset & 0b11));
-        block |= (data as u32) << 8 * (offset & 0b11);
+        block &= !(0xFFFF << (8 * (offset & 0b11)));
+        block |= (data as u32) << (8 * (offset & 0b11));
         unsafe { self.write_u32(offset & !0b11, block) };
     }
 

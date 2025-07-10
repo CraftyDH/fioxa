@@ -22,11 +22,11 @@ pub unsafe fn enable_apic(madt: &Madt) {
     let (_, _, io_apics, apic_ints) = madt.find_ioapic();
 
     for apic in &io_apics {
-        debug!("APIC: {:?}", apic);
+        debug!("APIC: {apic:?}");
     }
 
     for i in apic_ints {
-        debug!("Int override: {:?}", i);
+        debug!("Int override: {i:?}");
     }
 
     let curr_proc = unsafe { CPULocalStorageRW::get_current_task().process() };
@@ -141,15 +141,12 @@ impl Madt {
             let entry = unsafe { *start_ptr };
             let len = unsafe { *start_ptr.add(1) };
 
-            match entry {
-                0 => {
-                    let ptr3 = unsafe { *start_ptr.add(3) };
-                    let ptr4 = unsafe { *start_ptr.add(4) };
-                    if ptr4 & 1 > 0 && ptr3 <= 8 {
-                        lapic_ids.push(ptr3)
-                    }
+            if entry == 0 {
+                let ptr3 = unsafe { *start_ptr.add(3) };
+                let ptr4 = unsafe { *start_ptr.add(4) };
+                if ptr4 & 1 > 0 && ptr3 <= 8 {
+                    lapic_ids.push(ptr3)
                 }
-                _ => {}
             }
 
             start_ptr = unsafe { start_ptr.add(len as usize) };
@@ -189,7 +186,7 @@ impl Madt {
                 }
                 2 => {
                     let x = unsafe { *(start_ptr.add(2) as *const ApicInterruptOveride) };
-                    trace!("X{:?}", x);
+                    trace!("X{x:?}");
                     apic_overide.push(x);
                 }
                 5 => {
@@ -207,7 +204,6 @@ impl Madt {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
-
 pub struct IOApic {
     apic_id: u8,
     _rsv: u8,
@@ -217,7 +213,6 @@ pub struct IOApic {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
-
 pub struct ApicInterruptOveride {
     bus_source: u8,
     irq_source: u8,

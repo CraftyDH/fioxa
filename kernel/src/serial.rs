@@ -135,7 +135,6 @@ pub fn serial_monitor_stdin() {
 
     let (stdin, cin) = Channel::new();
     let (stdout, cout) = Channel::new();
-    let (stderr, cerr) = Channel::new();
 
     sys_process_spawn_thread(move || {
         loop {
@@ -145,7 +144,7 @@ pub fn serial_monitor_stdin() {
                     **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
                     **cin.handle(),
                     **cout.handle(),
-                    **cerr.handle(),
+                    **cout.handle(),
                 ]))
                 .build();
 
@@ -159,30 +158,25 @@ pub fn serial_monitor_stdin() {
         }
     });
 
-    let mon_out = |chan: Channel| {
-        sys_process_spawn_thread(move || {
-            let serial = SERIAL.get().unwrap();
-            let mut read = Vec::with_capacity(0x1000);
-            loop {
-                chan.read::<0>(&mut read, false, true).unwrap();
-                let s = String::from_utf8_lossy(&read);
-                let mut serial = serial.lock();
-                for c in s.chars() {
-                    if c == '\n' {
-                        serial.write_str("\r\n");
-                    } else if c == '\x08' {
-                        // go back, write space, go back
-                        serial.write_str("\x08 \x08");
-                    } else {
-                        serial.write_char(c).unwrap();
-                    }
+    sys_process_spawn_thread(move || {
+        let serial = SERIAL.get().unwrap();
+        let mut read = Vec::with_capacity(0x1000);
+        loop {
+            stdout.read::<0>(&mut read, false, true).unwrap();
+            let s = String::from_utf8_lossy(&read);
+            let mut serial = serial.lock();
+            for c in s.chars() {
+                if c == '\n' {
+                    serial.write_str("\r\n");
+                } else if c == '\x08' {
+                    // go back, write space, go back
+                    serial.write_str("\x08 \x08");
+                } else {
+                    serial.write_char(c).unwrap();
                 }
             }
-        });
-    };
-
-    mon_out(stdout);
-    mon_out(stderr);
+        }
+    });
 
     loop {
         while let Some(b) = { serial.lock().try_read() } {

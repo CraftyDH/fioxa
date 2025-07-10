@@ -50,12 +50,12 @@ pub fn load_kernel(kernel_data: &[u8], boot_info: &mut BootInfo) -> u64 {
     // Transpose the header as an elf header
     let elf_header = unsafe { *(kernel_data.as_ptr() as *const Elf64Ehdr) };
     // Ensure that all the header flags are suitable
-    if &elf_header.e_ident[0..6]
+    if elf_header.e_ident[0..6]
         == [
             0x7F,
-            'E' as u8,
-            'L' as u8,
-            'F' as u8,
+            b'E',
+            b'L',
+            b'F',
             ELFCLASS64,
             ELFDATA2LSB,
         ]

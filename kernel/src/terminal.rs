@@ -146,7 +146,7 @@ impl TTY {
         }
 
         Self {
-            buffer: buffer,
+            buffer,
             fg_color: 0xFF_FF_FF,
             bg_color: 0,
             dims_x,

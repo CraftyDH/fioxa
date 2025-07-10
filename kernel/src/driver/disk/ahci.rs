@@ -10,7 +10,7 @@ use volatile::Volatile;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
-    driver::{disk::DiskDevice, driver::Driver},
+    driver::{Driver, disk::DiskDevice},
     mutex::Spinlock,
     pci::{PCIHeader0, PCIHeaderCommon},
     vm::VMO,
@@ -155,7 +155,7 @@ impl Driver for AHCIDriver {
             if ports_implemented.get_bit(i) {
                 let port_type = Self::check_port_type(port);
 
-                trace!("SATA: {:?}", port_type);
+                trace!("SATA: {port_type:?}");
 
                 if port_type == PortType::SATA {
                     let mut port = Port::new(port);

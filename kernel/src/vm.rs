@@ -147,14 +147,13 @@ impl VirtualMemoryRegion {
             }
         };
         // Make the mapping
-        match self.page_mapper.map(
+        if let Ok(f) = self.page_mapper.map(
             global_allocator(),
             Page::<Size4KB>::containing(address as u64),
             phys,
             map.map_flags,
         ) {
-            Ok(f) => f.flush(),
-            Err(_) => (), // Already mapped ??
+            f.flush()
         }
         Some(())
     }
@@ -259,7 +258,7 @@ impl VMO {
     }
 
     pub fn new_anonymous(length: usize, flags: VMOAnonymousFlags) -> Self {
-        let page_count = (length + 0xFFF) / 0x1000;
+        let page_count = length.div_ceil(0x1000);
 
         let pages = if flags.contains(VMOAnonymousFlags::CONTINUOUS | VMOAnonymousFlags::BELOW_32) {
             todo!("Handle 32bit continuous pages");

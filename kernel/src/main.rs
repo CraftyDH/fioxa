@@ -58,7 +58,10 @@ use kernel_userspace::channel::Channel;
 // #[no_mangle]
 entry_point!(main_stage1);
 
-pub fn main_stage1(info: *const BootInfo) -> ! {
+/// The kernels entry point from the bootloader
+/// # Safety
+/// Must be only called by the bootloader with a valid pointer
+pub unsafe fn main_stage1(info: *const BootInfo) -> ! {
     unsafe {
         x86_64::instructions::interrupts::disable();
 
@@ -143,7 +146,7 @@ unsafe extern "C" fn main_stage2() {
 
     let init_process = ProcessBuilder::new(ProcessMemory::new(), init as *const u64, 0)
         .privilege(ProcessPrivilege::KERNEL)
-        .name("INIT PROCESS".into())
+        .name("INIT PROCESS")
         .build();
 
     assert!(init_process.pid.into_raw() == 1);

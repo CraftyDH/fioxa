@@ -291,7 +291,7 @@ impl PCNET<'_> {
         init_block.set_send_buffer_desc_addr(send_buffer_paddr);
         init_block.set_recv_buffer_desc_addr(recv_buffer_paddr);
 
-        let pages = (SEND_BUFFER_CNT + 1) / 2;
+        let pages = SEND_BUFFER_CNT.div_ceil(2);
         let send_map = sys_vmo_anonymous_create(
             pages * 0x1000,
             VMOAnonymousFlags::PINNED | VMOAnonymousFlags::BELOW_32,
@@ -315,7 +315,7 @@ impl PCNET<'_> {
             send_buffer_desc[i].flags = BUFFER_SIZE_MASK;
         }
 
-        let pages = (RECV_BUFFER_CNT + 1) / 2;
+        let pages = RECV_BUFFER_CNT.div_ceil(2);
         let recv_map = sys_vmo_anonymous_create(
             pages * 0x1000,
             VMOAnonymousFlags::PINNED | VMOAnonymousFlags::BELOW_32,

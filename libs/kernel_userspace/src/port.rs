@@ -8,6 +8,12 @@ use crate::handle::Handle;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Port(Handle);
 
+impl Default for Port {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Port {
     pub const fn from_handle(handle: Handle) -> Self {
         Self(handle)

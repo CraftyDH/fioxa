@@ -102,6 +102,12 @@ pub struct ProcessMemory {
     pub region: VirtualMemoryRegion,
 }
 
+impl Default for ProcessMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProcessMemory {
     pub fn new() -> Self {
         let mut region = VirtualMemoryRegion::new(global_allocator());
@@ -185,7 +191,7 @@ impl Process {
         Arc::new(Self {
             pid: generate_next_process_id(),
             privilege,
-            args: args,
+            args,
             memory: Spinlock::new(memory),
             threads: Default::default(),
             references: Spinlock::new(references),
@@ -408,7 +414,7 @@ impl Thread {
 
         threads.threads.insert(tid, thread.clone());
 
-        return Some(thread);
+        Some(thread)
     }
 
     pub fn thread(&self) -> Arc<Thread> {
@@ -424,8 +430,8 @@ impl Thread {
     }
 
     /// SAFTEY: Must hold the global sched lock
-    pub unsafe fn sched_global(&self) -> &mut ThreadSchedGlobalData {
-        unsafe { &mut *self.sched_global.0.get() }
+    pub fn sched_global(&self) -> *mut ThreadSchedGlobalData {
+        self.sched_global.0.get()
     }
 
     pub fn sched(&self) -> &Spinlock<ThreadSched> {
@@ -453,6 +459,12 @@ pub struct ThreadSchedGlobal(UnsafeCell<ThreadSchedGlobalData>);
 /// The sched global is safe, we must hold lock to access it
 unsafe impl Send for ThreadSchedGlobal {}
 unsafe impl Sync for ThreadSchedGlobal {}
+
+impl Default for ThreadSchedGlobal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ThreadSchedGlobal {
     pub const fn new() -> Self {
@@ -518,39 +530,39 @@ impl KernelValue {
     }
 }
 
-impl Into<KernelValue> for Arc<KMessage> {
-    fn into(self) -> KernelValue {
-        KernelValue::Message(self)
+impl From<Arc<KMessage>> for KernelValue {
+    fn from(val: Arc<KMessage>) -> Self {
+        KernelValue::Message(val)
     }
 }
 
-impl Into<KernelValue> for Arc<Process> {
-    fn into(self) -> KernelValue {
-        KernelValue::Process(self)
+impl From<Arc<Process>> for KernelValue {
+    fn from(val: Arc<Process>) -> Self {
+        KernelValue::Process(val)
     }
 }
 
-impl Into<KernelValue> for Arc<KChannelHandle> {
-    fn into(self) -> KernelValue {
-        KernelValue::Channel(self)
+impl From<Arc<KChannelHandle>> for KernelValue {
+    fn from(val: Arc<KChannelHandle>) -> Self {
+        KernelValue::Channel(val)
     }
 }
 
-impl Into<KernelValue> for Arc<KPort> {
-    fn into(self) -> KernelValue {
-        KernelValue::Port(self)
+impl From<Arc<KPort>> for KernelValue {
+    fn from(val: Arc<KPort>) -> Self {
+        KernelValue::Port(val)
     }
 }
 
-impl Into<KernelValue> for Arc<KInterruptHandle> {
-    fn into(self) -> KernelValue {
-        KernelValue::Interrupt(self)
+impl From<Arc<KInterruptHandle>> for KernelValue {
+    fn from(val: Arc<KInterruptHandle>) -> Self {
+        KernelValue::Interrupt(val)
     }
 }
 
-impl Into<KernelValue> for Arc<Spinlock<VMO>> {
-    fn into(self) -> KernelValue {
-        KernelValue::VMO(self)
+impl From<Arc<Spinlock<VMO>>> for KernelValue {
+    fn from(val: Arc<Spinlock<VMO>>) -> Self {
+        KernelValue::VMO(val)
     }
 }
 

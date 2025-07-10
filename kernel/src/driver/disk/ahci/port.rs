@@ -118,10 +118,10 @@ impl Port {
         // Stop port
         port.cmd_sts.update(|x| *x &= !HBA_PX_CMD_ST);
         // LIST_ON
-        while port.cmd_sts.read() | HBA_PX_CMD_CR == 1 {}
+        while port.cmd_sts.read() & HBA_PX_CMD_CR > 0 {}
 
         port.cmd_sts.update(|x| *x &= !HBA_PX_CMD_FRE);
-        while port.cmd_sts.read() | HBA_PX_CMD_FR == 1 {}
+        while port.cmd_sts.read() & HBA_PX_CMD_FR > 0 {}
     }
 }
 

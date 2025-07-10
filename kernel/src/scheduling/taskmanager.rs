@@ -36,12 +36,24 @@ pub struct ThreadSchedGlobalData {
     next: Option<Arc<Thread>>,
 }
 
+impl Default for ThreadSchedGlobalData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ThreadSchedGlobalData {
     pub const fn new() -> Self {
         Self {
             queued: false,
             next: None,
         }
+    }
+}
+
+impl Default for GlobalSchedData {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -59,7 +71,7 @@ impl GlobalSchedData {
             let mut head = &self.queue_head;
             while let Some(h) = head {
                 writer.write_fmt(format_args!("{h:?}\n"))?;
-                head = &h.sched_global().next;
+                head = &(*h.sched_global()).next;
             }
             Ok(())
         }
@@ -68,7 +80,7 @@ impl GlobalSchedData {
     fn pop_thread(&mut self) -> Option<Arc<Thread>> {
         unsafe {
             let head = self.queue_head.take()?;
-            let sg = head.sched_global();
+            let sg = &mut *head.sched_global();
             sg.queued = false;
             match sg.next.take() {
                 nxt @ Some(_) => self.queue_head = nxt,
@@ -83,7 +95,7 @@ impl GlobalSchedData {
 
     pub fn queue_thread(&mut self, thread: Arc<Thread>) {
         unsafe {
-            let sg = thread.sched_global();
+            let sg = &mut *thread.sched_global();
             if sg.queued {
                 return;
             }
@@ -97,7 +109,7 @@ impl GlobalSchedData {
             } else {
                 // Case 2: insert ourself as the new tail
                 if let Some(tail) = self.queue_tail.take() {
-                    let tsg = tail.sched_global();
+                    let tsg = &mut *tail.sched_global();
                     assert!(tsg.next.is_none());
                     tsg.next = Some(thread.clone());
                 }
@@ -117,6 +129,7 @@ pub unsafe fn enable_syscall() {
         wrmsr(0xC0000081, star);
 
         // set lstar (the rip that it'll go to)
+        #[allow(clippy::fn_to_numeric_cast)]
         wrmsr(0xC0000082, syscall_sysret_handler as u64);
 
         // set flag mask (mask everything)
@@ -154,7 +167,7 @@ pub unsafe fn core_start_multitasking() {
 
 unsafe extern "C" fn scheduler() {
     let id = CPULocalStorageRW::get_core_id();
-    info!("Starting scheduler on core: {}", id);
+    info!("Starting scheduler on core: {id}");
 
     loop {
         let task = SCHEDULER.lock().pop_thread();

@@ -50,9 +50,7 @@ pub const fn get_device_name<'a>(vendor_id: u16, device_id: u16) -> Option<&'a s
             0x2000 => Some("AMD PCNET (AM79c973)"),
             _ => None,
         },
-        0x10DE => match device_id {
-            _ => None,
-        },
+        0x10DE => None,
         _ => None,
     }
 }

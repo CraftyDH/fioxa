@@ -62,8 +62,7 @@ impl Screen<'_> {
             pos.y = self.gop.vertical - 16
         }
 
-        for y in 0..16 {
-            let line = cursor[y];
+        for (y, line) in cursor.iter().enumerate().take(16) {
             for x in 0..16 {
                 if (line & (0b10_000_000_000_000 >> x)) > 0 {
                     let loc = ((x + pos.x) + ((y + pos.y) * self.gop.stride)) * 4;
@@ -110,7 +109,7 @@ pub fn gop_entry() {
 
     let fb_ptr = unsafe { *gop.buffer.as_ptr() as usize };
     let fb_base = fb_ptr & !0xFFF;
-    let fb_top = (fb_base + gop.buffer_size as usize + 0xFFF) & !0xFFF;
+    let fb_top = (fb_base + gop.buffer_size + 0xFFF) & !0xFFF;
 
     unsafe {
         let handle = sys_vmo_mmap_create(fb_base as *mut (), fb_top - fb_base);

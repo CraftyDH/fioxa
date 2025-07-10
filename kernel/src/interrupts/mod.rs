@@ -1,5 +1,3 @@
-use core::u64;
-
 use alloc::{sync::Arc, vec::Vec};
 use kernel_sys::{
     syscall::sys_process_spawn_thread,
@@ -91,12 +89,9 @@ pub static IDT: Lazy<Spinlock<InterruptDescriptorTable>> = Lazy::new(|| {
 macro_rules! interrupt_handler {
     ($fn: ident => $w:ident) => {
         pub extern "x86-interrupt" fn $w(i: InterruptStackFrame) {
-            // let y: u16;
-            // unsafe { core::arch::asm!("mov {0:x}, gs", out(reg) y) };
-            // println!("Core: {y} received int");
             $fn(i);
             // Finish int
-            unsafe { core::ptr::write_volatile((crate::lapic::LAPIC_ADDR + 0xb0) as *mut u32, 0) }
+            unsafe { core::ptr::write_volatile(($crate::lapic::LAPIC_ADDR + 0xb0) as *mut u32, 0) }
         }
     };
 }
@@ -122,13 +117,13 @@ pub fn init_idt() {
 interrupt_handler!(ipi_handler => ipi_interrupt_handler);
 
 pub fn ipi_handler(s: InterruptStackFrame) {
-    info!("IPI {:?}", s)
+    info!("IPI {s:?}")
 }
 
 interrupt_handler!(spurious => spurious_handler);
 
 pub fn spurious(s: InterruptStackFrame) {
-    debug!("Spurious {:?}", s)
+    debug!("Spurious {s:?}")
 }
 
 #[inline(always)]
@@ -158,7 +153,8 @@ fn com1_interrupt_handler(_: InterruptStackFrame) {
     int_interrupt_handler(InterruptVector::COM1)
 }
 
-static INTERRUPT_SOURCES: Lazy<[Arc<Spinlock<Vec<Arc<KInterruptHandle>>>>; 4]> = Lazy::new(|| {
+type InterruptSource = Arc<Spinlock<Vec<Arc<KInterruptHandle>>>>;
+static INTERRUPT_SOURCES: Lazy<[InterruptSource; 4]> = Lazy::new(|| {
     [
         Arc::new(Default::default()),
         Arc::new(Default::default()),
@@ -221,6 +217,12 @@ enum InterruptWaiter {
     None,
     Thread(Arc<Thread>),
     Port { port: Arc<KPort>, key: u64 },
+}
+
+impl Default for KInterruptHandle {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl KInterruptHandle {

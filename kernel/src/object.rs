@@ -1,5 +1,3 @@
-use core::u64;
-
 use alloc::{string::String, sync::Arc, vec::Vec};
 use hashbrown::HashMap;
 use kernel_sys::{

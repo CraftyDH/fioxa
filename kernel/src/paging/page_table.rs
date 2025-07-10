@@ -224,6 +224,8 @@ impl<L: TableLevel> PageTable<L> {
         self.table.addr()
     }
 
+    // TODO: Fix
+    #[allow(clippy::mut_from_ref)]
     fn table(&self) -> &mut PhysPageTable {
         unsafe { &mut *virt_addr_offset_mut(self.table) }
     }
@@ -349,7 +351,6 @@ where
         // try cleaning up memory
         if next.table().all_entries_empty() {
             let page = Page::<Size4KB>::new(next.table as u64);
-            drop(next);
             e.set_present(false);
             e.set_address(0);
             unsafe { alloc.free_page(page) };

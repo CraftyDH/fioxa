@@ -16,6 +16,7 @@ where
 {
     type Raw;
 
+    #[allow(clippy::wrong_self_convention)] // TODO: Fix
     fn into_raw(&self) -> Self::Raw;
     fn from_raw(raw: Self::Raw) -> Result<Self, TryFromRawError>;
 }

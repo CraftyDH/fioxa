@@ -27,12 +27,12 @@ impl PageTableManager {
         let pt =
             pd.and_then(|pd| Self::get_or_create_table(&mut pd.entries[indexer.pt_i as usize]));
 
-        pt.ok_or("Could not traverse pml4 tree").and_then(|pt| {
+        pt.ok_or("Could not traverse pml4 tree").map(|pt| {
             let pde = &mut pt.entries[indexer.p_i as usize];
             pde.set_present(true);
             pde.set_address(physical_memory);
             pde.set_read_write(write);
-            Ok(Flusher(virtual_memory))
+            Flusher(virtual_memory)
         })
     }
 

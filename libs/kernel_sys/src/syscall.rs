@@ -31,6 +31,11 @@ pub fn sys_exit() -> ! {
     unsafe { raw_sys_exit() }
 }
 
+/// Map syscall
+///
+/// # Safety
+///
+/// The caller must ensure the arguments are correct as this will perform mapping into the vmspace
 #[inline]
 pub unsafe fn sys_map(
     vmo: Option<Hid>,
@@ -51,6 +56,11 @@ pub unsafe fn sys_map(
     }
 }
 
+/// Unmap syscall
+///
+/// # Safety
+///
+/// The caller must ensure nothing still points to the region and that it is allowed to unmap it
 #[inline]
 pub unsafe fn sys_unmap(addr: vaddr_t, length: usize) -> SyscallResult {
     unsafe { SyscallResult::from_raw(raw_sys_unmap(addr, length)).unwrap() }
@@ -99,6 +109,11 @@ pub fn sys_log(level: u32, target: &str, message: &str) {
 
 // handle
 
+/// Drops a handle
+///
+/// # Safety
+///
+/// The caller must ensure that nothing still references it as the kernel can reuse the id
 #[inline]
 pub unsafe fn sys_handle_drop(handle: Hid) -> SyscallResult {
     unsafe { SyscallResult::from_raw(raw_sys_handle_drop(handle.into_raw())).unwrap() }
@@ -404,8 +419,13 @@ pub fn sys_message_read(handle: Hid, buf: &mut [u8]) -> SyscallResult {
 
 // vmo
 
+/// Creates a VMO mapping to the physical address `base` with a given length
+///
+/// # Safety
+///
+/// The caller must ensure it has rights to directly access the region and that it is a valid physical address range
 #[inline]
-pub fn sys_vmo_mmap_create(base: *mut (), length: usize) -> Hid {
+pub unsafe fn sys_vmo_mmap_create(base: *mut (), length: usize) -> Hid {
     unsafe { Hid::from_raw(raw_sys_vmo_mmap_create(base, length)).unwrap() }
 }
 

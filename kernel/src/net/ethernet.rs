@@ -92,7 +92,7 @@ pub fn send_arp(
     header.set_src_mac_be(mac_addr);
     header.set_ether_type_be(0x0806u16.to_be());
     let arp_req = ARPEth { header, arp };
-    let buf: &[u8; size_of::<ARPEth>()] = &unsafe { transmute(arp_req) };
+    let buf = unsafe { &transmute::<ARPEth, [u8; size_of::<ARPEth>()]>(arp_req) };
 
     service.send_packet(buf);
 

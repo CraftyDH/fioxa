@@ -16,6 +16,12 @@ use crate::{handle::Handle, ipc::IPCChannel, port::Port};
 #[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
 pub struct Interrupt(Handle);
 
+impl Default for Interrupt {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Interrupt {
     pub const fn from_handle(handle: Handle) -> Self {
         Self(handle)

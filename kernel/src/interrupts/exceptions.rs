@@ -66,7 +66,7 @@ pub fn set_exceptions_idt(idt: &mut InterruptDescriptorTable) {
         // .set_stack_index(tss::DOUBLE_FAULT_IST_INDEX);
 
         idt.page_fault
-            .set_handler_addr(VirtAddr::new(page_fault_handler as u64))
+            .set_handler_addr(VirtAddr::from_ptr(page_fault_handler as *const ()))
             .set_stack_index(PAGE_FAULT_IST_INDEX);
         // .disable_interrupts(false);
     }
@@ -77,7 +77,7 @@ pub fn set_exceptions_idt(idt: &mut InterruptDescriptorTable) {
 }
 
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    info!("BREAKPOINT {:#?}", stack_frame);
+    info!("BREAKPOINT {stack_frame:#?}");
 }
 
 extern "x86-interrupt" fn double_fault_handler(
@@ -93,10 +93,7 @@ extern "x86-interrupt" fn general_protection_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    error!(
-        "EXCEPTION: GENERAL PROTECTION FAULT Error: {}\n{:#?}",
-        error_code, stack_frame
-    );
+    error!("EXCEPTION: GENERAL PROTECTION FAULT Error: {error_code}\n{stack_frame:#?}");
     kill_bad_task()
 }
 
@@ -130,7 +127,7 @@ unsafe extern "x86-interrupt" fn page_fault_handler(
     }
 
     let Ok(addr) = addr else {
-        error!("EXCEPTION: PAGE FAULT: Bad address {:?}", addr);
+        error!("EXCEPTION: PAGE FAULT: Bad address {addr:?}");
         kill_bad_task()
     };
 
@@ -138,10 +135,7 @@ unsafe extern "x86-interrupt" fn page_fault_handler(
     // WRITER.lock().fill_screen(0xFF_00_00);
     // WRITER.lock().pos.y = 0;
     if error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION) {
-        error!(
-            "EXCEPTION: PAGE FAULT: Protection violation at {:?} {error_code:?}",
-            addr
-        );
+        error!("EXCEPTION: PAGE FAULT: Protection violation at {addr:?} {error_code:?}");
         kill_bad_task()
     }
 

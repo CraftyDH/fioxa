@@ -72,6 +72,12 @@ impl Scancode for ScancodeSet2 {
     }
 }
 
+impl Default for ScancodeSet2 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ScancodeSet2 {
     pub const fn new() -> Self {
         Self {

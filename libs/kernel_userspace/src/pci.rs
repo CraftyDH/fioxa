@@ -21,14 +21,14 @@ impl PCIDevice {
     unsafe fn read_u8(&mut self, offset: u32) -> u8 {
         unsafe {
             let block = self.read_u32(offset & !0b11);
-            ((block >> 8 * (offset & 0b11)) & 0xFF) as u8
+            ((block >> (8 * (offset & 0b11))) & 0xFF) as u8
         }
     }
 
     unsafe fn read_u16(&mut self, offset: u32) -> u16 {
         unsafe {
             let block = self.read_u32(offset & !0b11);
-            ((block >> 8 * (offset & 0b11)) & 0xFFFF) as u16
+            ((block >> (8 * (offset & 0b11))) & 0xFFFF) as u16
         }
     }
 
@@ -40,8 +40,8 @@ impl PCIDevice {
     unsafe fn write_u8(&mut self, offset: u32, data: u8) {
         unsafe {
             let mut block = self.read_u32(offset & !0b11);
-            block &= !(0xFF << 8 * (offset & 0b11));
-            block |= (data as u32) << 8 * (offset & 0b11);
+            block &= !(0xFF << (8 * (offset & 0b11)));
+            block |= (data as u32) << (8 * (offset & 0b11));
             self.write_u32(offset & !0b11, block);
         }
     }
@@ -49,8 +49,8 @@ impl PCIDevice {
     unsafe fn write_u16(&mut self, offset: u32, data: u16) {
         unsafe {
             let mut block = self.read_u32(offset & !0b10);
-            block &= !(0xFFFF << 8 * (offset & 0b11));
-            block |= (data as u32) << 8 * (offset & 0b11);
+            block &= !(0xFFFF << (8 * (offset & 0b11)));
+            block |= (data as u32) << (8 * (offset & 0b11));
             self.write_u32(offset & !0b11, block);
         }
     }
@@ -158,6 +158,9 @@ impl PCIHeaderCommon {
         unsafe { self.device.lock().read_u8(15) }
     }
 
+    /// # Safety
+    ///
+    /// The caller must ensure the devuce is of the correct type
     pub unsafe fn get_as_header0(self) -> PCIHeader0 {
         PCIHeader0 {
             device: self.device.clone(),

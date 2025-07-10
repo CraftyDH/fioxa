@@ -40,35 +40,37 @@ pub unsafe fn create_offset_map(
             r.phys_start + r.page_count * 0x1000,
         );
 
-        for page in [pages.0, pages.4].into_iter() {
-            for page in page.into_iter() {
-                mapper
-                    .map(
-                        alloc,
-                        Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),
-                        page,
-                        VMMapFlags::WRITEABLE,
-                    )
-                    .unwrap()
-                    .ignore();
-            }
+        for page in [pages.lower_align_4kb, pages.upper_align_4kb]
+            .into_iter()
+            .flatten()
+        {
+            mapper
+                .map(
+                    alloc,
+                    Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),
+                    page,
+                    VMMapFlags::WRITEABLE,
+                )
+                .unwrap()
+                .ignore();
         }
 
-        for page in [pages.1, pages.3].into_iter() {
-            for page in page.into_iter() {
-                mapper
-                    .map(
-                        alloc,
-                        Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),
-                        page,
-                        VMMapFlags::WRITEABLE,
-                    )
-                    .unwrap()
-                    .ignore();
-            }
+        for page in [pages.lower_align_2mb, pages.upper_align_2mb]
+            .into_iter()
+            .flatten()
+        {
+            mapper
+                .map(
+                    alloc,
+                    Page::new(page.get_address() + MemoryLoc::PhysMapOffset as u64),
+                    page,
+                    VMMapFlags::WRITEABLE,
+                )
+                .unwrap()
+                .ignore();
         }
 
-        for page in pages.2 {
+        for page in pages.middle {
             mapper
                 .map(
                     alloc,

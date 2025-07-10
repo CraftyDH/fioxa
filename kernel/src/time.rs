@@ -41,7 +41,7 @@ impl Eq for SleptProcess {}
 
 impl PartialOrd for SleptProcess {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
-        self.wakeup.partial_cmp(&other.wakeup)
+        Some(self.cmp(other))
     }
 }
 

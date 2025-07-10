@@ -127,6 +127,12 @@ pub struct PS2Command {
     command_port: PortWriteOnly<u8>,
 }
 
+impl Default for PS2Command {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PS2Command {
     pub const fn new() -> Self {
         Self {
@@ -175,6 +181,12 @@ pub struct PS2Controller {
     command: PS2Command,
     keyboard: Keyboard,
     mouse: Mouse,
+}
+
+impl Default for PS2Controller {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PS2Controller {

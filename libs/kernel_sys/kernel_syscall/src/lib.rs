@@ -39,7 +39,7 @@ struct Syscall {
 enum SyscallResult {
     None,
     Never,
-    One(Type),
+    One(Box<Type>),
 }
 
 impl Parse for SyscallResult {

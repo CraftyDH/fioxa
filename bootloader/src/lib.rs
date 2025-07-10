@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(clippy::missing_safety_doc)] // TODO: Fix
 
 #[macro_use]
 extern crate log;
@@ -26,17 +27,17 @@ pub struct BootInfo {
     pub kernel_pages: u64,
 }
 
-pub type EntryPoint = fn(*const BootInfo) -> !;
+pub type EntryPoint = unsafe fn(*const BootInfo) -> !;
 
 #[macro_export]
 macro_rules! entry_point {
     ($path:path) => {
         #[unsafe(export_name = "_start")]
         // We are reciecing the call from UEFI which is win64 calling
-        pub extern "C" fn bootstrap(info: *const bootloader::BootInfo) -> ! {
+        pub unsafe extern "C" fn bootstrap(info: *const bootloader::BootInfo) -> ! {
             let f: bootloader::EntryPoint = $path;
 
-            f(info)
+            unsafe { f(info) }
         }
     };
 }

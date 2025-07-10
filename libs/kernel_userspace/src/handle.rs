@@ -15,6 +15,11 @@ pub struct Handle(Hid);
 pub const FIRST_HANDLE: Handle = unsafe { Handle::from_id(Hid::from_usize(1).unwrap()) };
 
 impl Handle {
+    /// Construct a handle from an Hid
+    ///
+    /// # Safety
+    ///
+    /// This handle will now own Hid no other references to it can outlive it.
     pub const unsafe fn from_id(id: Hid) -> Self {
         Self(id)
     }

@@ -19,6 +19,12 @@ pub struct KPortInner {
     waiters: VecDeque<Arc<Thread>>,
 }
 
+impl Default for KPort {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KPort {
     pub const fn new() -> KPort {
         Self {

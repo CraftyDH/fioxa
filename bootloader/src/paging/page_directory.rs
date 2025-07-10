@@ -25,7 +25,7 @@ pub struct PageDirectoryEntry {
 impl PageDirectoryEntry {
     // Shift address by 12 to fit the structure
     pub fn get_address(&self) -> u64 {
-        return self.internal_address() << 12;
+        self.internal_address() << 12
     }
 
     pub fn set_address(&mut self, address: u64) {

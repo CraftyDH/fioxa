@@ -148,8 +148,7 @@ impl<I: ElfLoaderServiceImpl> ElfLoaderServiceExecutor<I> {
             let hids: heapless::Vec<Handle, 31> = spawn
                 .initial_refs
                 .iter()
-                .map(|h| h.0.deserialize(des))
-                .flatten()
+                .flat_map(|h| h.0.deserialize(des))
                 .collect();
 
             let res = self.service.spawn(elf, &spawn.args, &hids);

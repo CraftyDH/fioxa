@@ -19,7 +19,7 @@ pub struct GopInfo {
 
 pub fn initialize_gop() -> ScopedProtocol<GraphicsOutput> {
     let mut gop = get_handle_for_protocol::<GraphicsOutput>()
-        .and_then(|handle| open_protocol_exclusive::<GraphicsOutput>(handle))
+        .and_then(open_protocol_exclusive::<GraphicsOutput>)
         .unwrap();
 
     // The max resolution to choose
@@ -35,7 +35,6 @@ pub fn initialize_gop() -> ScopedProtocol<GraphicsOutput> {
     let mut best_mode = None;
 
     for mode in gop.modes() {
-        let mode = mode;
         let info = mode.info();
         let (x, y) = info.resolution();
         if x <= maxx && y <= maxy {
@@ -46,7 +45,7 @@ pub fn initialize_gop() -> ScopedProtocol<GraphicsOutput> {
     if let Some(mode) = &best_mode {
         info!("Choosing GOP mode: {:?}", mode.info());
 
-        gop.set_mode(&mode).unwrap();
+        gop.set_mode(mode).unwrap();
     }
 
     gop

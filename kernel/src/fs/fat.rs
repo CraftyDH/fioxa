@@ -136,8 +136,7 @@ impl FAT {
         let bpb = self.bios_parameter_block;
         match self.fat_ebr {
             FatExtendedBootRecord::FAT16(_) => {
-                (((bpb.root_dir_entries * 32) + bpb.bytes_per_sector - 1) / bpb.bytes_per_sector)
-                    as u32
+                (bpb.root_dir_entries * 32).div_ceil(bpb.bytes_per_sector) as u32
             }
             // Fat 32 stores start in fat
             FatExtendedBootRecord::FAT32(_) => 0,
@@ -310,7 +309,7 @@ impl FAT {
     }
 
     fn enumerate_root(&mut self) -> BTreeMap<String, usize> {
-        if self.file_id_lookup.get(&0).is_some() {
+        if self.file_id_lookup.contains_key(&0) {
             panic!("enumerate root should only be called once")
         }
 
@@ -456,7 +455,7 @@ impl FileSystemDev for FAT {
         };
 
         let buffer_size = (length as usize + 511) & !511;
-        let mut sectors_to_read = (length + 511) / 512;
+        let mut sectors_to_read = length.div_ceil(512);
         let mut buffer_offset = 0;
         let mut cluster = fat_file.cluster;
 
@@ -514,7 +513,7 @@ impl FileSystemDev for FAT {
             FATFileType::File(f) => f,
         };
 
-        let sectors_to_read = (length + 511) / 512;
+        let sectors_to_read = length.div_ceil(512);
 
         if file_sector == sectors_to_read as usize {
             return Ok(None);

@@ -22,12 +22,12 @@ pub unsafe fn get_root_fs() -> Result<Directory, Error> {
         // Find a pointer to the simple file system
         .and_then(|device_path| locate_device_path::<SimpleFileSystem>(&mut &*device_path))
         // Open the simple file system, with us as the only consumer
-        .and_then(|sfs_handle| open_protocol_exclusive::<SimpleFileSystem>(sfs_handle))
+        .and_then(open_protocol_exclusive::<SimpleFileSystem>)
         // Open the root directory aka "/"
         .and_then(|mut fs| fs.open_volume())
 }
 
-pub fn read_file<'s>(root: &mut Directory, path: &CStr16) -> Result<Box<[u8]>, &'static str> {
+pub fn read_file(root: &mut Directory, path: &CStr16) -> Result<Box<[u8]>, &'static str> {
     // Find the file and open it
     let file = match File::open(root, path, FileMode::Read, FileAttribute::READ_ONLY) {
         Ok(file) => file,
@@ -59,5 +59,5 @@ pub fn read_file<'s>(root: &mut Directory, path: &CStr16) -> Result<Box<[u8]>, &
         )
     }
 
-    return Ok(data_buffer);
+    Ok(data_buffer)
 }

@@ -70,11 +70,11 @@ pub fn main() {
                 while curr_line.pop().is_some() {
                     print!("\x08");
                 }
-                if history_pos > 0 {
-                    if let Some(chr) = input_history.get(history_pos - 1) {
-                        curr_line.push_str(chr);
-                        print!("{curr_line}")
-                    }
+                if history_pos > 0
+                    && let Some(chr) = input_history.get(history_pos - 1)
+                {
+                    curr_line.push_str(chr);
+                    print!("{curr_line}")
                 }
             } else if c == '\u{02191}' {
                 if let Some(chr) = input_history.get(history_pos) {
@@ -102,18 +102,18 @@ pub fn main() {
             "disk" => {
                 let c = rest.trim();
                 let c = c.chars().next();
-                if let Some(chr) = c {
-                    if let Some(n) = chr.to_digit(10) {
-                        match fs_service.stat(n as u64, "/") {
-                            Ok(StatResponse::File(_)) => println!("cd: cannot cd into a file"),
-                            Ok(StatResponse::Folder(_)) => {
-                                partiton_id = n.into();
-                            }
-                            Err(e) => println!("cd: fs error: {e:?}"),
-                        };
+                if let Some(chr) = c
+                    && let Some(n) = chr.to_digit(10)
+                {
+                    match fs_service.stat(n as u64, "/") {
+                        Ok(StatResponse::File(_)) => println!("cd: cannot cd into a file"),
+                        Ok(StatResponse::Folder(_)) => {
+                            partiton_id = n.into();
+                        }
+                        Err(e) => println!("cd: fs error: {e:?}"),
+                    };
 
-                        continue;
-                    }
+                    continue;
                 }
 
                 println!("Drives:");

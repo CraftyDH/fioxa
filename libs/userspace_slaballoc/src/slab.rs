@@ -25,6 +25,12 @@ pub struct SlabAllocator {
     slab_heads: [Option<&'static mut ListNode>; SLAB_SIZES.len()],
 }
 
+impl Default for SlabAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SlabAllocator {
     pub const fn new() -> Self {
         const EMPTY: Option<&'static mut ListNode> = None;

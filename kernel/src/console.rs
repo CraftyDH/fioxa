@@ -28,24 +28,18 @@ use crate::{
 pub fn run_console() {
     let (stdin, cin) = Channel::new();
     let (stdout, cout) = Channel::new();
-    let (stderr, cerr) = Channel::new();
 
-    let mon_out = |chan: Channel| {
-        sys_process_spawn_thread(move || {
-            let mut read = Vec::with_capacity(0x1000);
-            loop {
-                chan.read::<0>(&mut read, false, true).unwrap();
-                let s = String::from_utf8_lossy(&read);
-                with_held_interrupts(|| {
-                    let mut w = WRITER.get().unwrap().lock();
-                    w.write_str(&s).unwrap();
-                });
-            }
-        });
-    };
-
-    mon_out(stdout);
-    mon_out(stderr);
+    sys_process_spawn_thread(move || {
+        let mut read = Vec::with_capacity(0x1000);
+        loop {
+            stdout.read::<0>(&mut read, false, true).unwrap();
+            let s = String::from_utf8_lossy(&read);
+            with_held_interrupts(|| {
+                let mut w = WRITER.get().unwrap().lock();
+                w.write_str(&s).unwrap();
+            });
+        }
+    });
 
     let keyboard = backoff_sleep(|| INIT_HANDLE_SERVICE.lock().get_service("INPUT:KB"));
 
@@ -59,7 +53,7 @@ pub fn run_console() {
                     **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
                     **cin.handle(),
                     **cout.handle(),
-                    **cerr.handle(),
+                    **cout.handle(),
                 ]))
                 .build();
 
@@ -85,6 +79,12 @@ pub struct KBInputDecoder {
     caps_lock: bool,
     num_lock: bool,
     str_buf: String,
+}
+
+impl Default for KBInputDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl KBInputDecoder {
