@@ -13,10 +13,9 @@ use core::fmt::Write;
 use bootloader::BootInfo;
 use scheduling::taskmanager::kill_bad_task;
 use screen::gop::WRITER;
-use terminal::Writer;
 use x86_64::instructions::interrupts::without_interrupts;
 
-use crate::{cpu_localstorage::CPULocalStorageRW, paging::MemoryLoc};
+use crate::{cpu_localstorage::CPULocalStorageRW, paging::MemoryLoc, serial::SERIAL};
 
 #[macro_use]
 extern crate alloc;
@@ -83,12 +82,22 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     if context == 0 {
         // lowest context, no chance of recovery
         without_interrupts(|| {
-            let mut w = WRITER.get().unwrap().lock();
-            w.write_fmt(format_args!("KERNEL PANIC: {info}\n")).unwrap();
-            // since we drop context switch manually trigger redraw
-            w.redraw_if_needed();
-            crate::stack_trace(&mut w);
-            w.redraw_if_needed();
+            if let Some(w) = SERIAL.get() {
+                let w = &mut *w.lock();
+                w.write_fmt(format_args!("KERNEL PANIC: {info}\n")).unwrap();
+                // since we drop context switch manually trigger redraw
+                crate::stack_trace(w);
+            }
+
+            if let Some(w) = WRITER.get() {
+                let mut w = w.lock();
+                w.write_fmt(format_args!("KERNEL PANIC: {info}\n")).unwrap();
+                // since we drop context switch manually trigger redraw
+                w.redraw_if_needed();
+                crate::stack_trace(&mut *w);
+                w.redraw_if_needed();
+            }
+
             loop {
                 unsafe { core::arch::asm!("hlt") }
             }
@@ -116,7 +125,7 @@ fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
 
 /// Walks rbp to find all call frames, additionally prints out the return address of each frame
 /// TODO: find the associated function from the ip
-pub fn stack_trace(w: &mut Writer) {
+pub fn stack_trace(w: &mut impl Write) {
     unsafe {
         let mut rbp: usize;
         w.write_str("Performing stack trace...\n").unwrap();

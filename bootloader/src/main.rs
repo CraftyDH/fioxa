@@ -48,7 +48,7 @@ fn uefi_entry() -> Status {
 
     let entry_point = load_system(&mut boot_info);
 
-    let mut mmap = unsafe { exit_boot_services(MemoryType::LOADER_DATA) };
+    let mut mmap = unsafe { exit_boot_services(Some(MemoryType::LOADER_DATA)) };
     // No point printing anything since once we get the GOP buffer the UEFI sdout stops working
 
     mmap.sort();

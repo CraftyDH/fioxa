@@ -9,7 +9,7 @@ edition = "2024"
 default = ["uefi/global_allocator", "uefi/panic_handler"]
 
 [dependencies]
-uefi = { version = "0.34", features = ["alloc", "logger"] }
+uefi = { version = "0.35", features = ["alloc", "logger"] }
 log = "0.4"
 
 x86_64 = "0.15"
