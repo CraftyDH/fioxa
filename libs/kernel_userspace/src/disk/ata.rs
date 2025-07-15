@@ -1,5 +1,7 @@
+use rkyv::{Archive, Deserialize, Serialize};
+
 #[repr(C, align(2))]
-#[derive(Debug)]
+#[derive(Debug, Archive, Serialize, Deserialize)]
 pub struct ATADiskIdentify {
     pub config: u16,
     pub cylinders: u16,

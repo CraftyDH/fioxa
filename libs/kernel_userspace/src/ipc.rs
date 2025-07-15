@@ -1,5 +1,6 @@
 use core::{
     fmt::{Debug, Display},
+    marker::PhantomData,
     ops::Deref,
 };
 
@@ -177,6 +178,37 @@ impl<'s> IPCMessage<'s> {
     }
 }
 
+pub struct TypedIPCMessage<'a, T> {
+    message: IPCMessage<'a>,
+    _t: PhantomData<T>,
+}
+
+impl<'s, T> TypedIPCMessage<'s, T> {
+    pub fn new(message: IPCMessage<'s>) -> Self {
+        Self {
+            message,
+            _t: PhantomData,
+        }
+    }
+}
+
+impl<'s, T: Portable + for<'a> CheckBytes<HighValidator<'a, Error>>> TypedIPCMessage<'s, T> {
+    pub fn access(&mut self) -> Result<(&T, &mut Strategy<DeserializeMessage, Error>), Error> {
+        self.message.access()
+    }
+}
+
+impl<'s, T: Archive> TypedIPCMessage<'s, T> {
+    pub fn deserialize(&'s mut self) -> Result<T, Error>
+    where
+        T::Archived: Portable
+            + for<'a> CheckBytes<HighValidator<'a, Error>>
+            + Deserialize<T, Strategy<DeserializeMessage, Error>>,
+    {
+        self.message.deserialize()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct TooManyHandles;
 
@@ -250,3 +282,35 @@ impl Archive for Handle {
 }
 
 pub struct HandleResolver(u8);
+
+pub struct IPCIterator<T> {
+    channel: IPCChannel,
+    _ty: PhantomData<T>,
+}
+
+impl<T> Iterator for IPCIterator<T>
+where
+    T: Archive,
+    <T as Archive>::Archived: Portable
+        + for<'a> CheckBytes<HighValidator<'a, Error>>
+        + Deserialize<T, Strategy<DeserializeMessage, Error>>,
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.channel.recv() {
+            Ok(mut val) => Some(val.deserialize().unwrap()),
+            Err(SyscallResult::ChannelClosed) => None,
+            Err(e) => panic!("failed to get next got: {e}"),
+        }
+    }
+}
+
+impl<T> From<IPCChannel> for IPCIterator<T> {
+    fn from(channel: IPCChannel) -> Self {
+        Self {
+            channel,
+            _ty: PhantomData,
+        }
+    }
+}

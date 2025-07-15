@@ -6,16 +6,13 @@ use core::{
 
 use alloc::boxed::Box;
 use kernel_sys::syscall::sys_sleep;
-use kernel_userspace::disk::ata::ATADiskIdentify;
+use kernel_userspace::disk::{DiskServiceImpl, ata::ATADiskIdentify};
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
-    driver::disk::{
-        DiskDevice,
-        ahci::{
-            HBACommandTable,
-            fis::{FISTYPE, FisRegH2D},
-        },
+    driver::disk::ahci::{
+        HBACommandTable,
+        fis::{FISTYPE, FisRegH2D},
     },
 };
 
@@ -34,6 +31,9 @@ pub enum PortType {
 }
 
 pub const PRDT_LENGTH: usize = 8;
+
+// because of alignment we can't ensure a full transfer
+const MAX_SECTORS: usize = (PRDT_LENGTH - 1) * 8;
 
 #[allow(dead_code)]
 pub struct Port {
@@ -123,12 +123,8 @@ impl Port {
         port.cmd_sts.update(|x| *x &= !HBA_PX_CMD_FRE);
         while port.cmd_sts.read() & HBA_PX_CMD_FR > 0 {}
     }
-}
 
-impl DiskDevice for Port {
-    fn read(&mut self, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()> {
-        // because of alignment we can't ensure a full transfer
-        const MAX_SECTORS: usize = (PRDT_LENGTH - 1) * 8;
+    fn read_into_buf(&mut self, sector: usize, sector_count: u32, buffer: &mut [u8]) -> Option<()> {
         if sector_count as usize > MAX_SECTORS {
             todo!("Sectors count of {MAX_SECTORS} is max atm")
         }
@@ -245,12 +241,30 @@ impl DiskDevice for Port {
 
         Some(())
     }
+}
 
-    fn write(&mut self, _sector: usize, _sector_count: u32, _buffer: &mut [u8]) -> Option<()> {
-        todo!()
+impl DiskServiceImpl for Port {
+    fn read(&mut self, sector: u64, length: u64) -> alloc::vec::Vec<u8> {
+        let mut buffer = vec![0u8; (length * 512) as usize];
+
+        let mut read_head = 0 as usize;
+        let read_tail = length as usize;
+
+        while read_head < read_tail {
+            let count = (read_tail - read_head).min(MAX_SECTORS);
+            self.read_into_buf(
+                sector as usize + read_head,
+                count as u32,
+                &mut buffer[read_head * 512..(read_head + count) * 512],
+            )
+            .unwrap();
+            read_head += count;
+        }
+
+        buffer
     }
 
-    fn identify(&mut self) -> Box<ATADiskIdentify> {
+    fn identify(&mut self) -> ATADiskIdentify {
         self.hba_port.interrupt_status.write(0xFFFFFFFF);
         let slot = self.find_slot() as usize;
 
@@ -260,15 +274,27 @@ impl DiskDevice for Port {
 
         let cmd_table = &mut self.cmd_tables[slot];
 
-        let identify: Box<MaybeUninit<ATADiskIdentify>> = Box::new_uninit();
+        let identify: MaybeUninit<ATADiskIdentify> = MaybeUninit::uninit();
 
-        // TODO: Will probably break if buffer ever spans two non continuous pages
-        let phys_addr = unsafe { get_phys_addr_from_vaddr(identify.as_ptr() as u64).unwrap() };
+        let start_addr = identify.as_ptr() as usize;
 
-        cmd_table.prdt_entry[0].set_data_base_address(phys_addr);
-        cmd_table.prdt_entry[0].set_byte_count(size_of::<ATADiskIdentify>() as u32 - 1);
+        let page_1_free = 0x1000 - (start_addr & 0xFFF);
+        let page_1_addr = unsafe { get_phys_addr_from_vaddr(start_addr as u64).unwrap() };
 
-        cmd_list.set_prdt_length(1);
+        cmd_table.prdt_entry[0].set_data_base_address(page_1_addr);
+        cmd_table.prdt_entry[0]
+            .set_byte_count(size_of::<ATADiskIdentify>().min(page_1_free) as u32 - 1);
+
+        if page_1_free < size_of::<ATADiskIdentify>() {
+            let page_2_addr =
+                unsafe { get_phys_addr_from_vaddr(start_addr as u64 + 0x1000).unwrap() };
+            cmd_table.prdt_entry[1].set_data_base_address(page_2_addr);
+            cmd_table.prdt_entry[1]
+                .set_byte_count((size_of::<ATADiskIdentify>() - page_1_free) as u32 - 1);
+            cmd_list.set_prdt_length(2);
+        } else {
+            cmd_list.set_prdt_length(1);
+        }
 
         let cmd_fis = unsafe { &mut *(cmd_table.command_fis.as_mut_ptr() as *mut FisRegH2D) };
         cmd_fis.set_fis_type(FISTYPE::REGH2D as u8);

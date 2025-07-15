@@ -3,7 +3,6 @@ use crate::{
     bootfs::AMD_PCNET_DRIVER,
     driver::{Driver, disk::ahci::AHCIDriver},
     elf,
-    fs::FSDRIVES,
     mutex::Spinlock,
     scheduling::process::ProcessReferences,
 };
@@ -242,12 +241,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                     // AHCI 1.0 device
                     0x01 => {
                         debug!("AHCI");
-                        match AHCIDriver::new(pci_header) {
-                            Some(d) => FSDRIVES.lock().add_device(Box::new(d)),
-                            None => {
-                                error!("AHCI Driver failed to init.");
-                            }
-                        };
+                        AHCIDriver::new(pci_header);
                     }
                     _ => (),
                 }

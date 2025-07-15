@@ -186,10 +186,7 @@ impl FAT {
         let fat_buffer = match self.cluster_chain_buffer.get(&fat_buf_offset) {
             Some(b) => b,
             None => {
-                let mut buf = unsafe { Box::new_uninit_slice(512).assume_init() };
-
-                self.disk.read(fat_buf_offset as usize, 1, &mut buf);
-
+                let buf = self.disk.read(fat_buf_offset as u64, 1).into_boxed_slice();
                 self.cluster_chain_buffer.insert(fat_buf_offset, buf);
                 self.cluster_chain_buffer.get(&fat_buf_offset).unwrap()
             }
@@ -208,12 +205,11 @@ impl FAT {
 
     pub fn read_directory(&mut self, mut cluster: u32) -> BTreeMap<String, usize> {
         let mut entries = BTreeMap::new();
-        let sectors = self.bios_parameter_block.sectors_per_cluster as u32;
-        let mut buffer = vec![0u8; 512 * sectors as usize];
+        let sectors = self.bios_parameter_block.sectors_per_cluster as u64;
         let mut lfn_buf = String::new();
         while cluster > 0 {
             let sector = self.get_start_sector_of_cluster(cluster);
-            self.disk.read(sector as usize, sectors, &mut buffer);
+            let buffer = self.disk.read(sector as u64, sectors);
 
             let directory_entry = unsafe {
                 core::slice::from_raw_parts(
@@ -320,14 +316,12 @@ impl FAT {
             children = self.read_directory(fat32.root_cluster);
         } else {
             children = BTreeMap::new();
-            let buffer = &mut [0u8; 512];
-
             let mut lfn_buf = String::new();
 
             for sector in
                 self.first_data_sector() - self.root_dir_sectors()..self.first_data_sector()
             {
-                self.disk.read(sector as usize, 1, buffer);
+                let buffer = self.disk.read(sector as u64, 1);
 
                 let directory_entry = unsafe {
                     core::slice::from_raw_parts(buffer.as_ptr() as *const DirectoryEntry, 16)
@@ -355,8 +349,7 @@ impl FAT {
 }
 
 pub fn read_bios_block(disk: FSPartitionDisk) {
-    let buffer = &mut [0u8; 512];
-    disk.read(0, 1, buffer);
+    let buffer = disk.read(0, 1);
 
     let bpb = unsafe { *(buffer.as_ptr() as *const BiosParameterBlock) };
 
@@ -439,11 +432,7 @@ impl FileSystemDev for FAT {
         Ok(res)
     }
 
-    fn read_file<'a>(
-        &mut self,
-        file_id: usize,
-        buffer: &'a mut Vec<u8>,
-    ) -> Result<&'a [u8], FSServiceError> {
+    fn read_file<'a>(&mut self, file_id: usize) -> Result<Vec<u8>, FSServiceError> {
         let fat_file = self
             .file_id_lookup
             .get(&file_id)
@@ -454,12 +443,9 @@ impl FileSystemDev for FAT {
             FATFileType::File(f) => f,
         };
 
-        let buffer_size = (length as usize + 511) & !511;
         let mut sectors_to_read = length.div_ceil(512);
-        let mut buffer_offset = 0;
+        let mut res = Vec::with_capacity(sectors_to_read as usize * 512);
         let mut cluster = fat_file.cluster;
-
-        buffer.resize(buffer_size, 0);
 
         let mut sectors: Vec<(u32, u32)> = Vec::new();
 
@@ -489,23 +475,22 @@ impl FileSystemDev for FAT {
             while len > 0 {
                 let read_amount = core::cmp::min(len, 56);
 
-                self.disk
-                    .read(sector as usize, read_amount, &mut buffer[buffer_offset..]);
+                res.append(&mut self.disk.read(sector as u64, read_amount as u64));
                 sector += read_amount;
                 len -= read_amount;
-                buffer_offset += read_amount as usize * 512;
             }
         }
 
-        Ok(&buffer[..length as usize])
+        res.truncate(length as usize);
+
+        Ok(res)
     }
 
     fn read_file_sector(
         &mut self,
         file_id: usize,
         file_sector: usize,
-        buffer: &mut [u8; 512],
-    ) -> Result<Option<usize>, FSServiceError> {
+    ) -> Result<Option<Vec<u8>>, FSServiceError> {
         let fat_file = self.get_fat_file(file_id)?;
 
         let length = match fat_file.entry_type {
@@ -530,8 +515,8 @@ impl FileSystemDev for FAT {
         }
         let file_sector = self.get_start_sector_of_cluster(cluster)
             + file_sector as u32 % self.bios_parameter_block.sectors_per_cluster as u32;
-
-        self.disk.read(file_sector as usize, 1, buffer);
-        Ok(Some(length))
+        let mut res = self.disk.read(file_sector as u64, 1);
+        res.truncate(length);
+        Ok(Some(res))
     }
 }

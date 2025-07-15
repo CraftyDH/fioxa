@@ -2,26 +2,29 @@ pub mod bitfields;
 pub mod fis;
 pub mod port;
 
-use alloc::{sync::Arc, vec::Vec};
+use core::ptr::null_mut;
+
+use alloc::sync::Arc;
 use bit_field::BitField;
 
-use kernel_sys::types::VMMapFlags;
+use kernel_sys::{
+    syscall::{sys_map, sys_process_spawn_thread, sys_vmo_mmap_create},
+    types::VMMapFlags,
+};
+use kernel_userspace::{
+    channel::Channel,
+    disk::{DiskControllerService, DiskServiceExecutor, DiskServiceImpl, ata::ATADiskIdentify},
+    ipc::{IPCChannel, IPCIterator},
+};
+use spin::Mutex;
 use volatile::Volatile;
 
-use crate::{
-    cpu_localstorage::CPULocalStorageRW,
-    driver::{Driver, disk::DiskDevice},
-    mutex::Spinlock,
-    pci::{PCIHeader0, PCIHeaderCommon},
-    vm::VMO,
-};
+use crate::pci::PCIHeaderCommon;
 
 use self::{
     bitfields::HBAPRDTEntry,
     port::{Port, PortType},
 };
-
-use super::DiskBusDriver;
 
 const HBA_PORT_DEV_PRESENT: u8 = 0x3;
 const HBA_PORT_IPM_ACTIVE: u8 = 0x1;
@@ -35,12 +38,7 @@ const HBA_PX_CMD_FRE: u32 = 0x0010;
 const HBA_PX_CMD_FR: u32 = 0x4000;
 const HBA_PX_CMD_CR: u32 = 0x8000;
 
-pub struct AHCIDriver {
-    #[allow(dead_code)]
-    pci_device: PCIHeader0,
-    // abar: HBAMemory,
-    ports: [Option<Arc<Spinlock<Port>>>; 32],
-}
+pub struct AHCIDriver {}
 
 #[repr(C)]
 pub struct HBACommandTable<const N: usize> {
@@ -113,15 +111,8 @@ impl AHCIDriver {
             _ => PortType::None,
         }
     }
-}
 
-unsafe impl Send for AHCIDriver {}
-
-impl Driver for AHCIDriver {
-    fn new(device: PCIHeaderCommon) -> Option<Self>
-    where
-        Self: Sized,
-    {
+    pub fn new(device: PCIHeaderCommon) {
         let pci_device = device;
         trace!("AHCI: {}", pci_device.get_device_id());
         let header0 = unsafe { pci_device.get_as_header0() };
@@ -130,26 +121,16 @@ impl Driver for AHCIDriver {
         let abar = header0.get_bar(5);
 
         let abar_vaddr = unsafe {
-            let map = VMO::new_mmap(abar as usize, 0x1000);
-            CPULocalStorageRW::get_current_task()
-                .process()
-                .memory
-                .lock()
-                .region
-                .map_vmo(Arc::new(Spinlock::new(map)), VMMapFlags::WRITEABLE, None)
-                .unwrap()
+            let vmo = sys_vmo_mmap_create(abar as *mut (), 0x1000);
+            sys_map(Some(vmo), VMMapFlags::WRITEABLE, null_mut(), 0x1000).unwrap()
         };
 
         let abar = unsafe { &mut *(abar_vaddr as *mut HBAMemory) };
 
-        let mut ahci = Self {
-            pci_device: header0,
-            ports: Default::default(),
-        };
-
         let ports_implemented = abar.ports_implemented.read();
 
-        let buffer = &mut [0u8; 512];
+        let mut disk_controller =
+            DiskControllerService::from_channel(IPCChannel::connect("DISK_CONTROLLER"));
 
         for (i, port) in (abar.ports).iter_mut().enumerate() {
             if ports_implemented.get_bit(i) {
@@ -158,42 +139,34 @@ impl Driver for AHCIDriver {
                 trace!("SATA: {port_type:?}");
 
                 if port_type == PortType::SATA {
-                    let mut port = Port::new(port);
+                    let (chan, client) = Channel::new();
+                    disk_controller.register_disk(client);
+                    let port = ArcPort(Arc::new(Mutex::new(Port::new(port))));
+                    let chan: IPCIterator<Channel> = IPCChannel::from_channel(chan).into();
 
-                    // Test read
-                    if port.read(0, 1, buffer).is_some() {
-                        ahci.ports[i] = Some(Arc::new(Spinlock::new(port)));
+                    for c in chan {
+                        let port = port.clone();
+                        sys_process_spawn_thread(move || {
+                            DiskServiceExecutor::new(IPCChannel::from_channel(c), port)
+                                .run()
+                                .unwrap();
+                        });
                     }
                 }
             }
         }
-
-        Some(ahci)
-    }
-
-    fn unload(self) -> ! {
-        todo!()
-    }
-
-    fn interrupt_handler(&mut self) {
-        todo!()
     }
 }
 
-impl DiskBusDriver for AHCIDriver {
-    fn get_disks(&mut self) -> Vec<Arc<Spinlock<dyn DiskDevice>>> {
-        self.ports
-            .clone()
-            .into_iter()
-            .flatten()
-            .map(|a| a as Arc<Spinlock<dyn DiskDevice>>)
-            .collect()
+#[derive(Clone)]
+struct ArcPort(Arc<Mutex<Port>>);
+
+impl DiskServiceImpl for ArcPort {
+    fn read(&mut self, sector: u64, length: u64) -> alloc::vec::Vec<u8> {
+        self.0.lock().read(sector, length)
     }
 
-    fn get_disk_by_id(&mut self, id: usize) -> Option<Arc<Spinlock<dyn DiskDevice>>> {
-        if let Some(Some(port)) = self.ports.get(id) {
-            return Some(port.clone());
-        }
-        None
+    fn identify(&mut self) -> ATADiskIdentify {
+        self.0.lock().identify()
     }
 }

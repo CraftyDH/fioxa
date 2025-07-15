@@ -120,7 +120,6 @@ pub fn main() {
                 for part in fs_service.get_disks().unwrap() {
                     println!("{}:", part)
                 }
-                println!("Drives:");
             }
             "ls" => {
                 let path = add_path(&cwd, rest);

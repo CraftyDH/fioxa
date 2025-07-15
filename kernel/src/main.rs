@@ -19,7 +19,7 @@ use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER};
 use kernel::console::run_console;
 use kernel::cpu_localstorage::{CPULocalStorageRW, init_bsp_boot_ls, init_bsp_localstorage};
 use kernel::elf::load_elf;
-use kernel::fs::{self, FSDRIVES};
+use kernel::fs::{disk_controller, file_handler, file_system_partition_loader};
 use kernel::interrupts::{self, check_interrupts};
 
 use kernel::ioapic::{Madt, enable_apic};
@@ -257,6 +257,17 @@ extern "C" fn init() {
         .references(get_init())
         .build();
 
+    spawn_process(disk_controller)
+        .references(get_init())
+        .build();
+
+    spawn_process(|| {
+        sys_process_spawn_thread(file_system_partition_loader);
+        file_handler();
+    })
+    .references(get_init())
+    .build();
+
     // TODO: Use IO permissions instead of kernel
     load_elf(PS2_DRIVER)
         .unwrap()
@@ -282,9 +293,6 @@ fn after_boot_pci() {
     info!("Enumnerating PCI...");
 
     enumerate_pci(acpi_tables);
-
-    sys_process_spawn_thread(fs::file_handler);
-    FSDRIVES.lock().identify();
 
     sys_exit();
 }
