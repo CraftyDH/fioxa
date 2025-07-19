@@ -1,4 +1,5 @@
 use alloc::sync::Arc;
+use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_userspace::disk::DiskService;
 use spin::Mutex;
 
@@ -45,7 +46,7 @@ pub fn read_partitions(drive: Arc<Mutex<DiskService>>) {
             );
             let fs_disk =
                 FSPartitionDisk::new(drive.clone(), part.start_lba as u64, part.length as u64);
-            read_bios_block(fs_disk);
+            sys_process_spawn_thread(|| read_bios_block(fs_disk));
         }
     }
 }

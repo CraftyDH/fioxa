@@ -13,9 +13,11 @@ userspace = { path = "userspace" }
 userspace_slaballoc = { path = "userspace_slaballoc" }
 
 bitflags = { version = "2.9.0", default-features = false }
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
 heapless = "0.8.0"
 log = "0.4"
 num-derive = { version = "0.4.2" }
 num-traits = { version = "0.2.19", default-features = false }
+numeric-sort = "0.1.5"
 spin = "0.10.0"
 thiserror = { version = "2.0", default-features = false }

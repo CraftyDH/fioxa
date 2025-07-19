@@ -19,7 +19,7 @@ use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER};
 use kernel::console::run_console;
 use kernel::cpu_localstorage::{CPULocalStorageRW, init_bsp_boot_ls, init_bsp_localstorage};
 use kernel::elf::load_elf;
-use kernel::fs::{disk_controller, file_handler, file_system_partition_loader};
+use kernel::fs::{disk_controller, file_system_partition_loader, fs_controller};
 use kernel::interrupts::{self, check_interrupts};
 
 use kernel::ioapic::{Madt, enable_apic};
@@ -51,7 +51,7 @@ use kernel::{BOOT_INFO, elf, gdt, paging};
 
 use bootloader::uefi::table::cfg::{ACPI2_GUID, ConfigTableEntry};
 
-use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
+use kernel_sys::syscall::sys_exit;
 use kernel_sys::types::{RawValue, VMMapFlags};
 use kernel_userspace::channel::Channel;
 
@@ -261,12 +261,11 @@ extern "C" fn init() {
         .references(get_init())
         .build();
 
-    spawn_process(|| {
-        sys_process_spawn_thread(file_system_partition_loader);
-        file_handler();
-    })
-    .references(get_init())
-    .build();
+    spawn_process(fs_controller).references(get_init()).build();
+
+    spawn_process(file_system_partition_loader)
+        .references(get_init())
+        .build();
 
     // TODO: Use IO permissions instead of kernel
     load_elf(PS2_DRIVER)

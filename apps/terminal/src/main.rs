@@ -5,7 +5,7 @@ use core::time::Duration;
 
 use kernel_userspace::{
     elf::ElfLoaderService,
-    fs::{FSService, StatResponse, add_path},
+    fs::{FSControllerService, FSFileId, FSFileType, FSService, add_path, stat_by_path},
     ipc::IPCChannel,
     message::MessageHandle,
     process::INIT_HANDLE_SERVICE,
@@ -24,9 +24,6 @@ init_userspace!(main);
 
 pub fn main() {
     let mut cwd: String = "/".to_owned();
-    let mut partiton_id = 0u64;
-
-    let mut file_buffer = Vec::new();
 
     let mut input_history: VecDeque<Box<str>> = VecDeque::new();
 
@@ -34,10 +31,15 @@ pub fn main() {
     let mut input = input_buf.chars();
 
     let mut elf_loader = ElfLoaderService::from_channel(IPCChannel::connect("ELF_LOADER"));
-    let mut fs_service = FSService::from_channel(IPCChannel::connect("FS"));
+    let mut fs_controller = FSControllerService::from_channel(IPCChannel::connect("FS_CONTROLLER"));
 
-    loop {
-        print!("{partiton_id}:{cwd} ");
+    let mut current_fs: Option<(usize, FSService, FSFileId)> = None;
+
+    'main: loop {
+        match current_fs {
+            Some((id, ..)) => print!("{id}:{cwd} "),
+            None => print!(":{cwd} "),
+        }
 
         let mut curr_line = String::new();
         let mut history_pos: usize = 0;
@@ -101,92 +103,157 @@ pub fn main() {
             "echo" => println!("{rest}"),
             "disk" => {
                 let c = rest.trim();
-                let c = c.chars().next();
-                if let Some(chr) = c
-                    && let Some(n) = chr.to_digit(10)
-                {
-                    match fs_service.stat(n as u64, "/") {
-                        Ok(StatResponse::File(_)) => println!("cd: cannot cd into a file"),
-                        Ok(StatResponse::Folder(_)) => {
-                            partiton_id = n.into();
+                let num = c.parse::<usize>();
+                let fs = fs_controller.get_filesystems(false);
+
+                match num {
+                    Ok(num) => {
+                        for (i, mut fs) in fs.enumerate() {
+                            if i == num {
+                                let root = fs.stat_root().id;
+                                current_fs = Some((i, fs, root));
+                                cwd.clear();
+                                cwd.push('/');
+                                continue 'main;
+                            }
                         }
-                        Err(e) => println!("cd: fs error: {e:?}"),
-                    };
-
-                    continue;
-                }
-
-                println!("Drives:");
-                for part in fs_service.get_disks().unwrap() {
-                    println!("{}:", part)
+                        println!("Unknown disk")
+                    }
+                    Err(_) => {
+                        println!("Drives:");
+                        for (i, _) in fs.enumerate() {
+                            println!("Disk {}", i)
+                        }
+                    }
                 }
             }
             "ls" => {
+                let Some((_, fs, root)) = &mut current_fs else {
+                    println!("No disk selected");
+                    continue;
+                };
+
                 let path = add_path(&cwd, rest);
 
-                match fs_service.stat(partiton_id, path.as_str()) {
-                    Ok(StatResponse::File(_)) => println!("This is a file"),
-                    Ok(StatResponse::Folder(c)) => {
-                        for child in c.children {
+                let Some(file) = stat_by_path(*root, &path, fs) else {
+                    println!("Invalid path");
+                    continue;
+                };
+
+                match file.file {
+                    kernel_userspace::fs::FSFileType::File { .. } => {
+                        println!("This is a file");
+                    }
+                    kernel_userspace::fs::FSFileType::Folder => {
+                        let mut children = fs.get_children(file.id);
+                        let (children, _) = children.access().unwrap();
+                        let mut names: Vec<_> =
+                            children.as_ref().unwrap().iter().map(|e| e.0).collect();
+                        numeric_sort::sort_unstable(&mut names);
+                        for child in names {
                             println!("{child}")
                         }
                     }
-                    Err(e) => println!("Error: {e:?}"),
-                };
+                }
             }
-            "cd" => cwd = add_path(&cwd, rest),
+            "tree" => {
+                let Some((_, fs, root)) = &mut current_fs else {
+                    println!("No disk selected");
+                    continue;
+                };
+
+                let path = add_path(&cwd, rest);
+
+                let Some(file) = stat_by_path(*root, &path, fs) else {
+                    println!("Invalid path");
+                    continue;
+                };
+
+                match file.file {
+                    kernel_userspace::fs::FSFileType::File { .. } => {
+                        println!("This is a file");
+                    }
+                    kernel_userspace::fs::FSFileType::Folder => {
+                        let stdout = &mut *WRITER_STDOUT.lock();
+                        kernel_userspace::fs::tree(stdout, fs, file.id, String::new()).unwrap();
+                    }
+                }
+            }
+            "cd" => {
+                let Some((_, fs, root)) = &mut current_fs else {
+                    println!("No disk selected");
+                    continue;
+                };
+
+                let new_cwd = add_path(&cwd, rest);
+                match stat_by_path(*root, &new_cwd, fs) {
+                    Some(file) => match file.file {
+                        FSFileType::File { .. } => println!("Is a file"),
+                        FSFileType::Folder => cwd = new_cwd,
+                    },
+                    None => {
+                        println!("Invalid path")
+                    }
+                }
+            }
             "cat" => {
                 for file in rest.split_ascii_whitespace() {
-                    let path = add_path(&cwd, file);
-
-                    let file = match fs_service.stat(partiton_id, path.as_str()) {
-                        Ok(StatResponse::File(f)) => f,
-                        Ok(StatResponse::Folder(_)) => {
-                            println!("Not a file");
-                            continue;
-                        }
-                        Err(e) => {
-                            println!("Error: {e:?}");
-                            break;
-                        }
+                    let Some((_, fs, root)) = &mut current_fs else {
+                        println!("No disk selected");
+                        continue;
                     };
 
-                    for i in 0..file.file_size / 512 {
-                        let sect = match fs_service.read_file_sector(partiton_id, file.node_id, i) {
-                            Ok(Some((_, s))) => s,
-                            e => {
-                                println!("Error: {e:?}");
-                                break;
+                    let path = add_path(&cwd, file);
+
+                    let Some(file) = stat_by_path(*root, &path, fs) else {
+                        println!("Invalid path");
+                        continue;
+                    };
+
+                    match file.file {
+                        kernel_userspace::fs::FSFileType::File { length } => {
+                            let read_size = 64 * 1024;
+                            for start in (0..length).step_by(read_size) {
+                                let len = (length - start).min(read_size);
+
+                                let mut read = fs.read_file(file.id, start, len);
+                                let (buf, _) = read.access().unwrap();
+
+                                WRITER_STDOUT
+                                    .lock()
+                                    .write_raw(buf.as_ref().unwrap())
+                                    .unwrap();
                             }
-                        };
-                        sect.read_into_vec(&mut file_buffer);
-                        WRITER_STDOUT.lock().write_raw(&file_buffer).unwrap();
+                        }
+                        kernel_userspace::fs::FSFileType::Folder => {
+                            println!("This is a directory");
+                        }
                     }
                 }
             }
             "exec" => {
                 let (prog, args) = rest.split_once(' ').unwrap_or((rest, ""));
 
-                let path = add_path(&cwd, prog);
-
-                let stat = fs_service.stat(partiton_id, path.as_str());
-
-                let file = match stat {
-                    Ok(StatResponse::File(f)) => f,
-                    Ok(StatResponse::Folder(_)) => {
-                        println!("Not a file");
-                        continue;
-                    }
-                    Err(e) => {
-                        println!("Error: {e:?}");
-                        continue;
-                    }
+                let Some((_, fs, root)) = &mut current_fs else {
+                    println!("No disk selected");
+                    continue;
                 };
 
-                let contents = match fs_service.read_full_file(partiton_id, file.node_id) {
-                    Ok((_, c)) => c,
-                    Err(e) => {
-                        println!("Error: {e:?}");
+                let path = add_path(&cwd, prog);
+
+                let Some(file) = stat_by_path(*root, &path, fs) else {
+                    println!("Invalid path");
+                    continue;
+                };
+
+                let contents = match file.file {
+                    kernel_userspace::fs::FSFileType::File { length } => {
+                        let mut read = fs.read_file(file.id, 0, length);
+                        let (vec, _) = read.access().unwrap();
+                        MessageHandle::create(vec.as_ref().unwrap())
+                    }
+                    kernel_userspace::fs::FSFileType::Folder => {
+                        println!("This is a directory");
                         continue;
                     }
                 };

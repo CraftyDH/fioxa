@@ -9,3 +9,5 @@ edition = "2024"
 kernel_userspace.workspace = true
 userspace_slaballoc.workspace = true
 userspace.workspace = true
+
+numeric-sort.workspace = true
