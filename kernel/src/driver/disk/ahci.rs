@@ -112,7 +112,7 @@ impl AHCIDriver {
         }
     }
 
-    pub fn new(device: PCIHeaderCommon) {
+    pub fn create(device: PCIHeaderCommon) {
         let pci_device = device;
         trace!("AHCI: {}", pci_device.get_device_id());
         let header0 = unsafe { pci_device.get_as_header0() };

@@ -247,7 +247,7 @@ impl DiskServiceImpl for Port {
     fn read(&mut self, sector: u64, length: u64) -> alloc::vec::Vec<u8> {
         let mut buffer = vec![0u8; (length * 512) as usize];
 
-        let mut read_head = 0 as usize;
+        let mut read_head = 0usize;
         let read_tail = length as usize;
 
         while read_head < read_tail {

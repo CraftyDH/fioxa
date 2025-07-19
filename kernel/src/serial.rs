@@ -13,7 +13,7 @@ use spin::Once;
 use x86_64::instructions::{interrupts::without_interrupts, port::Port};
 
 use crate::{
-    bootfs::TERMINAL_ELF, cpu_localstorage::CPULocalStorageRW, elf::load_elf, mutex::Spinlock,
+    bootfs::early_bootfs_get, cpu_localstorage::CPULocalStorageRW, elf::load_elf, mutex::Spinlock,
     scheduling::process::ProcessReferences,
 };
 
@@ -138,7 +138,7 @@ pub fn serial_monitor_stdin() {
 
     sys_process_spawn_thread(move || {
         loop {
-            let proc = load_elf(TERMINAL_ELF)
+            let proc = load_elf(early_bootfs_get("terminal").unwrap())
                 .unwrap()
                 .references(ProcessReferences::from_refs(&[
                     **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),

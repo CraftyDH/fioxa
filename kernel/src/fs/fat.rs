@@ -461,7 +461,7 @@ impl FSServiceImpl for FAT {
             return None;
         };
 
-        if offset > file_length as usize {
+        if offset >= file_length as usize {
             return Some(vec![]);
         }
 

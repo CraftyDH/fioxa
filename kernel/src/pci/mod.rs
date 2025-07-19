@@ -1,6 +1,6 @@
 use crate::{
     acpi::FioxaAcpiHandler,
-    bootfs::AMD_PCNET_DRIVER,
+    bootfs::early_bootfs_get,
     driver::{Driver, disk::ahci::AHCIDriver},
     elf,
     mutex::Spinlock,
@@ -216,7 +216,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                 debug!("AMD PCnet");
                 let sid = pci_dev_handler(pci_bus, segment, bus, device, function);
 
-                elf::load_elf(AMD_PCNET_DRIVER)
+                elf::load_elf(early_bootfs_get("amd_pcnet").unwrap())
                     .unwrap()
                     .references(ProcessReferences::from_refs(&[
                         **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
@@ -241,7 +241,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                     // AHCI 1.0 device
                     0x01 => {
                         debug!("AHCI");
-                        AHCIDriver::new(pci_header);
+                        AHCIDriver::create(pci_header);
                     }
                     _ => (),
                 }

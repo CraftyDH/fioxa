@@ -18,7 +18,7 @@ use kernel_userspace::{
 };
 
 use crate::{
-    bootfs::TERMINAL_ELF,
+    bootfs::early_bootfs_get,
     cpu_localstorage::CPULocalStorageRW,
     elf::load_elf,
     scheduling::{process::ProcessReferences, with_held_interrupts},
@@ -47,7 +47,7 @@ pub fn run_console() {
 
     sys_process_spawn_thread(move || {
         loop {
-            let proc = load_elf(TERMINAL_ELF)
+            let proc = load_elf(early_bootfs_get("terminal").unwrap())
                 .unwrap()
                 .references(ProcessReferences::from_refs(&[
                     **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),

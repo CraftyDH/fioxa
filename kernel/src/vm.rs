@@ -192,6 +192,8 @@ impl VirtualMemoryRegion {
 
         let map = self.mappings.remove(idx);
 
+        let length = (length + 0xFFF) & !0xFFF;
+
         if map.base_vaddr != address || map.end_vaddr != address + length {
             return Err(UnmapError::MustUnmapVMOCompletely);
         }

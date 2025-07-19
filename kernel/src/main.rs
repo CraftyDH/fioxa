@@ -15,7 +15,7 @@ use bootloader::uefi::table::{set_system_table, system_table_raw};
 use bootloader::{BootInfo, entry_point};
 use kernel::acpi::FioxaAcpiHandler;
 use kernel::boot_aps::boot_aps;
-use kernel::bootfs::{DEFAULT_FONT, PS2_DRIVER};
+use kernel::bootfs::{early_bootfs_get, serve_bootfs};
 use kernel::console::run_console;
 use kernel::cpu_localstorage::{CPULocalStorageRW, init_bsp_boot_ls, init_bsp_localstorage};
 use kernel::elf::load_elf;
@@ -129,7 +129,8 @@ unsafe extern "C" fn main_stage2() {
     let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
 
     // Initalize GOP stdout
-    let font = psf1::load_psf1_font(DEFAULT_FONT).expect("cannot load psf1 font");
+    let font =
+        psf1::load_psf1_font(early_bootfs_get("font.psf").unwrap()).expect("cannot load psf1 font");
     gop::WRITER.call_once(|| Writer::new(boot_info.gop, font).into());
     // Test screen colours
     gop::WRITER.get().unwrap().lock().reset_screen(0xFF_00_00);
@@ -263,12 +264,14 @@ extern "C" fn init() {
 
     spawn_process(fs_controller).references(get_init()).build();
 
+    spawn_process(serve_bootfs).references(get_init()).build();
+
     spawn_process(file_system_partition_loader)
         .references(get_init())
         .build();
 
     // TODO: Use IO permissions instead of kernel
-    load_elf(PS2_DRIVER)
+    load_elf(early_bootfs_get("ps2").unwrap())
         .unwrap()
         .references(get_init())
         .privilege(ProcessPrivilege::KERNEL)
