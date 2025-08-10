@@ -35,7 +35,46 @@ impl Serial {
         Port::new(self.bus_base + offset)
     }
 
-    pub unsafe fn init(&mut self) -> bool {
+    pub unsafe fn check_port_exists(&mut self) -> bool {
+        // Implementation borrowed from linux kernel
+        without_interrupts(|| unsafe {
+            // Check existence
+            let mut ier = self.get_port(1);
+            let scratch = ier.read();
+            ier.write(0);
+
+            const UART_IER_ALL_INTR: u8 = 0b1111;
+
+            let scratch2 = ier.read() & UART_IER_ALL_INTR;
+            ier.write(UART_IER_ALL_INTR);
+
+            let scratch3 = ier.read() & UART_IER_ALL_INTR;
+            ier.write(scratch);
+
+            if scratch2 != 0 || scratch3 != UART_IER_ALL_INTR {
+                // We failed; there's nothing here
+                return false;
+            }
+
+            // Don't check as according to linux some chipsets don't implement loopback test mode
+            if false {
+                // Set loopback mode, test the chip
+                self.get_port(4).write(0x1E);
+
+                // Test serial by sending byte
+                self.get_port(0).write(0xAE);
+
+                if self.get_port(0).read() != 0xAE {
+                    error!("Serial test failed");
+                    return false;
+                }
+            }
+
+            true
+        })
+    }
+
+    pub unsafe fn init(&mut self) {
         without_interrupts(|| unsafe {
             // Disable all interrupts
             self.get_port(1).write(0x00);
@@ -56,25 +95,12 @@ impl Serial {
             // IRQ's enabled, RTS/DSR set
             self.get_port(4).write(0x0B);
 
-            // Set loopback mode, test the chip
-            self.get_port(4).write(0x1E);
-
-            // Test serial by sending byte
-            self.get_port(0).write(0xAE);
-
-            if self.get_port(0).read() != 0xAE {
-                error!("Serial test failed");
-                return false;
-            }
-
             // Set normal operation mode
             // (not-loopback with IRQs enabled and OUT#1 and OUT#2 bits enabled)
             self.get_port(4).write(0x0F);
 
             // Enable interrupts for readable
             self.get_port(1).write(0b1);
-
-            true
         })
     }
 
@@ -112,6 +138,9 @@ impl Serial {
 
     pub fn write_str(&mut self, s: &str) {
         for b in s.bytes() {
+            if b == b'\n' {
+                self.write_serial(b'\r');
+            }
             self.write_serial(b);
         }
     }
@@ -166,9 +195,7 @@ pub fn serial_monitor_stdin() {
             let s = String::from_utf8_lossy(&read);
             let mut serial = serial.lock();
             for c in s.chars() {
-                if c == '\n' {
-                    serial.write_str("\r\n");
-                } else if c == '\x08' {
+                if c == '\x08' {
                     // go back, write space, go back
                     serial.write_str("\x08 \x08");
                 } else {

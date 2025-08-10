@@ -9,7 +9,7 @@ use crate::paging::{
     KERNEL_LVL4, MemoryLoc,
     page::{Page, Size4KB},
     page_allocator::global_allocator,
-    page_table::Mapper,
+    page_table::{MapMemoryError, Mapper},
 };
 
 use self::bitfields::CapabilitiesIDRegister;
@@ -38,6 +38,9 @@ impl HPET {
             VMMapFlags::WRITEABLE,
         ) {
             Ok(f) => f.flush(),
+            Err(MapMemoryError::MemAlreadyMapped { to, current, .. }) if to == current => {
+                warn!("HPET override mapping")
+            }
             Err(e) => panic!("cannot ident map because {e:?}"),
         }
 

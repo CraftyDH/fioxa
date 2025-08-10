@@ -72,7 +72,8 @@ pub unsafe fn main_stage1(info: *const BootInfo) -> ! {
 
         // Try connecting to COM1
         let mut serial = Serial::new(COM_1);
-        if serial.init() {
+        if serial.check_port_exists() {
+            serial.init();
             // Reset colors, clear screen and move to top left
             serial.write_str("\x1b[0m\x1b[2J\x1b[H");
             serial.write_str("Welcome to Fioxa...\n");
