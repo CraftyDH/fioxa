@@ -47,8 +47,9 @@ pub fn file_system_partition_loader() {
     let mut controller =
         DiskControllerService::from_channel(IPCChannel::connect("DISK_CONTROLLER"));
 
-    for mut disk in controller.get_disks(true) {
-        info!("{:?}", disk.identify());
+    for disk in controller.get_disks(true) {
+        // TODO: Work out why some disks don't answer the request
+        // info!("{:?}", disk.identify());
         read_partitions(Arc::new(Mutex::new(disk)));
     }
 

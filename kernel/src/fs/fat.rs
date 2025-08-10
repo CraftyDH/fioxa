@@ -23,6 +23,8 @@ use spin::Mutex;
 
 use crate::fs::FSPartitionDisk;
 
+pub const ROOT_FILE_ID: FSFileId = FSFileId(0);
+
 #[derive(Clone, Copy)]
 #[repr(C, packed)]
 pub struct BiosParameterBlock {
@@ -330,60 +332,99 @@ impl FAT {
         }
         false
     }
+}
 
-    fn enumerate_root(&mut self) {
-        if self.file_id_lookup.contains_key(&FSFileId(0)) {
-            panic!("enumerate root should only be called once")
-        }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FatType {
+    Fat12,
+    Fat16,
+    Fat32,
+}
 
-        let folder = FATFile {
-            cluster: 0,
-            entry_type: FATFileType::Folder,
-        };
+// Logic based of https://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/fatgen103.doc
+pub fn get_fat_type(bpb: &BiosParameterBlock) -> FatType {
+    let root_dir_sectors = ((bpb.root_dir_entries as u32 * 32) + (bpb.bytes_per_sector as u32 - 1))
+        / bpb.bytes_per_sector as u32;
 
-        self.file_id_lookup.insert(FSFileId(0), folder);
+    let fat_size = if bpb.fat_sector_cnt != 0 {
+        bpb.fat_sector_cnt as u32
+    } else {
+        // This path can only be fat32
+        // fat32ext.sectors_per_fat as usize
+        return FatType::Fat32;
+    };
+
+    let total_sec_size = if bpb.total_sectors != 0 {
+        bpb.total_sectors as u32
+    } else {
+        bpb.total_sectors_ext
+    };
+
+    let data_sectors = total_sec_size
+        - ((bpb.reserved_sectors as u32 + (bpb.fat_copies as u32 * fat_size)) + root_dir_sectors);
+
+    let total_clusters = data_sectors / bpb.sectors_per_cluster as u32;
+
+    if total_clusters < 4085 {
+        FatType::Fat12
+    } else if total_clusters < 65525 {
+        FatType::Fat16
+    } else {
+        FatType::Fat32
     }
 }
 
 pub fn read_bios_block(disk: FSPartitionDisk) {
     let buffer = disk.read(0, 1);
 
-    let bpb = unsafe { *(buffer.as_ptr() as *const BiosParameterBlock) };
+    let bios_parameter_block = unsafe { *(buffer.as_ptr() as *const BiosParameterBlock) };
 
-    let mut total_clusters = bpb.total_sectors as usize / bpb.sectors_per_cluster as usize;
+    let fat_type = get_fat_type(&bios_parameter_block);
 
-    // We need to check extended section
-    if total_clusters == 0 {
-        total_clusters = bpb.total_sectors_ext as usize / bpb.sectors_per_cluster as usize;
-    }
+    info!("FAT partition of type: {fat_type:?}");
 
-    let mut fat: FAT;
-
-    if total_clusters < 4085 {
-        todo!("FAT12 Not supported yet")
-    } else if total_clusters < 65535 {
-        let fat16ext =
-            unsafe { *(buffer.as_ptr().add(size_of::<BiosParameterBlock>()) as *const FAT16Ext) };
-        fat = FAT {
-            bios_parameter_block: bpb,
-            fat_ebr: FatExtendedBootRecord::FAT16(fat16ext),
-            file_id_lookup: BTreeMap::new(),
-            disk,
-            cluster_chain_buffer: Default::default(),
-        };
-    } else {
-        let fat32ext =
-            unsafe { *(buffer.as_ptr().add(size_of::<BiosParameterBlock>()) as *const FAT32Ext) };
-        fat = FAT {
-            bios_parameter_block: bpb,
-            fat_ebr: FatExtendedBootRecord::FAT32(fat32ext),
-            file_id_lookup: BTreeMap::new(),
-            disk,
-            cluster_chain_buffer: Default::default(),
-        };
-    }
-
-    fat.enumerate_root();
+    let fat = match fat_type {
+        FatType::Fat12 => {
+            error!("Fat 12 not supported yet");
+            return;
+        }
+        FatType::Fat16 => {
+            let fat16ext = unsafe {
+                *(buffer.as_ptr().add(size_of::<BiosParameterBlock>()) as *const FAT16Ext)
+            };
+            let root = FATFile {
+                cluster: 0,
+                entry_type: FATFileType::Folder,
+            };
+            let mut file_id_lookup = BTreeMap::new();
+            file_id_lookup.insert(ROOT_FILE_ID, root);
+            FAT {
+                bios_parameter_block,
+                fat_ebr: FatExtendedBootRecord::FAT16(fat16ext),
+                file_id_lookup,
+                disk,
+                cluster_chain_buffer: Default::default(),
+            }
+        }
+        FatType::Fat32 => {
+            let fat32ext = unsafe {
+                *(buffer.as_ptr().add(size_of::<BiosParameterBlock>()) as *const FAT32Ext)
+            };
+            let root = FATFile {
+                cluster: fat32ext.root_cluster,
+                entry_type: FATFileType::Folder,
+            };
+            let mut file_id_lookup = BTreeMap::new();
+            file_id_lookup.insert(ROOT_FILE_ID, root);
+            FAT {
+                bios_parameter_block,
+                fat_ebr: FatExtendedBootRecord::FAT32(fat32ext),
+                file_id_lookup,
+                disk,
+                cluster_chain_buffer: Default::default(),
+            }
+        }
+    };
 
     let fat = ArcFat(Arc::new(Mutex::new(fat)));
 
@@ -430,7 +471,7 @@ impl FSServiceImpl for ArcFat {
 
 impl FSServiceImpl for FAT {
     fn stat_root(&mut self) -> FSFile {
-        self.stat_by_id(FSFileId(0)).unwrap()
+        self.stat_by_id(ROOT_FILE_ID).unwrap()
     }
 
     fn stat_by_id(&mut self, file_id: FSFileId) -> Option<FSFile> {
@@ -450,7 +491,7 @@ impl FSServiceImpl for FAT {
     fn get_children(&mut self, file_id: FSFileId) -> Option<hashbrown::HashMap<String, FSFileId>> {
         let file = self.file_id_lookup.get(&file_id)?.clone();
         match file.entry_type {
-            FATFileType::Folder => Some(self.read_directory(file.cluster, file_id.0 == 0)),
+            FATFileType::Folder => Some(self.read_directory(file.cluster, file_id == ROOT_FILE_ID)),
             FATFileType::File(_) => None,
         }
     }
