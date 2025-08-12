@@ -11,9 +11,7 @@ Cargo.lock
 **/*.rs.bk
 
 # MSVC Windows builds of rustc generate these, which store debugging information
-*.pdb# Devenv
-.devenv*
-devenv.local.nix
+*.pdb
 
 # direnv
 .direnv
