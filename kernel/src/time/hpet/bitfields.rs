@@ -2,7 +2,6 @@
 use modular_bitfield::{bitfield, specifiers::B5};
 
 #[bitfield]
-#[derive(Debug)]
 pub(super) struct CapabilitiesIDRegister {
     pub rev_id: u8,
     pub timer_cnt: B5,

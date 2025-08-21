@@ -54,7 +54,7 @@ pub fn main() {
                 assert_eq!(val, recv_i);
 
                 recv_i += 1;
-                if recv_i % 100000 == 0 {
+                if recv_i.is_multiple_of(100000) {
                     println!("Received: {recv_i}");
                 }
 

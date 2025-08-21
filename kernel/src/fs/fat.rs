@@ -343,6 +343,7 @@ pub enum FatType {
 
 // Logic based of https://download.microsoft.com/download/1/6/1/161ba512-40e2-4cc9-843a-923143f3456c/fatgen103.doc
 pub fn get_fat_type(bpb: &BiosParameterBlock) -> FatType {
+    #[allow(clippy::manual_div_ceil)] // we are following the algorithm
     let root_dir_sectors = ((bpb.root_dir_entries as u32 * 32) + (bpb.bytes_per_sector as u32 - 1))
         / bpb.bytes_per_sector as u32;
 

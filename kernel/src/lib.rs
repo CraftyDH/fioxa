@@ -59,7 +59,7 @@ pub mod uefi;
 pub mod user;
 pub mod vm;
 
-pub static mut BOOT_INFO: *const BootInfo = 0 as *const BootInfo;
+pub static mut BOOT_INFO: *const BootInfo = core::ptr::null();
 unsafe extern "C" {
     static KERNEL_START: u8;
     static KERNEL_END: u8;
