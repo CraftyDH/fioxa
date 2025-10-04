@@ -11,6 +11,5 @@ num-derive.workspace = true
 num-traits.workspace = true
 heapless.workspace = true
 
-[features]
-iret = ["kernel_syscall/iret"]
-kernel = ["kernel_syscall/kernel"]
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_abi, values("kernel","driver","userspace"))'] }

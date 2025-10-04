@@ -31,7 +31,7 @@
             pkgs.qemu_kvm
           ];
           buildInputs = [
-            (pkgs.rust-bin.nightly."2025-09-17".default.override {
+            (pkgs.rust-bin.nightly."2025-10-03".default.override {
               extensions = [
                 "rustc"
                 "cargo"

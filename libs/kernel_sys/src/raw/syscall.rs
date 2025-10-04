@@ -2,7 +2,20 @@ use super::types::*;
 
 pub const SYSCALL_NUMBER: u8 = 0x80;
 
-kernel_syscall::define_syscalls! {
+macro_rules! define_syscalls {
+    ($($t:tt)*) => {
+        #[cfg(target_abi = "kernel")]
+        kernel_syscall::define_syscalls! {"kernel", $($t)*}
+        #[cfg(target_abi = "driver")]
+        kernel_syscall::define_syscalls! {"driver", $($t)*}
+        #[cfg(target_abi = "userspace")]
+        kernel_syscall::define_syscalls! {"userspace", $($t)*}
+        #[cfg(not(any(target_abi = "kernel", target_abi = "driver", target_abi = "userspace")))]
+        kernel_syscall::define_syscalls! {"none", $($t)*}
+    };
+}
+
+define_syscalls! {
     // misc
     raw_sys_echo(val: usize) -> usize,
     raw_sys_yield(),

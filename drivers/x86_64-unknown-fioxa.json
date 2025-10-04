@@ -14,5 +14,5 @@
     "panic-strategy": "abort",
     "disable-redzone": true,
     "features": "-mmx,-sse,+soft-float",
-    "abi": "kernel"
+    "abi": "driver"
 }

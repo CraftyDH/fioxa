@@ -7,7 +7,7 @@ edition = "2024"
 
 [dependencies]
 bootloader = {path = "../bootloader", default-features = false}
-kernel_sys = { path = "../libs/kernel_sys", features = ["kernel"] }
+kernel_sys = { path = "../libs/kernel_sys" }
 kernel_userspace = { path = "../libs/kernel_userspace" }
 input = {path = "../libs/input"}
 
