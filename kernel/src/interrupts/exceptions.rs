@@ -12,12 +12,12 @@ use crate::{
 };
 
 /// Generates a handler for each PIC lane.
-/// Calls the appropiate handler in the HANDLERS list
+/// Calls the appropriate handler in the HANDLERS list
 #[macro_export]
 macro_rules! exception_handler {
     ($handler: ident, $error:expr) => {
         pub extern "x86-interrupt" fn $handler(stack_frame: InterruptStackFrame) {
-            // Find the relevent handler and call it
+            // Find the relevant handler and call it
             warn!("EXCEPTION: caught {}, frame: {:?}", $error, stack_frame);
             kill_bad_task();
         }

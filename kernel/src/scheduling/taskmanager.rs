@@ -3,7 +3,7 @@ use core::{any::type_name, fmt::Write};
 use alloc::{boxed::Box, collections::BTreeMap, fmt, sync::Arc};
 
 use kernel_sys::{
-    syscall::sys_thread_bootstraper,
+    syscall::sys_thread_bootstrapper,
     types::{ObjectSignal, Pid, Tid},
 };
 use spin::Lazy;
@@ -268,7 +268,7 @@ where
 
     ProcessBuilder::new(
         ProcessMemory::new(),
-        sys_thread_bootstraper as *const u64,
+        sys_thread_bootstrapper as *const u64,
         raw,
     )
     .privilege(super::process::ProcessPrivilege::KERNEL)

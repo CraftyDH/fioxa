@@ -33,8 +33,8 @@ impl FixedSizeBlockAllocator {
         }
     }
 
-    // Initilize the allocator with heap bounds
-    //* Unsafe becuase
+    // Initialize the allocator with heap bounds
+    //* Unsafe because
     //* Guarantee the this function is only called once
     //* Heap bounds must be valid and unused
     pub unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {

@@ -54,7 +54,7 @@ impl Scancode for ScancodeSet2 {
                 }
                 _ => {
                     self.state = State::Start;
-                    if let Some(key) = self.map_extened_scancode(code) {
+                    if let Some(key) = self.map_extended_scancode(code) {
                         return Some(KeyboardEvent::Down(key));
                     }
                     None
@@ -63,7 +63,7 @@ impl Scancode for ScancodeSet2 {
 
             State::ExtendedRelease => {
                 self.state = State::Start;
-                if let Some(key) = self.map_extened_scancode(code) {
+                if let Some(key) = self.map_extended_scancode(code) {
                     return Some(KeyboardEvent::Up(key));
                 }
                 None
@@ -187,7 +187,7 @@ impl ScancodeSet2 {
         })
     }
 
-    fn map_extened_scancode(
+    fn map_extended_scancode(
         &self,
         code: u8,
     ) -> Option<input::keyboard::virtual_code::VirtualKeyCode> {

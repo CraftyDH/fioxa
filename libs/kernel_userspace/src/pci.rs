@@ -160,7 +160,7 @@ impl PCIHeaderCommon {
 
     /// # Safety
     ///
-    /// The caller must ensure the devuce is of the correct type
+    /// The caller must ensure the device is of the correct type
     pub unsafe fn get_as_header0(self) -> PCIHeader0 {
         PCIHeader0 {
             device: self.device.clone(),

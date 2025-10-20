@@ -52,7 +52,7 @@ impl<'a> Writer<'a> {
             }
         }
         Self {
-            tty: TTY::new(gop.horizonal / CHAR_WIDTH, gop.vertical / CHAR_HEIGHT),
+            tty: TTY::new(gop.horizontal / CHAR_WIDTH, gop.vertical / CHAR_HEIGHT),
             mouse_pos: Pos { x: 0, y: 0 },
             screen: Screen {
                 gop,

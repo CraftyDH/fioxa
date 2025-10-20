@@ -47,8 +47,8 @@ impl LinkedListAllocator {
         }
     }
 
-    // Initilize the allocator with heap bounds
-    //* Unsafe becuase
+    // Initialize the allocator with heap bounds
+    //* Unsafe because
     //* Guarantee the this function is only called once
     //* Heap bounds must be valid and unused
     pub unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
@@ -73,10 +73,10 @@ impl LinkedListAllocator {
         self.head.next = Some(&mut *node_ptr)
     }
 
-    // Looks for a free regoin with the givin size and alignment and takes it
+    // Looks for a free region with the given size and alignment and takes it
     // Return a tuple of the list node and start address
     fn find_region(&mut self, size: usize, align: usize) -> Option<(&'static mut ListNode, usize)> {
-        // Refrence to current list node, updated for each iteration
+        // Reference to current list node, updated for each iteration
         let mut previous_region = &mut self.head;
 
         while let Some(ref mut this_region) = previous_region.next {
@@ -110,7 +110,7 @@ impl LinkedListAllocator {
 
         let excess_size = region.end_addr() - alloc_end;
         if excess_size > 0 && excess_size < mem::size_of::<ListNode>() {
-            // Rest of region is too small to hold a ListNode becuase the allocation splits the allocation into a used and free part
+            // Rest of region is too small to hold a ListNode because the allocation splits the allocation into a used and free part
             return Err(());
         }
 
@@ -124,7 +124,7 @@ impl LinkedListAllocator {
             // Pad so memory size is a multiple of Listnode
             .pad_to_align();
 
-        // Enforce that the minumum size of an allocation is a ListNode
+        // Enforce that the minimum size of an allocation is a ListNode
         let size = layout.size().max(mem::size_of::<ListNode>());
         (size, layout.align())
     }
@@ -132,7 +132,7 @@ impl LinkedListAllocator {
 
 unsafe impl GlobalAlloc for Locked<LinkedListAllocator> {
     unsafe fn alloc(&self, layout: alloc::Layout) -> *mut u8 {
-        // Perform layout ajustments
+        // Perform layout adjustments
         let (size, align) = LinkedListAllocator::size_align(layout);
         let mut allocator = self.lock();
 
@@ -154,7 +154,7 @@ unsafe impl GlobalAlloc for Locked<LinkedListAllocator> {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: alloc::Layout) {
-        // Perform layout ajustments
+        // Perform layout adjustments
         let (size, _) = LinkedListAllocator::size_align(layout);
 
         self.lock().add_free_region(ptr as usize, size)

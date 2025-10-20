@@ -129,7 +129,7 @@ pub unsafe fn main_stage1(info: *const BootInfo) -> ! {
 unsafe extern "C" fn main_stage2() {
     let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
 
-    // Initalize GOP stdout
+    // Initialize GOP stdout
     let font =
         psf1::load_psf1_font(early_bootfs_get("font.psf").unwrap()).expect("cannot load psf1 font");
     gop::WRITER.call_once(|| Writer::new(boot_info.gop, font).into());

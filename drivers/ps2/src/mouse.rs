@@ -45,12 +45,12 @@ impl Mouse {
             self.command.write_data(command)?;
             // Check for ACK
             let response = self.command.read()?;
-            // If a resend packet is encounted
+            // If a resend packet is encountered
             if response == 0xFE {
                 continue;
             }
             // 0xFA is successcode,
-            // TODO: it sends 0 somethimes; why?
+            // TODO: it sends 0 sometimes; why?
             else if response == 0xFA {
                 return Ok(());
             }
@@ -68,12 +68,12 @@ impl Mouse {
         self.send_command(0xFF)?;
 
         // Mouse will respond 0xAA then 0 on reset
-        // Ensure sucessful reset by testing for pass of 0xAA
+        // Ensure successful reset by testing for pass of 0xAA
         if self.command.read()? != 0xAA {
             return Err("Mouse failed self test");
         }
 
-        // Ensure sucessful reset by testing for pass of 0
+        // Ensure successful reset by testing for pass of 0
         if self.command.read()? != 0 {
             return Err("Mouse failed self test");
         }

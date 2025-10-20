@@ -71,10 +71,10 @@ fn uefi_entry() -> Status {
 }
 
 fn load_system(boot_info: &mut BootInfo) -> u64 {
-    info!("Retreiving Root Filesystem...");
+    info!("Retrieving Root Filesystem...");
     let mut root_fs = unsafe { fs::get_root_fs() }.unwrap();
 
-    info!("Retreiving kernel...");
+    info!("Retrieving kernel...");
 
     const KERN_PATH: &str = "fioxa.elf";
     let mut buf = [0; KERN_PATH.len() + 1];

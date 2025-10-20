@@ -1,4 +1,4 @@
-; This is intended to be loaded at 0x8000, with neccesary information placed at the bottom.
+; This is intended to be loaded at 0x8000, with necessary information placed at the bottom.
 ; Please recompile with NASM on modification
 global ap_trampoline
 [ORG 0x8000]

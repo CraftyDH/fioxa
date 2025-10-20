@@ -356,7 +356,7 @@ pub fn sys_port_push(handle: Hid, notification: &SysPortNotification) -> Syscall
 // process
 
 /// Is used as a new threads entry point.
-pub extern "C" fn sys_thread_bootstraper(main: usize) {
+pub extern "C" fn sys_thread_bootstrapper(main: usize) {
     // Recreate the function box that was passed from the syscall
     let func = unsafe { Box::from_raw(main as *mut Box<dyn FnOnce()>) };
     // We can release the outer box
@@ -376,7 +376,7 @@ where
     unsafe {
         let boxed_func: Box<dyn FnOnce()> = Box::new(func);
         let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
-        let tid = raw_sys_process_spawn_thread(sys_thread_bootstraper as *const (), raw.cast());
+        let tid = raw_sys_process_spawn_thread(sys_thread_bootstrapper as *const (), raw.cast());
         Tid::from_raw(tid).unwrap()
     }
 }

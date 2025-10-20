@@ -34,7 +34,7 @@ const SATA_SIG_SEMB: u32 = 0xC33C0101;
 const SATA_SIG_PM: u32 = 0x96690101;
 
 const HBA_PX_CMD_ST: u32 = 0x0001;
-const HBA_PX_CMD_FRE: u32 = 0x0010;
+const HBA_PX_CMD_FREE: u32 = 0x0010;
 const HBA_PX_CMD_FR: u32 = 0x4000;
 const HBA_PX_CMD_CR: u32 = 0x8000;
 

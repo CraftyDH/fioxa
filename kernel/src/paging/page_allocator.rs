@@ -55,7 +55,7 @@ pub struct PageMetadata32 {
 // This counts a 1gb zone
 const MAX_ORDER: usize = 18;
 
-/// TODO: Implement a bitmap to determine when we can coalese blocks back together
+/// TODO: Implement a bitmap to determine when we can coalesce blocks back together
 pub struct PageFrameAllocator {
     free_lists: [Option<*mut PageMetadata>; MAX_ORDER + 1],
     reserved_32bit: Option<*mut PageMetadata32>,

@@ -62,8 +62,8 @@ pub fn print_cursor(pos: &mut Pos, mouse: MousePacket) {
         let gop_mutex = &mut WRITER.get().unwrap().lock();
         let gop_info = &gop_mutex.screen.gop;
 
-        if pos.x > gop_info.horizonal - 8 {
-            pos.x = gop_info.horizonal - 8
+        if pos.x > gop_info.horizontal - 8 {
+            pos.x = gop_info.horizontal - 8
         }
 
         if pos.y > gop_info.vertical - 16 {

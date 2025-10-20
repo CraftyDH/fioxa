@@ -25,7 +25,7 @@ impl Keyboard {
             self.command.write_data(command)?;
             // Check for ACK
             let response = self.command.read()?;
-            // If a resend packet is encounted
+            // If a resend packet is encountered
             if response == 0xFE {
                 continue;
             // 0xFA is successcode
@@ -43,7 +43,7 @@ impl Keyboard {
 
         // Reset
         self.send_command(0xFF)?;
-        // Ensure sucessful reset by testing for pass of 0xAA
+        // Ensure successful reset by testing for pass of 0xAA
         if self.command.read()? != 0xAA {
             return Err("Keyboard failed self test");
         }

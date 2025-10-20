@@ -40,7 +40,7 @@ impl LegacyPCICommand {
 pub struct LegacyPCI {}
 
 impl LegacyPCI {
-    /// Returnes the base address of the given bus device and function
+    /// Returns the base address of the given bus device and function
     fn get_address(bus: u8, device: u8, function: u8) -> u32 {
         // Get the 32 bit address
         (1 << 31) // Enable bit

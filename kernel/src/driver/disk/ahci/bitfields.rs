@@ -20,7 +20,7 @@ pub(super) struct HBACommandHeader {
 
     pub prdt_length: u16,
     pub prdb_count: u32,
-    // Don't think I have to have upper and lower as seperate u32's
+    // Don't think I have to have upper and lower as separate u32's
     pub command_table_base_address: u64,
     #[skip]
     _rev1: B128,

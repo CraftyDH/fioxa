@@ -30,7 +30,7 @@ use crate::{
 pub unsafe fn boot_aps(madt: &Madt) {
     if !frame_alloc_exec(|a| a.captured_0x8000()) {
         warn!(
-            "WARNING: SINGLE CORE BOOT -- The physical memory region `0x8000` was not availble during initialization."
+            "WARNING: SINGLE CORE BOOT -- The physical memory region `0x8000` was not available during initialization."
         );
         return;
     }
@@ -111,7 +111,7 @@ pub unsafe fn boot_aps(madt: &Madt) {
         unsafe {
             // Select AP
             write_volatile(apic_ipi_310, (id << 24) as u32);
-            // Tigger INIT IPI
+            // Trigger INIT IPI
             write_volatile(apic_ipi_300, 0x4500);
             // Wait for delivery
             while read_volatile(apic_ipi_300) & (1 << 12) > 0 {

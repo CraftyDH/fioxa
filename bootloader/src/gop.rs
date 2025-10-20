@@ -11,7 +11,7 @@ use uefi::proto::console::gop::PixelFormat;
 pub struct GopInfo {
     pub buffer: AtomicPtr<u8>,
     pub buffer_size: usize,
-    pub horizonal: usize,
+    pub horizontal: usize,
     pub vertical: usize,
     pub stride: usize,
     pub pixel_format: PixelFormat,
@@ -54,14 +54,14 @@ pub fn initialize_gop() -> ScopedProtocol<GraphicsOutput> {
 pub fn get_gop_info(gop: &mut GraphicsOutput) -> GopInfo {
     let gopinfo = gop.current_mode_info();
     let mut gopbuf = gop.frame_buffer();
-    let (horizonal, vertical) = gopinfo.resolution();
+    let (horizontal, vertical) = gopinfo.resolution();
 
     info!("Loc: {:?}", gopbuf.as_mut_ptr());
 
     GopInfo {
         buffer: AtomicPtr::from(gopbuf.as_mut_ptr()),
         buffer_size: gopbuf.size(),
-        horizonal,
+        horizontal,
         vertical,
         stride: gopinfo.stride(),
         pixel_format: gopinfo.pixel_format(),

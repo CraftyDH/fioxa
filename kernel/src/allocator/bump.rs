@@ -27,7 +27,7 @@ impl BumpAllocator {
         }
     }
 
-    // Initalize the bump allocator
+    // Initialize the bump allocator
     //* Unsafe because
     //* Ensure only called once
     //* Ensure only called on unused memory

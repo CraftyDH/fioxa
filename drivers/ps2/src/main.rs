@@ -28,7 +28,7 @@ pub mod translate;
 init_userspace!(main);
 
 pub fn main() {
-    info!("Initalizing PS2 devices...");
+    info!("Initializing PS2 devices...");
     let mut ps2_controller = PS2Controller::new();
 
     if let Err(e) = ps2_controller.initialize() {
@@ -271,14 +271,14 @@ impl PS2Controller {
         // Initialize mouse if test passed
         let mouse = mouse.and_then(|_| self.mouse.initialize());
 
-        // If keyboard failed to initalize print the error reason
+        // If keyboard failed to initialize print the error reason
         if let Err(e) = keyboard {
             info!("Keyboard failed to init because: {e}")
         }
 
-        // If mouse failed to initalize print the error reason
+        // If mouse failed to initialize print the error reason
         if let Err(e) = mouse {
-            info!("Mouse failed to init becuase: {e}")
+            info!("Mouse failed to init because: {e}")
         };
 
         // Even if there was an error with the keyboard or mouse we can still continue

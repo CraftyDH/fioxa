@@ -97,7 +97,7 @@ impl<'a> Iterator for InputLines<'a> {
 pub fn main() {
     let args = sys_read_args_string();
 
-    eprintln!("WARN: Evaulating left to right, so no order of operations :(");
+    eprintln!("WARN: Evaluating left to right, so no order of operations :(");
 
     if args.is_empty() {
         let mut return_buf = String::new();

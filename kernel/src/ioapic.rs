@@ -46,7 +46,7 @@ pub unsafe fn enable_apic(madt: &Madt) {
         .unwrap();
 
     // Timer is usually overridden to irq 2
-    // TODO: Parse overides and use those
+    // TODO: Parse overrides and use those
     // 0xFF all cores
     // set_redirect_entry(apic.apic_addr, 0xFF, 2, 49, true);
 
@@ -155,7 +155,7 @@ impl Madt {
         lapic_ids
     }
 
-    pub fn find_ioapic(&self) -> (u64, Vec<u8>, Vec<IOApic>, Vec<ApicInterruptOveride>) {
+    pub fn find_ioapic(&self) -> (u64, Vec<u8>, Vec<IOApic>, Vec<ApicInterruptOverride>) {
         let mut start_ptr = self as *const Madt as *mut u8;
 
         start_ptr = unsafe { start_ptr.add(mem::size_of::<Madt>()) };
@@ -163,7 +163,7 @@ impl Madt {
 
         let mut lapic_ids: Vec<u8> = Vec::new();
         let mut io_apics: Vec<IOApic> = Vec::new();
-        let mut apic_overide: Vec<ApicInterruptOveride> = Vec::new();
+        let mut apic_override: Vec<ApicInterruptOverride> = Vec::new();
         let mut lapic_addr = self.local_apic_address as u64;
 
         while length_left > 0 {
@@ -185,9 +185,9 @@ impl Madt {
                     io_apics.push(unsafe { *(start_ptr.add(2) as *const IOApic) });
                 }
                 2 => {
-                    let x = unsafe { *(start_ptr.add(2) as *const ApicInterruptOveride) };
+                    let x = unsafe { *(start_ptr.add(2) as *const ApicInterruptOverride) };
                     trace!("X{x:?}");
-                    apic_overide.push(x);
+                    apic_override.push(x);
                 }
                 5 => {
                     lapic_addr = unsafe { *(start_ptr.add(4) as *const u64) };
@@ -198,7 +198,7 @@ impl Madt {
             start_ptr = unsafe { start_ptr.add(len as usize) };
             length_left -= len as u32;
         }
-        (lapic_addr, lapic_ids, io_apics, apic_overide)
+        (lapic_addr, lapic_ids, io_apics, apic_override)
     }
 }
 
@@ -213,7 +213,7 @@ pub struct IOApic {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C, packed)]
-pub struct ApicInterruptOveride {
+pub struct ApicInterruptOverride {
     bus_source: u8,
     irq_source: u8,
     interrupt_num: u32,

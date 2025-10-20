@@ -86,7 +86,7 @@ fn qemu(with_screen: bool) -> Result<()> {
         "user,id=mynet0".into(),
         "-device".into(),
         "pcnet,netdev=mynet0,mac=00:11:22:33:44:55".into(),
-        // Log network trafic
+        // Log network traffic
         "-object".into(),
         "filter-dump,id=id,netdev=mynet0,file=fioxa.pcap".into(),
     ];

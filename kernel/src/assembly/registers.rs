@@ -47,7 +47,7 @@ macro_rules! wrap_function_registers {
                 "push r14",
                 "push r15",
                 "mov rsi, rsp", // Arg #2: register list
-                "mov rdi, rsp", // Arg #1: interupt frame
+                "mov rdi, rsp", // Arg #1: interrupt frame
                 "add rdi, 15 * 8",
                 "call {}",
                 "pop r15",
@@ -85,7 +85,7 @@ pub struct SavedTaskState {
 #[repr(C)]
 pub struct SavedThreadState {
     pub register_state: Registers,
-    // Rest of the data inclusing rip & rsp
+    // Rest of the data including rip & rsp
     pub interrupt_frame: InterruptStackFrameValue,
 }
 

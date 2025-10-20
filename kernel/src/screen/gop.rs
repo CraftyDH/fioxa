@@ -54,8 +54,8 @@ impl Screen<'_> {
     }
 
     pub fn draw_cursor(&mut self, mut pos: Pos, colour: u32, cursor: &[u16]) {
-        if pos.x > self.gop.horizonal - 16 {
-            pos.x = self.gop.horizonal - 16
+        if pos.x > self.gop.horizontal - 16 {
+            pos.x = self.gop.horizontal - 16
         }
 
         if pos.y > self.gop.vertical - 16 {

@@ -34,7 +34,7 @@ pub fn read_file(root: &mut Directory, path: &CStr16) -> Result<Box<[u8]>, &'sta
         Err(_e) => return Err("File error..."),
     };
 
-    // Kernal must be a file
+    // Kernel must be a file
     let mut file = match file.into_type().unwrap() {
         FileType::Regular(file) => file,
         FileType::Dir(_) => {

@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::{
-    HBA_PX_CMD_CR, HBA_PX_CMD_FR, HBA_PX_CMD_FRE, HBA_PX_CMD_ST, HBAPort,
+    HBA_PX_CMD_CR, HBA_PX_CMD_FR, HBA_PX_CMD_FREE, HBA_PX_CMD_ST, HBAPort,
     bitfields::HBACommandHeader, fis::ReceivedFis,
 };
 
@@ -110,7 +110,7 @@ impl Port {
             // yield_now();
         }
 
-        port.cmd_sts.update(|v| *v |= HBA_PX_CMD_FRE);
+        port.cmd_sts.update(|v| *v |= HBA_PX_CMD_FREE);
         port.cmd_sts.update(|v| *v |= HBA_PX_CMD_ST);
     }
 
@@ -120,7 +120,7 @@ impl Port {
         // LIST_ON
         while port.cmd_sts.read() & HBA_PX_CMD_CR > 0 {}
 
-        port.cmd_sts.update(|x| *x &= !HBA_PX_CMD_FRE);
+        port.cmd_sts.update(|x| *x &= !HBA_PX_CMD_FREE);
         while port.cmd_sts.read() & HBA_PX_CMD_FR > 0 {}
     }
 

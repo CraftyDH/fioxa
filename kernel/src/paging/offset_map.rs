@@ -25,7 +25,7 @@ pub unsafe fn create_offset_map(
 ) {
     // Only map actual memory
     // This means we will get a page fault on access to a non ram in the offset table
-    // (instead of accessing memory holes/complely non existend addresses)
+    // (instead of accessing memory holes/complely non existent addresses)
     for r in mmap {
         let r = unsafe { &*virt_addr_offset(r) };
 

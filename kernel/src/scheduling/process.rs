@@ -429,7 +429,7 @@ impl Thread {
         self.tid
     }
 
-    /// SAFTEY: Must hold the global sched lock
+    /// SAFETY: Must hold the global sched lock
     pub fn sched_global(&self) -> *mut ThreadSchedGlobalData {
         self.sched_global.0.get()
     }

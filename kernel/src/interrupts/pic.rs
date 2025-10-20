@@ -17,7 +17,7 @@ pub unsafe fn disable_pic() {
         let mut slave_command: Port<u8> = Port::new(0xA0);
         let mut slave_data: Port<u8> = Port::new(0xA1);
 
-        // Start init seqence
+        // Start init sequence
         master_command.write(0x11);
         wait();
         slave_command.write(0x11);

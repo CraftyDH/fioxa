@@ -126,7 +126,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     let length = ((max_size + 0xFFF) & !0xFFF) as u64;
 
                     let alloc = global_allocator();
-                    // We assume that we allocted cont pages
+                    // We assume that we allocated cont pages
                     for page in (base..(base + length)).step_by(0x1000) {
                         let page = Page::<Size4KB>::new(page);
 
