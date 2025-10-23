@@ -6,6 +6,7 @@ use core::{
 };
 
 use alloc::{
+    boxed::Box,
     collections::BTreeMap,
     sync::{Arc, Weak},
     vec::Vec,
@@ -347,7 +348,7 @@ impl Thread {
         let tid = threads.get_next_id();
 
         // let stack_base = STACK_ADDR.fetch_add(0x1000_000, Ordering::Relaxed);
-        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * tid.into_raw();
+        let stack_base = STACK_ADDR + (STACK_SIZE * 2) * tid.into_raw();
 
         let stack_flags = match process.privilege {
             ProcessPrivilege::KERNEL => VMOAnonymousFlags::PINNED,
@@ -409,6 +410,7 @@ impl Thread {
                 }),
                 kstack_top: VirtAddr::from_ptr((kbase + KSTACK_SIZE) as *const ()),
                 cr3_page: process.memory.lock().region.get_cr3() as u64,
+                sse_state: None,
             }),
         });
 
@@ -477,6 +479,7 @@ pub struct ThreadSched {
     pub task_state: Option<SavedTaskState>,
     pub kstack_top: VirtAddr,
     pub cr3_page: u64,
+    pub sse_state: Option<Box<[u8]>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -568,7 +571,7 @@ impl From<Arc<Spinlock<VMO>>> for KernelValue {
 
 impl Drop for Thread {
     fn drop(&mut self) {
-        let stack_base = STACK_ADDR + (STACK_SIZE + 0x1000) * self.tid.into_raw();
+        let stack_base = STACK_ADDR + (STACK_SIZE * 2) * self.tid.into_raw();
 
         unsafe {
             self.process

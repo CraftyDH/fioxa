@@ -50,9 +50,11 @@ fn main() -> Result<()> {
     copy("assets/zap-light16.psf", "fioxa/font.psf")?;
 
     let release = args().any(|a| a == "--release");
+    let native = args().any(|a| a == "--native");
+    let kvm = !args().any(|a| a == "--no-kvm");
 
     for (package, member, out) in TO_BUILD {
-        let exec_path = build(package, *member, release)
+        let exec_path = build(package, *member, release, native)
             .with_context(|| format!("Failed to build {package}-{member:?}"))?;
         copy(exec_path, format!("fioxa/{out}")).with_context(|| {
             format!("Failed to copy the output of {package}-{member:?} to fioxa/{out}",)
@@ -60,16 +62,17 @@ fn main() -> Result<()> {
     }
 
     if args().any(|a| a == "qemu") {
-        qemu(true).context("Failed to launch qemu")?;
+        qemu(true, native, kvm).context("Failed to launch qemu")?;
     } else if args().any(|a| a == "qemu-nox") {
-        qemu(false).context("Failed to launch qemu")?;
+        qemu(false, native, kvm).context("Failed to launch qemu")?;
     }
 
     Ok(())
 }
 
 /// **Warning:** Contains intentional memory leaks, because I am lazy
-fn qemu(with_screen: bool) -> Result<()> {
+fn qemu(with_screen: bool, native: bool, kvm: bool) -> Result<()> {
+    let cpu = if native { "host" } else { "qemu64" };
     let mut qemu_args = vec![
         // GDB server
         "-s".into(),
@@ -77,7 +80,7 @@ fn qemu(with_screen: bool) -> Result<()> {
         "-machine".into(),
         "q35".into(),
         "-cpu".into(),
-        "qemu64".into(),
+        cpu.into(),
         "-smp".into(),
         "cores=4".into(),
         "-m".into(),
@@ -91,7 +94,7 @@ fn qemu(with_screen: bool) -> Result<()> {
         "filter-dump,id=id,netdev=mynet0,file=fioxa.pcap".into(),
     ];
 
-    if has_kvm() {
+    if kvm && has_kvm() {
         qemu_args.push("-enable-kvm".to_string());
     }
 
@@ -201,7 +204,7 @@ fn clean(name: &str) -> Result<()> {
     }
 }
 
-fn build(name: &str, member: Option<&str>, release: bool) -> Result<Utf8PathBuf> {
+fn build(name: &str, member: Option<&str>, release: bool, native: bool) -> Result<Utf8PathBuf> {
     let mut args = vec!["build", "--message-format=json-render-diagnostics"];
     if release {
         args.push("--release");
@@ -217,7 +220,11 @@ fn build(name: &str, member: Option<&str>, release: bool) -> Result<Utf8PathBuf>
     };
 
     // Build subprocess
-    let mut cargo = Command::new("cargo")
+    let mut cargo = Command::new("cargo");
+    if native {
+        cargo.env("RUSTFLAGS", "-C target-cpu=native");
+    }
+    let mut cargo = cargo
         .current_dir(format!("../{name}"))
         .args(args)
         .stdout(Stdio::piped())

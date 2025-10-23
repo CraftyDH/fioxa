@@ -14,13 +14,21 @@ pub use log;
 macro_rules! init_userspace {
     ($main:ident) => {
         #[unsafe(no_mangle)]
+        #[unsafe(naked)]
         pub extern "C" fn _start() {
-            ::userspace::log::set_logger(&::userspace::logger::USERSPACE_LOGGER).unwrap();
-            ::userspace::log::set_max_level(::userspace::log::LevelFilter::Debug);
+            extern "C" fn _start_inner() {
+                ::userspace::log::set_logger(&::userspace::logger::USERSPACE_LOGGER).unwrap();
+                ::userspace::log::set_max_level(::userspace::log::LevelFilter::Debug);
 
-            $main();
+                $main();
 
-            ::kernel_userspace::sys::syscall::sys_exit()
+                ::kernel_userspace::sys::syscall::sys_exit()
+            }
+            // We can't hit start directly, as we need to maintain the 16 byte alignment of the ABI
+            core::arch::naked_asm!(
+                "call {}",
+                sym _start_inner,
+            );
         }
     };
 }

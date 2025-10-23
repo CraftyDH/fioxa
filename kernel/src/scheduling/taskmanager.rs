@@ -1,4 +1,12 @@
-use core::{any::type_name, fmt::Write};
+use core::{
+    any::type_name,
+    arch::x86_64::{
+        __cpuid, __cpuid_count, _fxrstor64, _fxsave64, _xrstor64, _xrstors64, _xsave64,
+        _xsaveopt64, _xsaves64,
+    },
+    fmt::Write,
+    panic,
+};
 
 use alloc::{boxed::Box, collections::BTreeMap, fmt, sync::Arc};
 
@@ -6,8 +14,14 @@ use kernel_sys::{
     syscall::sys_thread_bootstrapper,
     types::{ObjectSignal, Pid, Tid},
 };
-use spin::Lazy;
-use x86_64::instructions::interrupts;
+use spin::{Lazy, Once};
+use x86_64::{
+    instructions::interrupts,
+    registers::{
+        control::{Cr0, Cr0Flags, Cr4, Cr4Flags},
+        xcontrol::{XCr0, XCr0Flags},
+    },
+};
 
 use crate::{
     assembly::{registers::SavedTaskState, wrmsr},
@@ -148,6 +162,138 @@ pub unsafe fn enable_syscall() {
     }
 }
 
+#[derive(Debug, Clone)]
+#[repr(C)]
+enum SSESaveMethod {
+    FxSave,
+    XSave,
+    XSaveOpt,
+    XSaves,
+}
+
+#[derive(Debug, Clone)]
+struct SSESave {
+    default: Box<[u8]>,
+    method: SSESaveMethod,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+#[allow(clippy::upper_case_acronyms)]
+enum SSEType {
+    SSE,
+    AVX,
+    AVX512,
+}
+
+unsafe fn enable_sse_inner() -> SSEType {
+    unsafe {
+        let cpu = __cpuid(0x1);
+        assert!(cpu.edx & (1 << 25) > 0, "SSE baseline support is required");
+        let mut cr0 = Cr0::read();
+        cr0.remove(Cr0Flags::EMULATE_COPROCESSOR);
+        cr0.insert(Cr0Flags::MONITOR_COPROCESSOR);
+        Cr0::write(cr0);
+        let mut cr4 = Cr4::read();
+        cr4.insert(Cr4Flags::OSFXSR | Cr4Flags::OSXMMEXCPT_ENABLE);
+        Cr4::write(cr4);
+
+        let cpu = __cpuid(0x1);
+        // AVX | XSAVE
+        let vals = (1 << 28) | (1 << 26);
+        if (cpu.ecx & vals) != vals {
+            return SSEType::SSE;
+        }
+
+        // OSXSAVE requires XSAVE to be supported
+        let mut cr4 = Cr4::read();
+        cr4.insert(Cr4Flags::OSXSAVE);
+        Cr4::write(cr4);
+        // Check that OSXSAVE is supported
+        // This doesn't seem to be set until cr4 is set.
+        let cpu = __cpuid(0x1);
+        if (cpu.ecx & (1 << 27)) == 0 {
+            return SSEType::SSE;
+        }
+
+        // enable AVX
+        let mut xcr0 = XCr0::read();
+        xcr0.insert(XCr0Flags::AVX | XCr0Flags::SSE | XCr0Flags::X87);
+        XCr0::write(xcr0);
+
+        // Enable AVX512 if possible
+        let cpu = __cpuid(0xD);
+        let vals = (1 << 5) | (1 << 6) | (1 << 7);
+        if cpu.eax & vals != vals {
+            return SSEType::AVX;
+        }
+        let mut xcr0 = XCr0::read();
+        xcr0.insert(XCr0Flags::OPMASK | XCr0Flags::ZMM_HI256 | XCr0Flags::HI16_ZMM);
+        XCr0::write(xcr0);
+
+        SSEType::AVX512
+    }
+}
+
+unsafe fn sse_avx_get_save() -> SSESave {
+    unsafe {
+        let extended_state_main = __cpuid_count(0xD, 0);
+        let extended_state_leaf1 = __cpuid_count(0xD, 1);
+
+        // Prefer xsaves > xsaveopt > xsave
+        // TODO: Do we want to use xsavec?
+        let (default, method) = if extended_state_leaf1.eax & 0b1000 > 0 {
+            let mut default =
+                Box::new_zeroed_slice(extended_state_leaf1.ebx as usize).assume_init();
+            _xsaves64(default.as_mut_ptr(), u64::MAX);
+            (default, SSESaveMethod::XSaves)
+        } else if extended_state_leaf1.eax & 0b1 > 0 {
+            let mut default = Box::new_zeroed_slice(extended_state_main.ebx as usize).assume_init();
+            _xsaveopt64(default.as_mut_ptr(), u64::MAX);
+            (default, SSESaveMethod::XSaveOpt)
+        } else {
+            let mut default = Box::new_zeroed_slice(extended_state_main.ebx as usize).assume_init();
+            _xsave64(default.as_mut_ptr(), u64::MAX);
+            (default, SSESaveMethod::XSave)
+        };
+        info!("AVX Save type {method:?}");
+        SSESave { default, method }
+    }
+}
+
+unsafe fn sse_sse_get_save() -> SSESave {
+    unsafe {
+        let mut default = Box::new([0; 512]);
+        _fxsave64(default.as_mut_ptr());
+        SSESave {
+            default,
+            method: SSESaveMethod::FxSave,
+        }
+    }
+}
+
+unsafe fn sse_get_method(ty: SSEType) -> SSESave {
+    unsafe {
+        match ty {
+            SSEType::SSE => sse_sse_get_save(),
+            SSEType::AVX | SSEType::AVX512 => sse_avx_get_save(),
+        }
+    }
+}
+
+unsafe fn enable_sse() -> &'static SSESave {
+    unsafe {
+        let ty = enable_sse_inner();
+        static SSE_TYPE: Once<(SSEType, SSESave)> = Once::new();
+        let (global_ty, method) = SSE_TYPE.call_once(|| {
+            info!("SSE Type: {ty:?}");
+            (ty, sse_get_method(ty))
+        });
+        assert_eq!(ty, *global_ty, "Each core should have the same SSE type");
+        method
+    }
+}
+
 pub unsafe fn core_start_multitasking() {
     unsafe {
         enable_syscall();
@@ -169,6 +315,8 @@ unsafe extern "C" fn scheduler() {
     let id = CPULocalStorageRW::get_core_id();
     info!("Starting scheduler on core: {id}");
 
+    let sse = unsafe { enable_sse() };
+
     loop {
         let task = SCHEDULER.lock().pop_thread();
         if let Some(task) = task {
@@ -176,7 +324,7 @@ unsafe extern "C" fn scheduler() {
 
             assert_eq!(sched.state, ThreadState::Runnable);
 
-            unsafe { sched_run_tick(&task, &mut sched) };
+            unsafe { sched_run_tick(&task, &mut sched, sse) };
 
             if CPULocalStorageRW::hold_interrupts_depth() != 1 {
                 error!("Thread shouldn't be holding interrupts when yielding");
@@ -292,7 +440,7 @@ pub unsafe fn spawn_thread(arg1: usize, arg2: usize) -> Tid {
     }
 }
 
-unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
+unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched, sse: &SSESave) {
     let SavedTaskState { sp, ip } = sched.task_state.take().unwrap();
 
     let tss = &mut CPULocalStorageRW::get_gdt().tss;
@@ -305,7 +453,17 @@ unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
     let new_sp;
     let new_ip;
 
+    let sse_region = sched.sse_state.get_or_insert_with(|| sse.default.clone());
+
     unsafe {
+        match sse.method {
+            SSESaveMethod::FxSave => _fxrstor64(sse_region.as_ptr()),
+            SSESaveMethod::XSave | SSESaveMethod::XSaveOpt => {
+                _xrstor64(sse_region.as_ptr(), u64::MAX)
+            }
+            SSESaveMethod::XSaves => _xrstors64(sse_region.as_ptr(), u64::MAX),
+        }
+
         core::arch::asm!(
             "push rbx",
             "push rbp",
@@ -345,7 +503,13 @@ unsafe fn sched_run_tick(task: &Thread, sched: &mut ThreadSched) {
             ctx = const core::mem::offset_of!(CPULocalStorage, current_context),
             sp = const core::mem::offset_of!(CPULocalStorage, sched_task_sp),
             ip = const core::mem::offset_of!(CPULocalStorage, sched_task_ip),
-        )
+        );
+        match sse.method {
+            SSESaveMethod::FxSave => _fxsave64(sse_region.as_mut_ptr()),
+            SSESaveMethod::XSave => _xsave64(sse_region.as_mut_ptr(), u64::MAX),
+            SSESaveMethod::XSaveOpt => _xsaveopt64(sse_region.as_mut_ptr(), u64::MAX),
+            SSESaveMethod::XSaves => _xsaves64(sse_region.as_mut_ptr(), u64::MAX),
+        }
     };
     CPULocalStorageRW::clear_current_task();
 

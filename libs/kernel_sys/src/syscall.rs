@@ -356,16 +356,24 @@ pub fn sys_port_push(handle: Hid, notification: &SysPortNotification) -> Syscall
 // process
 
 /// Is used as a new threads entry point.
+#[unsafe(naked)]
 pub extern "C" fn sys_thread_bootstrapper(main: usize) {
-    // Recreate the function box that was passed from the syscall
-    let func = unsafe { Box::from_raw(main as *mut Box<dyn FnOnce()>) };
-    // We can release the outer box
-    let func = Box::into_inner(func);
-    // Call the function
-    func.call_once(());
+    extern "C" fn _inner(main: usize) {
+        // Recreate the function box that was passed from the syscall
+        let func = unsafe { Box::from_raw(main as *mut Box<dyn FnOnce()>) };
+        // We can release the outer box
+        let func = Box::into_inner(func);
+        // Call the function
+        func.call_once(());
 
-    // Function ended quit
-    sys_exit()
+        // Function ended quit
+        sys_exit()
+    }
+    // We can't hit start directly, as we need to maintain the 16 byte alignment of the ABI
+    core::arch::naked_asm!(
+        "call {}",
+        sym _inner,
+    )
 }
 
 #[inline]
