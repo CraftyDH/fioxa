@@ -3,6 +3,9 @@ name = "kernel_sys"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+kernel = ["kernel_syscall/kernel"]
+
 [dependencies]
 kernel_syscall = { path = "kernel_syscall" }
 

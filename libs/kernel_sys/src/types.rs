@@ -72,6 +72,10 @@ pub enum SyscallResult {
     BadInputPointer,
     SystemError,
     UnknownHandle,
+    UnknownSyscall,
+    Unimplemented,
+
+    KernelPrivateFailAssertion,
 
     ChannelEmpty,
     ChannelFull,

@@ -34,8 +34,16 @@ impl<T: Copy> UserPtr<T> {
         Some(Self(ptr))
     }
 
-    pub fn read(&self) -> T {
-        unsafe { *self.0 }
+    pub fn is_null(&self) -> bool {
+        self.0.is_null()
+    }
+
+    pub fn read(&self) -> Option<T> {
+        if self.0.is_null() {
+            return None;
+        } else {
+            unsafe { Some(*self.0) }
+        }
     }
 }
 
@@ -47,12 +55,22 @@ impl<T: Copy> UserPtrMut<T> {
         Some(Self(ptr))
     }
 
-    pub fn read(&self) -> T {
-        unsafe { *self.0 }
+    pub fn is_null(&self) -> bool {
+        self.0.is_null()
     }
 
-    pub fn write(&mut self, val: T) {
-        unsafe { *self.0 = val }
+    pub fn read(&self) -> Option<T> {
+        if self.0.is_null() {
+            return None;
+        } else {
+            unsafe { Some(*self.0) }
+        }
+    }
+
+    pub fn write(&mut self, val: impl FnOnce() -> T) {
+        if !self.0.is_null() {
+            unsafe { *self.0 = val() }
+        }
     }
 }
 

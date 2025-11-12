@@ -35,7 +35,10 @@ pub fn sys_sleep(time: Duration) -> Duration {
 
 #[inline]
 pub fn sys_exit() -> ! {
-    unsafe { raw_sys_exit() }
+    unsafe {
+        raw_sys_exit();
+        core::arch::asm!("ud2", options(noreturn));
+    }
 }
 
 /// Map syscall
