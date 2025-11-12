@@ -150,7 +150,7 @@ pub unsafe fn boot_aps(madt: &Madt) {
         if c as usize == n_cores {
             break;
         };
-        unsafe { _mm_pause() }
+        _mm_pause();
     }
 }
 

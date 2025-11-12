@@ -69,7 +69,7 @@ impl HPET {
     pub fn spin_ms(&self, ms: u64) {
         let end = self.get_uptime() + ms;
         while end > self.get_uptime() {
-            unsafe { _mm_pause() };
+            _mm_pause();
         }
     }
 }
