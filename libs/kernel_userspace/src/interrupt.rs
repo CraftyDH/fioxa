@@ -4,7 +4,7 @@ use kernel_sys::{
         sys_interrupt_acknowledge, sys_interrupt_create, sys_interrupt_set_port,
         sys_interrupt_trigger, sys_interrupt_wait,
     },
-    types::SyscallResult,
+    types::SyscallError,
 };
 use rkyv::{
     Archive, Deserialize, Portable, Serialize,
@@ -40,19 +40,19 @@ impl Interrupt {
         unsafe { Self::from_handle(Handle::from_id(sys_interrupt_create())) }
     }
 
-    pub fn wait(&self) -> SyscallResult {
+    pub fn wait(&self) -> Result<(), SyscallError> {
         sys_interrupt_wait(*self.0)
     }
 
-    pub fn trigger(&self) -> SyscallResult {
+    pub fn trigger(&self) -> Result<(), SyscallError> {
         sys_interrupt_trigger(*self.0)
     }
 
-    pub fn acknowledge(&self) -> SyscallResult {
+    pub fn acknowledge(&self) -> Result<(), SyscallError> {
         sys_interrupt_acknowledge(*self.0)
     }
 
-    pub fn set_port(&self, port: &Port, key: u64) -> SyscallResult {
+    pub fn set_port(&self, port: &Port, key: u64) -> Result<(), SyscallError> {
         sys_interrupt_set_port(*self.0, **port.handle(), key)
     }
 }
@@ -74,7 +74,7 @@ impl InterruptsService {
     }
 
     pub fn get_interrupt(&mut self, vector: InterruptVector) -> Option<Interrupt> {
-        self.0.send(&vector).assert_ok();
+        self.0.send(&vector).unwrap();
         self.0.recv().unwrap().deserialize().unwrap()
     }
 }
@@ -97,14 +97,14 @@ impl<I: InterruptsServiceImpl> InterruptsServiceExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
 
             let (vector, _) = msg.access::<InterruptVector>()?;
 
             let res = self.service.get_interrupt(*vector);
-            self.channel.send(&res).into_err().map_err(Error::new)?;
+            self.channel.send(&res).map_err(Error::new)?;
         }
     }
 }

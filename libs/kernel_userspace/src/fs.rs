@@ -6,7 +6,7 @@ use alloc::{
     vec::Vec,
 };
 use hashbrown::HashMap;
-use kernel_sys::types::SyscallResult;
+use kernel_sys::types::SyscallError;
 use rkyv::{
     Archive, Archived, Deserialize, Serialize,
     rancor::{Error, Source},
@@ -56,12 +56,12 @@ impl FSService {
     }
 
     pub fn stat_root(&mut self) -> FSFile {
-        self.chan.send(&FSRequest::StatRoot).assert_ok();
+        self.chan.send(&FSRequest::StatRoot).unwrap();
         self.chan.recv().unwrap().deserialize().unwrap()
     }
 
     pub fn stat_by_id(&mut self, file: FSFileId) -> Option<FSFile> {
-        self.chan.send(&FSRequest::StatById(file)).assert_ok();
+        self.chan.send(&FSRequest::StatById(file)).unwrap();
         self.chan.recv().unwrap().deserialize().unwrap()
     }
 
@@ -69,7 +69,7 @@ impl FSService {
         &mut self,
         file: FSFileId,
     ) -> TypedIPCMessage<'_, Archived<Option<HashMap<String, FSFileId>>>> {
-        self.chan.send(&FSRequest::GetChildren { file }).assert_ok();
+        self.chan.send(&FSRequest::GetChildren { file }).unwrap();
         TypedIPCMessage::new(self.chan.recv().unwrap())
     }
 
@@ -81,7 +81,7 @@ impl FSService {
     ) -> TypedIPCMessage<'_, Archived<Option<Vec<u8>>>> {
         self.chan
             .send(&FSRequest::ReadFile { file, offset, len })
-            .assert_ok();
+            .unwrap();
         TypedIPCMessage::new(self.chan.recv().unwrap())
     }
 }
@@ -100,7 +100,7 @@ impl<I: FSServiceImpl> FSServiceExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
             let (msg, des) = msg.access::<ArchivedFSRequest>()?;
@@ -131,7 +131,7 @@ impl<I: FSServiceImpl> FSServiceExecutor<I> {
                     self.channel.send(&res)
                 }
             };
-            err.into_err().map_err(Error::new)?;
+            err.map_err(Error::new)?;
         }
     }
 }
@@ -163,14 +163,14 @@ impl FSControllerService {
     pub fn register_filesystem(&mut self, chan: Channel) {
         self.chan
             .send(&FSControllerMessage::RegisterFilesystem(chan))
-            .assert_ok();
+            .unwrap();
         self.chan.recv().unwrap().deserialize().unwrap()
     }
 
     pub fn get_filesystems(&mut self, updates: bool) -> FSIterator {
         self.chan
             .send(&FSControllerMessage::GetFilesystems { updates })
-            .assert_ok();
+            .unwrap();
         let chan: Channel = self.chan.recv().unwrap().deserialize().unwrap();
         FSIterator(IPCIterator::from(IPCChannel::from_channel(chan)))
     }
@@ -202,7 +202,7 @@ impl<I: FSControllerImpl> FSControllerExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
             let (msg, des) = msg.access::<ArchivedFSControllerMessage>()?;
@@ -218,7 +218,7 @@ impl<I: FSControllerImpl> FSControllerExecutor<I> {
                     self.channel.send(&res)
                 }
             };
-            err.into_err().map_err(Error::new)?;
+            err.map_err(Error::new)?;
         }
     }
 }

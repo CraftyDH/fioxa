@@ -41,9 +41,11 @@ impl Writer<'_> {
             let mut sleep = 1;
             loop {
                 match self.channel.write(chunk, &[]) {
-                    kernel_userspace::sys::types::SyscallResult::Ok => break,
-                    kernel_userspace::sys::types::SyscallResult::ChannelClosed => return Ok(()),
-                    kernel_userspace::sys::types::SyscallResult::ChannelFull => {
+                    Ok(()) => break,
+                    Err(kernel_userspace::sys::types::SyscallError::ChannelClosed) => {
+                        return Ok(());
+                    }
+                    Err(kernel_userspace::sys::types::SyscallError::ChannelFull) => {
                         sys_sleep(Duration::from_millis(sleep));
                         sleep = 1000.max(sleep * 2);
                     }

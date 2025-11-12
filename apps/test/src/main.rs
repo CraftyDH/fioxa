@@ -5,7 +5,7 @@ use kernel_userspace::{
     channel::Channel,
     sys::{
         syscall::{sys_process_spawn_thread, sys_read_args_string},
-        types::{ObjectSignal, SyscallResult},
+        types::{ObjectSignal, SyscallError},
     },
 };
 
@@ -33,9 +33,9 @@ pub fn main() {
         loop {
             match right.read_val::<0, usize>(true) {
                 Ok((val, _)) => {
-                    right.write_val(&val, &[]).assert_ok();
+                    right.write_val(&val, &[]).unwrap();
                 }
-                Err(SyscallResult::ChannelClosed) => {
+                Err(SyscallError::ChannelClosed) => {
                     return;
                 }
                 Err(e) => panic!("Error got {e:?}"),
@@ -44,7 +44,7 @@ pub fn main() {
     });
 
     while send_i < count.min(1024) {
-        left.write_val(&send_i, &[]).assert_ok();
+        left.write_val(&send_i, &[]).unwrap();
         send_i += 1;
     }
 
@@ -59,11 +59,11 @@ pub fn main() {
                 }
 
                 if send_i < count {
-                    left.write_val(&send_i, &[]).assert_ok();
+                    left.write_val(&send_i, &[]).unwrap();
                     send_i += 1;
                 }
             }
-            Err(SyscallResult::ChannelEmpty) => {
+            Err(SyscallError::ChannelEmpty) => {
                 left.handle().wait(ObjectSignal::READABLE).unwrap();
             }
             Err(e) => panic!("Error got {e:?}"),

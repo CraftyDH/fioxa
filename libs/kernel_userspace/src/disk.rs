@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use kernel_sys::types::SyscallResult;
+use kernel_sys::types::SyscallError;
 use rkyv::{
     Archive, Deserialize, Serialize,
     rancor::{Error, Source},
@@ -29,14 +29,14 @@ impl DiskService {
     }
 
     pub fn identify(&mut self) -> ATADiskIdentify {
-        self.chan.send(&DiskDeviceRequest::Identify).assert_ok();
+        self.chan.send(&DiskDeviceRequest::Identify).unwrap();
         self.chan.recv().unwrap().deserialize().unwrap()
     }
 
     pub fn read(&mut self, sector: u64, count: u64) -> TypedIPCMessage<'_, Vec<u8>> {
         self.chan
             .send(&DiskDeviceRequest::Read { sector, count })
-            .assert_ok();
+            .unwrap();
         TypedIPCMessage::new(self.chan.recv().unwrap())
     }
 }
@@ -55,7 +55,7 @@ impl<I: DiskServiceImpl> DiskServiceExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
             let (msg, _) = msg.access::<ArchivedDiskDeviceRequest>()?;
@@ -70,7 +70,7 @@ impl<I: DiskServiceImpl> DiskServiceExecutor<I> {
                     self.channel.send(&res)
                 }
             };
-            err.into_err().map_err(Error::new)?;
+            err.map_err(Error::new)?;
         }
     }
 }
@@ -98,14 +98,14 @@ impl DiskControllerService {
     pub fn register_disk(&mut self, chan: Channel) {
         self.chan
             .send(&DiskControllerMessage::RegisterDisk(chan))
-            .assert_ok();
+            .unwrap();
         self.chan.recv().unwrap().deserialize().unwrap()
     }
 
     pub fn get_disks(&mut self, updates: bool) -> DiskIterator {
         self.chan
             .send(&DiskControllerMessage::GetDisks { updates })
-            .assert_ok();
+            .unwrap();
         let chan: Channel = self.chan.recv().unwrap().deserialize().unwrap();
         DiskIterator(IPCIterator::from(IPCChannel::from_channel(chan)))
     }
@@ -137,7 +137,7 @@ impl<I: DiskControllerImpl> DiskControllerExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
             let (msg, des) = msg.access::<ArchivedDiskControllerMessage>()?;
@@ -152,7 +152,7 @@ impl<I: DiskControllerImpl> DiskControllerExecutor<I> {
                     self.channel.send(&res)
                 }
             };
-            err.into_err().map_err(Error::new)?;
+            err.map_err(Error::new)?;
         }
     }
 }

@@ -1,6 +1,6 @@
 use kernel_sys::{
     syscall::{sys_object_wait, sys_process_exit_code},
-    types::{ObjectSignal, SyscallResult},
+    types::{ObjectSignal, SyscallError},
 };
 use rkyv::{
     Archive, Deserialize, Serialize,
@@ -38,7 +38,7 @@ impl ProcessHandle {
         handle
     }
 
-    pub fn get_exit_code(&self) -> Result<usize, SyscallResult> {
+    pub fn get_exit_code(&self) -> Result<usize, SyscallError> {
         sys_process_exit_code(*self.0)
     }
 
@@ -46,7 +46,7 @@ impl ProcessHandle {
         loop {
             match self.get_exit_code() {
                 Ok(val) => return val,
-                Err(SyscallResult::ProcessStillRunning) => {
+                Err(SyscallError::ProcessStillRunning) => {
                     sys_object_wait(*self.0, ObjectSignal::PROCESS_EXITED).unwrap();
                 }
                 Err(e) => panic!("unknown err {e:?}"),
@@ -70,9 +70,7 @@ impl InitHandleService {
     }
 
     pub fn get_service(&mut self, name: &str) -> Option<Channel> {
-        self.0
-            .send(&InitHandleMessage::GetService(name))
-            .assert_ok();
+        self.0.send(&InitHandleMessage::GetService(name)).unwrap();
         let mut msg = self.0.recv().unwrap();
         msg.deserialize().unwrap()
     }
@@ -80,13 +78,13 @@ impl InitHandleService {
     pub fn publish_service(&mut self, name: &str, handle: Channel) -> bool {
         self.0
             .send(&InitHandleMessage::PublishService(name, handle))
-            .assert_ok();
+            .unwrap();
         let mut msg = self.0.recv().unwrap();
         msg.deserialize().unwrap()
     }
 
     pub fn clone_init_service(&mut self) -> Channel {
-        self.0.send(&InitHandleMessage::Clone).assert_ok();
+        self.0.send(&InitHandleMessage::Clone).unwrap();
         let mut msg = self.0.recv().unwrap();
         msg.deserialize().unwrap()
     }
@@ -106,7 +104,7 @@ impl<I: InitHandleServiceImpl> InitHandleServiceExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
             let (msg, des) = msg.access::<ArchivedInitHandleMessage>()?;
@@ -124,7 +122,6 @@ impl<I: InitHandleServiceImpl> InitHandleServiceExecutor<I> {
                     self.channel.send(&self.service.clone_init_service())
                 }
             }
-            .into_err()
             .map_err(Error::new)?;
         }
     }

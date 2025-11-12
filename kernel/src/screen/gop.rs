@@ -120,7 +120,7 @@ pub fn gop_entry() {
             fb_top - fb_base,
         )
         .unwrap();
-        sys_handle_drop(handle).assert_ok();
+        sys_handle_drop(handle).unwrap();
     };
 
     sys_process_spawn_thread(monitor_cursor_task);

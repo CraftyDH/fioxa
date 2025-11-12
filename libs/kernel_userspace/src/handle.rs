@@ -27,7 +27,7 @@ impl Handle {
     pub fn wait(
         &self,
         signal: ObjectSignal,
-    ) -> Result<ObjectSignal, kernel_sys::types::SyscallResult> {
+    ) -> Result<ObjectSignal, kernel_sys::types::SyscallError> {
         sys_object_wait(self.0, signal)
     }
 
@@ -36,7 +36,7 @@ impl Handle {
         port: &Port,
         on: ObjectSignal,
         key: u64,
-    ) -> kernel_sys::types::SyscallResult {
+    ) -> Result<(), kernel_sys::types::SyscallError> {
         sys_object_wait_port(self.0, port.handle().0, on, key)
     }
 }
@@ -51,9 +51,7 @@ impl Deref for Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        unsafe {
-            sys_handle_drop(self.0).assert_ok();
-        }
+        unsafe { sys_handle_drop(self.0).unwrap() }
     }
 }
 

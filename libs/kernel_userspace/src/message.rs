@@ -31,7 +31,7 @@ impl MessageHandle {
     }
 
     pub fn read(&self, buffer: &mut [u8]) {
-        sys_message_read(*self.0, buffer).assert_ok();
+        sys_message_read(*self.0, buffer).unwrap();
     }
 
     pub fn read_vec(&self) -> Vec<u8> {

@@ -1,6 +1,6 @@
 use core::fmt::Display;
 
-use kernel_sys::types::SyscallResult;
+use kernel_sys::types::SyscallError;
 use rkyv::{
     Archive, Deserialize, Serialize,
     rancor::{Error, Source},
@@ -96,14 +96,14 @@ impl NetworkInterfaceService {
     }
 
     pub fn mac_address(&mut self) -> u64 {
-        self.0.send(&PhysicalNet::MacAddrGet).assert_ok();
+        self.0.send(&PhysicalNet::MacAddrGet).unwrap();
         self.0.recv().unwrap().deserialize().unwrap()
     }
 
     pub fn send_packet(&mut self, packet: &[u8]) {
         self.0
             .send(&PhysicalNet::SendPacket(Slice(packet)))
-            .assert_ok();
+            .unwrap();
         self.0.recv().unwrap().deserialize().unwrap()
     }
 
@@ -112,7 +112,7 @@ impl NetworkInterfaceService {
             .send(&PhysicalNet::ListenToPackets(CowAsOwned(
                 alloc::borrow::Cow::Owned(chan),
             )))
-            .assert_ok();
+            .unwrap();
         self.0.recv().unwrap().deserialize().unwrap()
     }
 }
@@ -131,7 +131,7 @@ impl<I: NetworkInterfaceServiceImpl> NetworkInterfaceServiceExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
             let (msg, des) = msg.access::<ArchivedPhysicalNet>()?;
@@ -147,7 +147,7 @@ impl<I: NetworkInterfaceServiceImpl> NetworkInterfaceServiceExecutor<I> {
                     self.channel.send(&())
                 }
             };
-            err.into_err().map_err(Error::new)?;
+            err.map_err(Error::new)?;
         }
     }
 }
@@ -168,7 +168,7 @@ impl NetService {
     }
 
     pub fn arp_request(&mut self, ip: IPAddr) -> Result<Option<u64>, NotSameSubnetError> {
-        self.0.send(&Networking::ArpRequest(ip)).assert_ok();
+        self.0.send(&Networking::ArpRequest(ip)).unwrap();
         self.0.recv().unwrap().deserialize().unwrap()
     }
 }
@@ -191,7 +191,7 @@ impl<I: NetServiceImpl> NetServiceExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
             let (msg, des) = msg.access::<ArchivedNetworking>()?;
@@ -202,7 +202,7 @@ impl<I: NetServiceImpl> NetServiceExecutor<I> {
                     self.channel.send(&res)
                 }
             };
-            err.into_err().map_err(Error::new)?;
+            err.map_err(Error::new)?;
         }
     }
 }

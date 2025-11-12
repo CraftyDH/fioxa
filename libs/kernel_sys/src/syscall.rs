@@ -14,7 +14,7 @@ use super::types::*;
 #[inline]
 pub fn sys_echo(val: usize) -> usize {
     let mut v = 0;
-    unsafe { SyscallResult::create(raw_sys_echo(val, &mut v)).unwrap() };
+    unsafe { syscall_result(raw_sys_echo(val, &mut v)).unwrap() };
     v
 }
 
@@ -29,7 +29,7 @@ pub fn sys_yield() {
 #[inline]
 pub fn sys_sleep(time: Duration) -> Duration {
     let mut out = 0;
-    unsafe { SyscallResult::create(raw_sys_sleep(time.as_millis() as u64, &mut out)).unwrap() };
+    unsafe { syscall_result(raw_sys_sleep(time.as_millis() as u64, &mut out)).unwrap() };
     Duration::from_millis(out)
 }
 
@@ -52,10 +52,10 @@ pub unsafe fn sys_map(
     flags: VMMapFlags,
     hint: vaddr_t,
     length: usize,
-) -> Result<vaddr_t, SyscallResult> {
+) -> Result<vaddr_t, SyscallError> {
     let mut result = null_mut();
     unsafe {
-        SyscallResult::create(raw_sys_map(
+        syscall_result(raw_sys_map(
             vmo.map(|v| v.into_raw()).unwrap_or(0),
             flags.bits(),
             hint,
@@ -72,22 +72,22 @@ pub unsafe fn sys_map(
 ///
 /// The caller must ensure nothing still points to the region and that it is allowed to unmap it
 #[inline]
-pub unsafe fn sys_unmap(addr: vaddr_t, length: usize) -> SyscallResult {
-    unsafe { SyscallResult::from_raw(raw_sys_unmap(addr, length)).unwrap() }
+pub unsafe fn sys_unmap(addr: vaddr_t, length: usize) -> Result<(), SyscallError> {
+    unsafe { syscall_result(raw_sys_unmap(addr, length)) }
 }
 
 #[inline]
 pub fn sys_read_args() -> Vec<u8> {
     unsafe {
         let mut size = 0;
-        SyscallResult::create(raw_sys_read_args(null_mut(), 0, &mut size)).unwrap();
+        syscall_result(raw_sys_read_args(null_mut(), 0, &mut size)).unwrap();
         if size == 0 {
             return Vec::new();
         }
 
         let mut buffer: Vec<u8> = Vec::with_capacity(size);
 
-        SyscallResult::create(raw_sys_read_args(
+        syscall_result(raw_sys_read_args(
             buffer.as_mut_ptr(),
             buffer.capacity(),
             null_mut(),
@@ -107,7 +107,7 @@ pub fn sys_read_args_string() -> String {
 #[inline]
 pub fn sys_pid() -> Pid {
     let mut out = 0;
-    unsafe { SyscallResult::create(raw_sys_pid(&mut out)).unwrap() }
+    unsafe { syscall_result(raw_sys_pid(&mut out)).unwrap() }
     Pid::from_raw(out).unwrap()
 }
 
@@ -133,15 +133,15 @@ pub fn sys_log(level: u32, target: &str, message: &str) {
 ///
 /// The caller must ensure that nothing still references it as the kernel can reuse the id
 #[inline]
-pub unsafe fn sys_handle_drop(handle: Hid) -> SyscallResult {
-    unsafe { SyscallResult::from_raw(raw_sys_handle_drop(handle.into_raw())).unwrap() }
+pub unsafe fn sys_handle_drop(handle: Hid) -> Result<(), SyscallError> {
+    unsafe { syscall_result(raw_sys_handle_drop(handle.into_raw())) }
 }
 
 #[inline]
-pub fn sys_handle_clone(handle: Hid) -> Result<Hid, SyscallResult> {
+pub fn sys_handle_clone(handle: Hid) -> Result<Hid, SyscallError> {
     let mut new = 0;
     unsafe {
-        SyscallResult::create(raw_sys_handle_clone(handle.into_raw(), &mut new))
+        syscall_result(raw_sys_handle_clone(handle.into_raw(), &mut new))
             .map(|()| Hid::from_raw(new).unwrap())
     }
 }
@@ -149,33 +149,37 @@ pub fn sys_handle_clone(handle: Hid) -> Result<Hid, SyscallResult> {
 // object
 
 #[inline]
-pub fn sys_object_type(handle: Hid) -> Result<KernelObjectType, SyscallResult> {
+pub fn sys_object_type(handle: Hid) -> Result<KernelObjectType, SyscallError> {
     let mut val = 0;
     unsafe {
-        SyscallResult::create(raw_sys_object_type(handle.into_raw(), &mut val))
+        syscall_result(raw_sys_object_type(handle.into_raw(), &mut val))
             .map(|()| FromPrimitive::from_usize(val).unwrap())
     }
 }
 
 #[inline]
-pub fn sys_object_wait(handle: Hid, on: ObjectSignal) -> Result<ObjectSignal, SyscallResult> {
+pub fn sys_object_wait(handle: Hid, on: ObjectSignal) -> Result<ObjectSignal, SyscallError> {
     let mut res = 0;
     unsafe {
-        SyscallResult::create(raw_sys_object_wait(handle.into_raw(), on.bits(), &mut res))
+        syscall_result(raw_sys_object_wait(handle.into_raw(), on.bits(), &mut res))
             .map(|()| ObjectSignal::from_bits_retain(res))
     }
 }
 
 #[inline]
-pub fn sys_object_wait_port(handle: Hid, port: Hid, mask: ObjectSignal, key: u64) -> SyscallResult {
+pub fn sys_object_wait_port(
+    handle: Hid,
+    port: Hid,
+    mask: ObjectSignal,
+    key: u64,
+) -> Result<(), SyscallError> {
     unsafe {
-        SyscallResult::from_raw(raw_sys_object_wait_port(
+        syscall_result(raw_sys_object_wait_port(
             handle.into_raw(),
             port.into_raw(),
             mask.bits(),
             key,
         ))
-        .unwrap()
     }
 }
 
@@ -200,7 +204,7 @@ pub fn sys_channel_read_vec<const N: usize>(
     data: &mut Vec<u8>,
     resize: bool,
     blocking: bool,
-) -> Result<heapless::Vec<Hid, N>, SyscallResult> {
+) -> Result<heapless::Vec<Hid, N>, SyscallError> {
     unsafe {
         data.clear();
         let mut handles: heapless::Vec<Hid, N> = heapless::Vec::new();
@@ -209,33 +213,29 @@ pub fn sys_channel_read_vec<const N: usize>(
             let mut data_len = data.capacity();
             let mut handles_len = handles.capacity();
 
-            let res = SyscallResult::from_raw(raw_sys_channel_read(
+            let res = syscall_result(raw_sys_channel_read(
                 handle.into_raw(),
                 data.as_mut_ptr(),
                 &mut data_len,
                 handles.as_mut_ptr().cast(),
                 &mut handles_len,
-            ))
-            .unwrap();
+            ));
 
-            if resize && res == SyscallResult::ChannelBufferTooSmall {
-                data.reserve(data_len);
-                continue;
+            match res {
+                Ok(()) => {
+                    data.set_len(data_len);
+                    handles.set_len(handles_len);
+
+                    return Ok(handles);
+                }
+                Err(SyscallError::ChannelBufferTooSmall) if resize => {
+                    data.reserve(data_len);
+                }
+                Err(SyscallError::ChannelEmpty) if blocking => {
+                    sys_object_wait(handle, ObjectSignal::all())?;
+                }
+                Err(e) => return Err(e),
             }
-
-            if blocking && res == SyscallResult::ChannelEmpty {
-                sys_object_wait(handle, ObjectSignal::all()).unwrap();
-                continue;
-            }
-
-            if res != SyscallResult::Ok {
-                return Err(res);
-            }
-
-            data.set_len(data_len);
-            handles.set_len(handles_len);
-
-            return Ok(handles);
         }
     }
 }
@@ -244,7 +244,7 @@ pub fn sys_channel_read_vec<const N: usize>(
 pub fn sys_channel_read_val<V: Sized, const N: usize>(
     handle: Hid,
     blocking: bool,
-) -> Result<(V, heapless::Vec<Hid, N>), SyscallResult> {
+) -> Result<(V, heapless::Vec<Hid, N>), SyscallError> {
     unsafe {
         let mut val: MaybeUninit<V> = MaybeUninit::uninit();
         let mut handles: heapless::Vec<Hid, N> = heapless::Vec::new();
@@ -252,62 +252,61 @@ pub fn sys_channel_read_val<V: Sized, const N: usize>(
         loop {
             let mut data_len = size_of::<V>();
             let mut handles_len = handles.capacity();
-            let res = SyscallResult::from_raw(raw_sys_channel_read(
+            let res = syscall_result(raw_sys_channel_read(
                 handle.into_raw(),
                 val.as_mut_ptr().cast(),
                 &mut data_len,
                 handles.as_mut_ptr().cast(),
                 &mut handles_len,
-            ))
-            .unwrap();
+            ));
 
-            if blocking && res == SyscallResult::ChannelEmpty {
-                sys_object_wait(
-                    handle,
-                    ObjectSignal::READABLE | ObjectSignal::CHANNEL_CLOSED,
-                )
-                .unwrap();
-                continue;
+            match res {
+                Ok(()) => {
+                    assert_eq!(data_len, size_of::<V>());
+
+                    handles.set_len(handles_len);
+
+                    return Ok((val.assume_init(), handles));
+                }
+                Err(SyscallError::ChannelEmpty) if blocking => {
+                    sys_object_wait(
+                        handle,
+                        ObjectSignal::READABLE | ObjectSignal::CHANNEL_CLOSED,
+                    )?;
+                }
+                Err(e) => return Err(e),
             }
-
-            if res != SyscallResult::Ok {
-                return Err(res);
-            }
-
-            assert_eq!(data_len, size_of::<V>());
-
-            handles.set_len(handles_len);
-
-            return Ok((val.assume_init(), handles));
         }
     }
 }
 
 #[inline]
-pub fn sys_channel_write(handle: Hid, data: &[u8], handles: &[Hid]) -> SyscallResult {
+pub fn sys_channel_write(handle: Hid, data: &[u8], handles: &[Hid]) -> Result<(), SyscallError> {
     unsafe {
-        SyscallResult::from_raw(raw_sys_channel_write(
+        syscall_result(raw_sys_channel_write(
             handle.into_raw(),
             data.as_ptr(),
             data.len(),
             handles.as_ptr().cast(),
             handles.len(),
         ))
-        .unwrap()
     }
 }
 
 #[inline]
-pub fn sys_channel_write_val<V: Sized>(handle: Hid, val: &V, handles: &[Hid]) -> SyscallResult {
+pub fn sys_channel_write_val<V: Sized>(
+    handle: Hid,
+    val: &V,
+    handles: &[Hid],
+) -> Result<(), SyscallError> {
     unsafe {
-        SyscallResult::from_raw(raw_sys_channel_write(
+        syscall_result(raw_sys_channel_write(
             handle.into_raw(),
             val as *const V as *const u8,
             size_of::<V>(),
             handles.as_ptr().cast(),
             handles.len(),
         ))
-        .unwrap()
     }
 }
 
@@ -316,34 +315,33 @@ pub fn sys_channel_write_val<V: Sized>(handle: Hid, val: &V, handles: &[Hid]) ->
 #[inline]
 pub fn sys_interrupt_create() -> Hid {
     let mut out = 0;
-    unsafe { SyscallResult::create(raw_sys_interrupt_create(&mut out)).unwrap() };
+    unsafe { syscall_result(raw_sys_interrupt_create(&mut out)).unwrap() };
     Hid::from_raw(out).unwrap()
 }
 
 #[inline]
-pub fn sys_interrupt_wait(handle: Hid) -> SyscallResult {
-    unsafe { SyscallResult::from_raw(raw_sys_interrupt_wait(handle.into_raw())).unwrap() }
+pub fn sys_interrupt_wait(handle: Hid) -> Result<(), SyscallError> {
+    unsafe { syscall_result(raw_sys_interrupt_wait(handle.into_raw())) }
 }
 
 #[inline]
-pub fn sys_interrupt_trigger(handle: Hid) -> SyscallResult {
-    unsafe { SyscallResult::from_raw(raw_sys_interrupt_trigger(handle.into_raw())).unwrap() }
+pub fn sys_interrupt_trigger(handle: Hid) -> Result<(), SyscallError> {
+    unsafe { syscall_result(raw_sys_interrupt_trigger(handle.into_raw())) }
 }
 
 #[inline]
-pub fn sys_interrupt_acknowledge(handle: Hid) -> SyscallResult {
-    unsafe { SyscallResult::from_raw(raw_sys_interrupt_acknowledge(handle.into_raw())).unwrap() }
+pub fn sys_interrupt_acknowledge(handle: Hid) -> Result<(), SyscallError> {
+    unsafe { syscall_result(raw_sys_interrupt_acknowledge(handle.into_raw())) }
 }
 
 #[inline]
-pub fn sys_interrupt_set_port(handle: Hid, port: Hid, key: u64) -> SyscallResult {
+pub fn sys_interrupt_set_port(handle: Hid, port: Hid, key: u64) -> Result<(), SyscallError> {
     unsafe {
-        SyscallResult::from_raw(raw_sys_interrupt_set_port(
+        syscall_result(raw_sys_interrupt_set_port(
             handle.into_raw(),
             port.into_raw(),
             key,
         ))
-        .unwrap()
     }
 }
 
@@ -352,26 +350,25 @@ pub fn sys_interrupt_set_port(handle: Hid, port: Hid, key: u64) -> SyscallResult
 #[inline]
 pub fn sys_port_create() -> Hid {
     let mut out = 0;
-    unsafe { SyscallResult::create(raw_sys_port_create(&mut out)).unwrap() };
+    unsafe { syscall_result(raw_sys_port_create(&mut out)).unwrap() };
     Hid::from_raw(out).unwrap()
 }
 
 #[inline]
-pub fn sys_port_wait(handle: Hid) -> Result<SysPortNotification, SyscallResult> {
+pub fn sys_port_wait(handle: Hid) -> Result<SysPortNotification, SyscallError> {
     unsafe {
         let mut notif: MaybeUninit<sys_port_notification_t> = MaybeUninit::uninit();
         let res = raw_sys_port_wait(handle.into_raw(), notif.as_mut_ptr());
 
-        SyscallResult::create(res)
-            .map(|_| SysPortNotification::from_raw(notif.assume_init()).unwrap())
+        syscall_result(res).map(|_| SysPortNotification::from_raw(notif.assume_init()).unwrap())
     }
 }
 
 #[inline]
-pub fn sys_port_push(handle: Hid, notification: &SysPortNotification) -> SyscallResult {
+pub fn sys_port_push(handle: Hid, notification: &SysPortNotification) -> Result<(), SyscallError> {
     unsafe {
         let raw = notification.into_raw();
-        SyscallResult::from_raw(raw_sys_port_push(handle.into_raw(), &raw)).unwrap()
+        syscall_result(raw_sys_port_push(handle.into_raw(), &raw))
     }
 }
 
@@ -407,7 +404,7 @@ where
         let boxed_func: Box<dyn FnOnce()> = Box::new(func);
         let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
         let mut tid = 0;
-        SyscallResult::create(raw_sys_process_spawn_thread(
+        syscall_result(raw_sys_process_spawn_thread(
             sys_thread_bootstrapper as *const (),
             raw.cast(),
             &mut tid,
@@ -418,11 +415,11 @@ where
 }
 
 #[inline]
-pub fn sys_process_exit_code(handle: Hid) -> Result<usize, SyscallResult> {
+pub fn sys_process_exit_code(handle: Hid) -> Result<usize, SyscallError> {
     unsafe {
         let mut exit = 0;
         let res = raw_sys_process_exit_code(handle.into_raw(), &mut exit);
-        SyscallResult::create(res).map(|_| exit)
+        syscall_result(res).map(|_| exit)
     }
 }
 
@@ -431,29 +428,26 @@ pub fn sys_process_exit_code(handle: Hid) -> Result<usize, SyscallResult> {
 #[inline]
 pub fn sys_message_create(data: &[u8]) -> Hid {
     let mut out = 0;
-    unsafe {
-        SyscallResult::create(raw_sys_message_create(data.as_ptr(), data.len(), &mut out)).unwrap()
-    }
+    unsafe { syscall_result(raw_sys_message_create(data.as_ptr(), data.len(), &mut out)).unwrap() }
     Hid::from_raw(out).unwrap()
 }
 
 #[inline]
-pub fn sys_message_size(handle: Hid) -> Result<usize, SyscallResult> {
+pub fn sys_message_size(handle: Hid) -> Result<usize, SyscallError> {
     unsafe {
         let mut size = 0;
-        SyscallResult::create(raw_sys_message_size(handle.into_raw(), &mut size)).map(|_| size)
+        syscall_result(raw_sys_message_size(handle.into_raw(), &mut size)).map(|_| size)
     }
 }
 
 #[inline]
-pub fn sys_message_read(handle: Hid, buf: &mut [u8]) -> SyscallResult {
+pub fn sys_message_read(handle: Hid, buf: &mut [u8]) -> Result<(), SyscallError> {
     unsafe {
-        SyscallResult::from_raw(raw_sys_message_read(
+        syscall_result(raw_sys_message_read(
             handle.into_raw(),
             buf.as_mut_ptr(),
             buf.len(),
         ))
-        .unwrap()
     }
 }
 
@@ -467,16 +461,14 @@ pub fn sys_message_read(handle: Hid, buf: &mut [u8]) -> SyscallResult {
 #[inline]
 pub unsafe fn sys_vmo_mmap_create(base: *mut (), length: usize) -> Hid {
     let mut out = 0;
-    unsafe { SyscallResult::create(raw_sys_vmo_mmap_create(base, length, &mut out)).unwrap() }
+    unsafe { syscall_result(raw_sys_vmo_mmap_create(base, length, &mut out)).unwrap() }
     Hid::from_usize(out).unwrap()
 }
 
 #[inline]
 pub fn sys_vmo_anonymous_create(length: usize, flags: VMOAnonymousFlags) -> Hid {
     let mut out = 0;
-    unsafe {
-        SyscallResult::create(raw_sys_vmo_anonymous_create(length, flags.bits(), &mut out)).unwrap()
-    }
+    unsafe { syscall_result(raw_sys_vmo_anonymous_create(length, flags.bits(), &mut out)).unwrap() }
     Hid::from_usize(out).unwrap()
 }
 
@@ -485,14 +477,13 @@ pub fn sys_vmo_anonymous_pinned_addresses(
     handle: Hid,
     offset: usize,
     result: &mut [usize],
-) -> SyscallResult {
+) -> Result<(), SyscallError> {
     unsafe {
-        SyscallResult::from_raw(raw_sys_vmo_anonymous_pinned_addresses(
+        syscall_result(raw_sys_vmo_anonymous_pinned_addresses(
             handle.into_raw(),
             offset,
             result.len(),
             result.as_mut_ptr(),
         ))
-        .unwrap()
     }
 }

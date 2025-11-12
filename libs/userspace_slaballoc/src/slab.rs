@@ -110,7 +110,7 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                 allocator.slab_heads[index] = Some(&mut *new_node_ptr);
             },
             None => unsafe {
-                sys_unmap(ptr.cast(), max_size).assert_ok();
+                sys_unmap(ptr.cast(), max_size).unwrap();
             },
         }
     }

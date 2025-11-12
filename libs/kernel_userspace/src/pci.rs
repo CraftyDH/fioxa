@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use kernel_sys::types::SyscallResult;
+use kernel_sys::types::SyscallError;
 use rkyv::{
     Archive, Deserialize, Serialize,
     rancor::{Error, Source},
@@ -33,7 +33,7 @@ impl PCIDevice {
     }
 
     unsafe fn read_u32(&mut self, offset: u32) -> u32 {
-        self.0.send(&PCIDevCmd::Read(offset)).assert_ok();
+        self.0.send(&PCIDevCmd::Read(offset)).unwrap();
         self.0.recv().unwrap().deserialize().unwrap()
     }
 
@@ -56,7 +56,7 @@ impl PCIDevice {
     }
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {
-        self.0.send(&PCIDevCmd::Write(offset, data)).assert_ok();
+        self.0.send(&PCIDevCmd::Write(offset, data)).unwrap();
         self.0.recv().unwrap().deserialize().unwrap()
     }
 }
@@ -81,7 +81,7 @@ impl<I: PCIDeviceImpl> PCIDeviceExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
             let (msg, _) = msg.access::<ArchivedPCIDevCmd>()?;
@@ -96,7 +96,6 @@ impl<I: PCIDeviceImpl> PCIDeviceExecutor<I> {
                     self.channel.send(&())
                 }
             }
-            .into_err()
             .map_err(Error::new)?;
         }
     }

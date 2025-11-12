@@ -148,7 +148,7 @@ pub fn define_syscalls(tokens: TokenStream) -> TokenStream {
                 let name = &e.name;
                 let sname = &e.struct_name;
                 quote!(fn #name(&mut self, req: &#sname) -> crate::types::SyscallResult {
-                    crate::types::SyscallResult::Unimplemented
+                    Err(crate::types::SyscallError::Unimplemented)
                 })
             });
 

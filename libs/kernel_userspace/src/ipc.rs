@@ -9,7 +9,7 @@ use alloc::{
     vec::Vec,
 };
 use bytecheck::CheckBytes;
-use kernel_sys::types::{Hid, SyscallResult};
+use kernel_sys::types::{Hid, SyscallError};
 use rkyv::{
     Archive, Deserialize, Portable, Serialize, SerializeUnsized,
     api::high::HighValidator,
@@ -86,7 +86,7 @@ impl IPCChannel {
     pub fn send<'a>(
         &'a mut self,
         val: &impl SerializeUnsized<Strategy<SerializeMessage<'a>, Error>>,
-    ) -> SyscallResult {
+    ) -> Result<(), SyscallError> {
         self.buffer.clear();
         self.handles.clear();
 
@@ -101,7 +101,7 @@ impl IPCChannel {
         self.channel.write(ser.buffer, ser.handles)
     }
 
-    pub fn recv<'a>(&'a mut self) -> Result<IPCMessage<'a>, SyscallResult> {
+    pub fn recv<'a>(&'a mut self) -> Result<IPCMessage<'a>, SyscallError> {
         let handles = self.channel.read::<32>(&mut self.buffer, true, true)?;
         let handles = handles.into_iter().map(Some).collect();
         Ok(IPCMessage {
@@ -300,7 +300,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         match self.channel.recv() {
             Ok(mut val) => Some(val.deserialize().unwrap()),
-            Err(SyscallResult::ChannelClosed) => None,
+            Err(SyscallError::ChannelClosed) => None,
             Err(e) => panic!("failed to get next got: {e}"),
         }
     }

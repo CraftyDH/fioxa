@@ -272,7 +272,7 @@ impl KInterruptHandle {
 
             if this.pending {
                 this.pending = false;
-                return SyscallResult::Ok;
+                return Ok(());
             }
 
             let thread = unsafe { CPULocalStorageRW::get_current_task() };

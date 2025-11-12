@@ -4,7 +4,7 @@ use kernel_sys::{
         sys_channel_create, sys_channel_read_val, sys_channel_read_vec, sys_channel_write,
         sys_channel_write_val,
     },
-    types::{Hid, SyscallResult},
+    types::{Hid, SyscallError},
 };
 use rkyv::{Archive, Deserialize, Serialize};
 
@@ -42,7 +42,7 @@ impl Channel {
         buf: &mut Vec<u8>,
         resize: bool,
         blocking: bool,
-    ) -> Result<heapless::Vec<Handle, N>, SyscallResult> {
+    ) -> Result<heapless::Vec<Handle, N>, SyscallError> {
         let handles = sys_channel_read_vec::<N>(*self.0, buf, resize, blocking)?;
         // Safety: The kernel will return new handles
         let handles = handles
@@ -55,7 +55,7 @@ impl Channel {
     pub fn read_val<const N: usize, V: Sized>(
         &self,
         blocking: bool,
-    ) -> Result<(V, heapless::Vec<Handle, N>), SyscallResult> {
+    ) -> Result<(V, heapless::Vec<Handle, N>), SyscallError> {
         let (v, handles) = sys_channel_read_val::<V, N>(*self.0, blocking)?;
         // Safety: The kernel will return new handles
         let handles = handles
@@ -65,11 +65,11 @@ impl Channel {
         Ok((v, handles))
     }
 
-    pub fn write(&self, buf: &[u8], handles: &[Hid]) -> SyscallResult {
+    pub fn write(&self, buf: &[u8], handles: &[Hid]) -> Result<(), SyscallError> {
         sys_channel_write(*self.0, buf, handles)
     }
 
-    pub fn write_val<V: Sized>(&self, val: &V, handles: &[Hid]) -> SyscallResult {
+    pub fn write_val<V: Sized>(&self, val: &V, handles: &[Hid]) -> Result<(), SyscallError> {
         sys_channel_write_val(*self.0, val, handles)
     }
 
@@ -77,8 +77,8 @@ impl Channel {
         &self,
         buf: &mut Vec<u8>,
         handles: &[Hid],
-    ) -> Result<heapless::Vec<Handle, N>, SyscallResult> {
-        self.write(buf, handles).into_err()?;
+    ) -> Result<heapless::Vec<Handle, N>, SyscallError> {
+        self.write(buf, handles)?;
         self.read(buf, true, true)
     }
 
@@ -86,8 +86,8 @@ impl Channel {
         &self,
         val: &S,
         handles: &[Hid],
-    ) -> Result<(R, heapless::Vec<Handle, N>), SyscallResult> {
-        self.write_val(val, handles).into_err()?;
+    ) -> Result<(R, heapless::Vec<Handle, N>), SyscallError> {
+        self.write_val(val, handles)?;
         self.read_val(true)
     }
 }

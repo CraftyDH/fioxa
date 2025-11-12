@@ -16,7 +16,7 @@ use kernel_sys::{
         sys_handle_drop, sys_map, sys_process_spawn_thread, sys_vmo_anonymous_create,
         sys_vmo_anonymous_pinned_addresses, sys_yield,
     },
-    types::{Hid, KernelObjectType, SyscallResult, VMMapFlags, VMOAnonymousFlags},
+    types::{Hid, KernelObjectType, VMMapFlags, VMOAnonymousFlags},
 };
 use kernel_userspace::{
     interrupt::InterruptsService,
@@ -73,7 +73,7 @@ pub fn main() {
                 .unwrap();
 
             loop {
-                pci_ev.wait().assert_ok();
+                pci_ev.wait().unwrap();
                 pcnet.lock().interrupt_handler();
             }
         }
@@ -240,7 +240,7 @@ impl PCNET<'_> {
                 VMOAnonymousFlags::PINNED | VMOAnonymousFlags::BELOW_32,
             );
             let mut phys = [0usize];
-            sys_vmo_anonymous_pinned_addresses(map, 0, &mut phys).assert_ok();
+            sys_vmo_anonymous_pinned_addresses(map, 0, &mut phys).unwrap();
             let paddr = phys[0].try_into().unwrap();
             let vaddr = sys_map(
                 Some(map),
@@ -249,7 +249,7 @@ impl PCNET<'_> {
                 0x1000,
             )
             .unwrap();
-            sys_handle_drop(map).assert_ok();
+            sys_handle_drop(map).unwrap();
 
             let buffer_start = vaddr;
 
@@ -297,7 +297,7 @@ impl PCNET<'_> {
             VMOAnonymousFlags::PINNED | VMOAnonymousFlags::BELOW_32,
         );
         let mut send_paddrs = [0usize; SEND_BUFFER_CNT / 2];
-        sys_vmo_anonymous_pinned_addresses(send_map, 0, &mut send_paddrs).assert_ok();
+        sys_vmo_anonymous_pinned_addresses(send_map, 0, &mut send_paddrs).unwrap();
         let send_buffer_buffers = unsafe {
             let base = sys_map(
                 Some(send_map),
@@ -321,7 +321,7 @@ impl PCNET<'_> {
             VMOAnonymousFlags::PINNED | VMOAnonymousFlags::BELOW_32,
         );
         let mut recv_paddrs = [0usize; RECV_BUFFER_CNT / 2];
-        sys_vmo_anonymous_pinned_addresses(recv_map, 0, &mut recv_paddrs).assert_ok();
+        sys_vmo_anonymous_pinned_addresses(recv_map, 0, &mut recv_paddrs).unwrap();
         let recv_buffer_buffers = unsafe {
             let base = sys_map(
                 Some(recv_map),
@@ -451,8 +451,7 @@ impl PCNET<'_> {
                 if flags & 0x40000000 == 0 && flags & 0x03000000 > 0 {
                     let size: usize = buffer_desc.flags_2 as usize & 0xFFFF;
                     let packet = &self.recv_buffer_buffers[buffer][..size];
-                    self.listeners
-                        .retain(|l| l.write(packet, &[]) == SyscallResult::Ok);
+                    self.listeners.retain(|l| l.write(packet, &[]).is_ok());
                 }
                 buffer_desc.flags = 0x80000000 | BUFFER_SIZE_MASK;
                 buffer_desc.flags_2 = 0;

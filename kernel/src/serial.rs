@@ -208,14 +208,14 @@ pub fn serial_monitor_stdin() {
     loop {
         while let Some(b) = { serial.lock().try_read() } {
             if b == b'\r' {
-                stdin.write(b"\n", &[]).assert_ok();
+                stdin.write(b"\n", &[]).unwrap();
             } else if b == 127 {
                 // delete character, make it backspace
-                stdin.write(&[8], &[]).assert_ok();
+                stdin.write(&[8], &[]).unwrap();
             } else {
-                stdin.write(&[b], &[]).assert_ok();
+                stdin.write(&[b], &[]).unwrap();
             }
         }
-        comm1.wait().assert_ok();
+        comm1.wait().unwrap();
     }
 }

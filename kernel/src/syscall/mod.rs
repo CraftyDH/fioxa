@@ -2,8 +2,8 @@ use alloc::{sync::Arc, vec::Vec};
 use kernel_sys::{
     raw::{syscall::*, types::result_t},
     types::{
-        Hid, ObjectSignal, RawValue, SysPortNotification, SysPortNotificationValue, SyscallResult,
-        VMMapFlags, VMOAnonymousFlags,
+        Hid, ObjectSignal, RawValue, SysPortNotification, SysPortNotificationValue, SyscallError,
+        SyscallResult, VMMapFlags, VMOAnonymousFlags,
     },
 };
 use log::Level;
@@ -37,11 +37,6 @@ pub fn set_syscall_idt(idt: &mut InterruptDescriptorTable) {
     // .disable_interrupts(false);
 }
 
-#[derive(Debug)]
-pub enum SyscallError {
-    Error,
-}
-
 trait Unwraper<T> {
     type Result;
     fn unwrap(self) -> Self::Result;
@@ -68,7 +63,7 @@ macro_rules! kpanic {
     ($($arg:tt)*) => {
         {
             error!("Panicked in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
-            return SyscallResult::KernelPrivateFailAssertion;
+            return Err(kernel_sys::types::SyscallError::KernelPrivateFailAssertion);
         }
     };
 }
@@ -78,13 +73,13 @@ macro_rules! kassert {
     ($x: expr) => {
         if !$x {
             error!("KAssert failed in {}:{}:{}.", file!(), line!(), column!());
-            return SyscallResult::KernelPrivateFailAssertion;
+            return Err(kernel_sys::types::SyscallError::KernelPrivateFailAssertion);
         }
     };
     ($x: expr, $($arg:tt)+) => {
         if !$x {
             error!("KAssert failed in {}:{}:{} {}", file!(), line!(), column!(), format_args!($($arg)*));
-            return SyscallResult::KernelPrivateFailAssertion;
+            return Err(kernel_sys::types::SyscallError::KernelPrivateFailAssertion);
         }
     };
 }
@@ -101,7 +96,7 @@ macro_rules! kunwrap {
                     line!(),
                     column!()
                 );
-                return SyscallResult::KernelPrivateFailAssertion;
+                return Err(kernel_sys::types::SyscallError::KernelPrivateFailAssertion);
             }
         }
     };
@@ -121,7 +116,7 @@ macro_rules! kenum_cast {
                     stringify!($t),
                     $x
                 );
-                return SyscallResult::KernelPrivateFailAssertion;
+                return Err(SyscallError::KernelPrivateFailAssertion);
             }
         }
     };
@@ -298,7 +293,7 @@ pub struct SyscallContext<'a> {
 extern "C" fn syscall_handler(number: usize, args: &[usize; 6]) -> result_t {
     let Some(syscalls) = parse_syscalls(number, args) else {
         info!("Out of bounds syscall {number}");
-        return SyscallResult::UnknownSyscall.into_raw();
+        return Err(SyscallError::UnknownSyscall).into_raw();
     };
 
     let mut ctx = unsafe {
@@ -310,7 +305,7 @@ extern "C" fn syscall_handler(number: usize, args: &[usize; 6]) -> result_t {
     };
 
     match ctx.dispatch(&syscalls) {
-        SyscallResult::KernelPrivateFailAssertion => kill_bad_task(),
+        Err(SyscallError::KernelPrivateFailAssertion) => kill_bad_task(),
         r => r.into_raw(),
     }
 }
@@ -321,13 +316,13 @@ impl DispatchSyscall for SyscallContext<'_> {
         info!("ECHO {}", req.val);
         res.write(|| req.val);
 
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_yield(&mut self, _req: &RawSysYield) -> SyscallResult {
         let mut sched = self.thread.sched().lock();
         enter_sched(&mut sched);
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_sleep(&mut self, req: &RawSysSleep) -> SyscallResult {
@@ -348,7 +343,7 @@ impl DispatchSyscall for SyscallContext<'_> {
 
         enter_sched(&mut sched);
         slept.write(|| uptime() - start);
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_exit(&mut self, _req: &RawSysExit) -> SyscallResult {
@@ -387,11 +382,11 @@ impl DispatchSyscall for SyscallContext<'_> {
             Ok(res) => result.write(|| res as *mut ()),
             Err(e) => {
                 error!("Err {e:?}");
-                return SyscallResult::BadInputPointer;
+                return Err(SyscallError::BadInputPointer);
             }
         }
 
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_unmap(&mut self, req: &RawSysUnmap) -> SyscallResult {
@@ -402,10 +397,10 @@ impl DispatchSyscall for SyscallContext<'_> {
         let memory: &mut ProcessMemory = &mut self.thread.process().memory.lock();
 
         match unsafe { memory.region.unmap(req.address as usize, length) } {
-            Ok(()) => SyscallResult::Ok,
+            Ok(()) => Ok(()),
             Err(err) => {
                 info!("Error unmapping: {address:?}-{length} {err:?}");
-                SyscallResult::BadInputPointer
+                Err(SyscallError::BadInputPointer)
             }
         }
     }
@@ -425,22 +420,22 @@ impl DispatchSyscall for SyscallContext<'_> {
         out_len.write(|| bytes.len());
 
         if buffer.is_null() {
-            return SyscallResult::Ok;
+            return Ok(());
         }
 
         if len != bytes.len() {
-            return SyscallResult::BadInputPointer;
+            return Err(SyscallError::BadInputPointer);
         }
 
         result.write(bytes);
 
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_pid(&mut self, req: &RawSysPid) -> SyscallResult {
         let mut pid = unsafe { kunwrap!(UserPtrMut::new(req.pid, self.bounds)) };
         pid.write(|| self.thread.process().pid.into_raw());
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_log(&mut self, req: &RawSysLog) -> SyscallResult {
@@ -467,7 +462,7 @@ impl DispatchSyscall for SyscallContext<'_> {
             print_log(level, target, &format_args!("{message}"));
         }
 
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_handle_drop(&mut self, req: &RawSysHandleDrop) -> SyscallResult {
@@ -476,8 +471,8 @@ impl DispatchSyscall for SyscallContext<'_> {
         let refs: &mut ProcessReferences = &mut self.thread.process().references.lock();
 
         match refs.remove(handle) {
-            Some(_) => SyscallResult::Ok,
-            None => SyscallResult::UnknownHandle,
+            Some(_) => Ok(()),
+            None => Err(SyscallError::UnknownHandle),
         }
     }
 
@@ -491,9 +486,9 @@ impl DispatchSyscall for SyscallContext<'_> {
             Some(h) => {
                 let new = refs.insert(h);
                 cloned.write(|| new.0.get());
-                SyscallResult::Ok
+                Ok(())
             }
-            None => SyscallResult::UnknownHandle,
+            None => Err(SyscallError::UnknownHandle),
         }
     }
 
@@ -506,9 +501,9 @@ impl DispatchSyscall for SyscallContext<'_> {
         match refs.get(handle) {
             Some(h) => {
                 ty.write(|| h.object_type() as usize);
-                SyscallResult::Ok
+                Ok(())
             }
-            None => SyscallResult::UnknownHandle,
+            None => Err(SyscallError::UnknownHandle),
         }
     }
 
@@ -519,7 +514,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         let refs = self.thread.process().references.lock();
 
         let Some(val) = refs.get(handle).cloned() else {
-            return SyscallResult::UnknownHandle;
+            return Err(SyscallError::UnknownHandle);
         };
 
         let mask = ObjectSignal::from_bits_truncate(req.on);
@@ -556,7 +551,7 @@ impl DispatchSyscall for SyscallContext<'_> {
                 })
             }
         }
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_object_wait_port(&mut self, req: &RawSysObjectWaitPort) -> SyscallResult {
@@ -565,13 +560,8 @@ impl DispatchSyscall for SyscallContext<'_> {
 
         let refs = self.thread.process().references.lock();
 
-        let Some(handle) = refs.get(handle) else {
-            return SyscallResult::UnknownHandle;
-        };
-
-        let Some(port) = refs.get(port) else {
-            return SyscallResult::UnknownHandle;
-        };
+        let handle = refs.get(handle).ok_or(SyscallError::UnknownHandle)?;
+        let port = refs.get(port).ok_or(SyscallError::UnknownHandle)?;
 
         let mask = ObjectSignal::from_bits_truncate(req.mask);
 
@@ -603,7 +593,7 @@ impl DispatchSyscall for SyscallContext<'_> {
             _ => kpanic!("object not signalable"),
         };
 
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_channel_create(&mut self, req: &RawSysChannelCreate) -> SyscallResult {
@@ -620,7 +610,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         left.write(|| l.into_raw());
         right.write(|| r.into_raw());
 
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_channel_read(&mut self, req: &RawSysChannelRead) -> SyscallResult {
@@ -654,18 +644,18 @@ impl DispatchSyscall for SyscallContext<'_> {
                 } else {
                     handles_len.write(|| 0);
                 }
-                SyscallResult::Ok
+                Ok(())
             }
-            Err(ReadError::Empty) => SyscallResult::ChannelEmpty,
+            Err(ReadError::Empty) => Err(SyscallError::ChannelEmpty),
             Err(ReadError::Size {
                 min_bytes,
                 min_handles,
             }) => {
                 data_len.write(|| min_bytes);
                 handles_len.write(|| min_handles);
-                SyscallResult::ChannelBufferTooSmall
+                Err(SyscallError::ChannelBufferTooSmall)
             }
-            Err(ReadError::Closed) => SyscallResult::ChannelClosed,
+            Err(ReadError::Closed) => Err(SyscallError::ChannelClosed),
         }
     }
 
@@ -702,7 +692,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         let interrupt = KInterruptHandle::new();
         let id = self.thread.process().add_value(Arc::new(interrupt).into());
         data.write(|| id.0.get());
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_interrupt_wait(&mut self, req: &RawSysInterruptWait) -> SyscallResult {
@@ -717,7 +707,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         let int = kunwrap!(self.thread.process().get_value(handle));
         let int = kenum_cast!(int, KernelValue::Interrupt);
         int.trigger();
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_interrupt_acknowledge(&mut self, req: &RawSysInterruptAcknowledge) -> SyscallResult {
@@ -725,7 +715,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         let int = kunwrap!(self.thread.process().get_value(handle));
         let int = kenum_cast!(int, KernelValue::Interrupt);
         int.ack();
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_interrupt_set_port(&mut self, req: &RawSysInterruptSetPort) -> SyscallResult {
@@ -737,7 +727,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         let port = kunwrap!(self.thread.process().get_value(port));
         let port = kenum_cast!(port, KernelValue::Port);
         int.set_port(port, req.key);
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_port_create(&mut self, req: &RawSysPortCreate) -> SyscallResult {
@@ -746,7 +736,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         let interrupt = KPort::new();
         let id = self.thread.process().add_value(Arc::new(interrupt).into());
         data.write(|| id.0.get());
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_port_wait(&mut self, req: &RawSysPortWait) -> SyscallResult {
@@ -759,7 +749,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         let w = port.wait();
         result.write(|| w.into_raw());
 
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_port_push(&mut self, req: &RawSysPortPush) -> SyscallResult {
@@ -775,7 +765,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         ));
 
         port.notify(value);
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_process_spawn_thread(&mut self, req: &RawSysProcessSpawnThread) -> SyscallResult {
@@ -785,7 +775,7 @@ impl DispatchSyscall for SyscallContext<'_> {
 
             out.write(|| tid.into_raw());
         }
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_process_exit_code(&mut self, req: &RawSysProcessExitCode) -> SyscallResult {
@@ -798,9 +788,9 @@ impl DispatchSyscall for SyscallContext<'_> {
         match status {
             Some(val) => {
                 exit.write(|| val);
-                SyscallResult::Ok
+                Ok(())
             }
-            None => SyscallResult::ProcessStillRunning,
+            None => Err(SyscallError::ProcessStillRunning),
         }
     }
 
@@ -815,7 +805,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         let res = self.thread.process().add_value(msg.into());
 
         out.write(|| res.into_raw());
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_message_size(&mut self, req: &RawSysMessageSize) -> SyscallResult {
@@ -825,7 +815,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         let handle = kunwrap!(self.thread.process().get_value(handle));
         let message = kenum_cast!(handle, KernelValue::Message);
         size.write(|| message.data.len());
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_message_read(&mut self, req: &RawSysMessageRead) -> SyscallResult {
@@ -844,7 +834,7 @@ impl DispatchSyscall for SyscallContext<'_> {
 
         buffer.write(&message.data);
 
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_vmo_mmap_create(&mut self, req: &RawSysVMOMMAPCreate) -> SyscallResult {
@@ -860,7 +850,7 @@ impl DispatchSyscall for SyscallContext<'_> {
             let res = self.thread.process().references.lock().insert(vmo.into());
             out.write(|| res.into_raw());
         }
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_vmo_anonymous_create(&mut self, req: &RawSysVMOAnonCreate) -> SyscallResult {
@@ -878,7 +868,7 @@ impl DispatchSyscall for SyscallContext<'_> {
         let res = self.thread.process().references.lock().insert(vmo.into());
         out.write(|| res.into_raw());
 
-        SyscallResult::Ok
+        Ok(())
     }
 
     fn raw_sys_vmo_anonymous_pinned_addresses(
@@ -907,6 +897,6 @@ impl DispatchSyscall for SyscallContext<'_> {
             }
         }
 
-        SyscallResult::Ok
+        Ok(())
     }
 }

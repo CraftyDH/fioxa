@@ -7,7 +7,7 @@ extern crate userspace;
 extern crate userspace_slaballoc;
 
 use alloc::vec::Vec;
-use kernel_sys::types::{ObjectSignal, SyscallResult};
+use kernel_sys::types::ObjectSignal;
 use kernel_userspace::{
     channel::Channel,
     interrupt::{InterruptVector, InterruptsService},
@@ -65,8 +65,8 @@ pub fn main() {
 
     let port = Port::new();
 
-    kb_ev.set_port(&port, kb_cbk).assert_ok();
-    ms_ev.set_port(&port, ms_cbk).assert_ok();
+    kb_ev.set_port(&port, kb_cbk).unwrap();
+    ms_ev.set_port(&port, ms_cbk).unwrap();
 
     ps2_controller.flush();
 
@@ -76,12 +76,12 @@ pub fn main() {
         .channel()
         .handle()
         .wait_port(&port, ObjectSignal::READABLE, kb_srv_cbk)
-        .assert_ok();
+        .unwrap();
     ms_service
         .channel()
         .handle()
         .wait_port(&port, ObjectSignal::READABLE, ms_srv_cbk)
-        .assert_ok();
+        .unwrap();
 
     let mut kb_listeners: Vec<Channel> = Vec::new();
     let mut ms_listeners: Vec<Channel> = Vec::new();
@@ -92,32 +92,32 @@ pub fn main() {
         if ev.key == kb_cbk {
             if let Some(ev) = ps2_controller.keyboard.check_interrupts() {
                 let message = kernel_userspace::input::InputServiceMessage::KeyboardEvent(ev);
-                kb_listeners.retain(|l| l.write_val(&message, &[]) == SyscallResult::Ok);
+                kb_listeners.retain(|l| l.write_val(&message, &[]).is_ok());
             }
-            kb_ev.acknowledge().assert_ok();
+            kb_ev.acknowledge().unwrap();
         } else if ev.key == ms_cbk {
             if let Some(message) = ps2_controller.mouse.check_interrupts() {
-                ms_listeners.retain(|l| l.write_val(&message, &[]) == SyscallResult::Ok);
+                ms_listeners.retain(|l| l.write_val(&message, &[]).is_ok());
             }
-            ms_ev.acknowledge().assert_ok();
+            ms_ev.acknowledge().unwrap();
         } else if ev.key == kb_srv_cbk {
             let chan: Channel = kb_service.recv().unwrap().deserialize().unwrap();
-            kb_service.send(&()).assert_ok();
+            kb_service.send(&()).unwrap();
             kb_listeners.push(chan);
             kb_service
                 .channel()
                 .handle()
                 .wait_port(&port, ObjectSignal::READABLE, kb_srv_cbk)
-                .assert_ok();
+                .unwrap();
         } else if ev.key == ms_srv_cbk {
             let chan: Channel = ms_service.recv().unwrap().deserialize().unwrap();
-            ms_service.send(&()).assert_ok();
+            ms_service.send(&()).unwrap();
             ms_listeners.push(chan);
             ms_service
                 .channel()
                 .handle()
                 .wait_port(&port, ObjectSignal::READABLE, ms_srv_cbk)
-                .assert_ok();
+                .unwrap();
         }
     }
 }

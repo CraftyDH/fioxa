@@ -1,4 +1,4 @@
-use kernel_sys::types::SyscallResult;
+use kernel_sys::types::SyscallError;
 use rkyv::{
     Archive, Deserialize, Serialize,
     rancor::{Error, Source},
@@ -118,7 +118,7 @@ impl ElfLoaderService {
             initial_refs: &initial_refs,
         };
 
-        self.0.send(&spawn).assert_ok();
+        self.0.send(&spawn).unwrap();
         let mut res = self.0.recv().unwrap();
 
         res.deserialize().unwrap()
@@ -139,7 +139,7 @@ impl<I: ElfLoaderServiceImpl> ElfLoaderServiceExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
             let (spawn, des) = msg.access::<ArchivedSpawnElfProcess>()?;
@@ -152,7 +152,7 @@ impl<I: ElfLoaderServiceImpl> ElfLoaderServiceExecutor<I> {
                 .collect();
 
             let res = self.service.spawn(elf, &spawn.args, &hids);
-            self.channel.send(&res).into_err().map_err(Error::new)?;
+            self.channel.send(&res).map_err(Error::new)?;
         }
     }
 }

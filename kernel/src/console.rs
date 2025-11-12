@@ -7,7 +7,7 @@ use input::keyboard::{
 };
 use kernel_sys::{
     syscall::sys_process_spawn_thread,
-    types::{ObjectSignal, SyscallResult},
+    types::{ObjectSignal, SyscallError},
 };
 use kernel_userspace::{
     backoff_sleep,
@@ -69,7 +69,7 @@ pub fn run_console() {
 
     loop {
         let str = kb_decoder.read(&keyboard);
-        stdin.write(str.as_bytes(), &[]).assert_ok();
+        stdin.write(str.as_bytes(), &[]).unwrap();
     }
 }
 
@@ -106,7 +106,7 @@ impl KBInputDecoder {
                     let chr = self.feed(ev);
                     self.str_buf.extend(chr);
                 }
-                Err(SyscallResult::ChannelEmpty) => {
+                Err(SyscallError::ChannelEmpty) => {
                     if self.str_buf.is_empty() {
                         chan.handle()
                             .wait(ObjectSignal::READABLE | ObjectSignal::CHANNEL_CLOSED)

@@ -1,6 +1,6 @@
 use kernel_sys::{
     syscall::{sys_port_create, sys_port_push, sys_port_wait},
-    types::{SysPortNotification, SyscallResult},
+    types::{SysPortNotification, SyscallError},
 };
 
 use crate::handle::Handle;
@@ -32,11 +32,11 @@ impl Port {
         unsafe { Port(Handle::from_id(sys_port_create())) }
     }
 
-    pub fn wait(&self) -> Result<SysPortNotification, SyscallResult> {
+    pub fn wait(&self) -> Result<SysPortNotification, SyscallError> {
         sys_port_wait(*self.0)
     }
 
-    pub fn push(&self, notification: &SysPortNotification) -> SyscallResult {
+    pub fn push(&self, notification: &SysPortNotification) -> Result<(), SyscallError> {
         sys_port_push(*self.0, notification)
     }
 }

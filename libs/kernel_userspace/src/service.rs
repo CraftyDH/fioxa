@@ -1,4 +1,4 @@
-use kernel_sys::types::SyscallResult;
+use kernel_sys::types::SyscallError;
 use rkyv::rancor::{Error, Source};
 
 use crate::{channel::Channel, ipc::IPCChannel, process::INIT_HANDLE_SERVICE};
@@ -11,7 +11,7 @@ impl Service {
     }
 
     pub fn send_consumer(&mut self, channel: Channel) {
-        self.0.send(&channel).assert_ok();
+        self.0.send(&channel).unwrap();
         self.0.recv().unwrap().deserialize().unwrap()
     }
 }
@@ -40,13 +40,13 @@ impl<I: Fn(Channel)> ServiceExecutor<I> {
         loop {
             let mut msg = match self.channel.recv() {
                 Ok(m) => m,
-                Err(SyscallResult::ChannelClosed) => return Ok(()),
+                Err(SyscallError::ChannelClosed) => return Ok(()),
                 Err(e) => return Err(Error::new(e)),
             };
 
             self.service.call(msg.deserialize()?);
 
-            self.channel.send(&()).into_err().map_err(Error::new)?;
+            self.channel.send(&()).map_err(Error::new)?;
         }
     }
 }

@@ -40,7 +40,7 @@ impl<T: Copy> UserPtr<T> {
 
     pub fn read(&self) -> Option<T> {
         if self.0.is_null() {
-            return None;
+            None
         } else {
             unsafe { Some(*self.0) }
         }
@@ -61,7 +61,7 @@ impl<T: Copy> UserPtrMut<T> {
 
     pub fn read(&self) -> Option<T> {
         if self.0.is_null() {
-            return None;
+            None
         } else {
             unsafe { Some(*self.0) }
         }

@@ -63,11 +63,16 @@ impl Hid {
     }
 }
 
+pub type SyscallResult = Result<(), SyscallError>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[must_use]
 #[repr(C)]
-pub enum SyscallResult {
-    Ok,
+#[non_exhaustive]
+pub enum SyscallError {
+    // Ok = 0,
+    /// Should only be used when given an error code that is unknown when casting
+    UnknownResult = 1,
 
     BadInputPointer,
     SystemError,
@@ -86,52 +91,43 @@ pub enum SyscallResult {
     ProcessStillRunning,
 }
 
-impl Display for SyscallResult {
+impl Display for SyscallError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_fmt(format_args!("{self:?}"))
     }
 }
 
-impl Error for SyscallResult {}
-
-impl SyscallResult {
-    #[inline]
-    #[track_caller]
-    pub fn assert_ok(self) {
-        match self {
-            Self::Ok => (),
-            _ => panic!("Was not ok: {self:?}"),
-        }
+pub fn syscall_result(result: result_t) -> SyscallResult {
+    if result == 0 {
+        return Ok(());
     }
-
-    #[inline]
-    pub fn into_err(self) -> Result<(), SyscallResult> {
-        match self {
-            Self::Ok => Ok(()),
-            v => Err(v),
-        }
-    }
-
-    #[inline]
-    pub fn create(val: result_t) -> Result<(), SyscallResult> {
-        match Self::from_raw(val).unwrap() {
-            Self::Ok => Ok(()),
-            v => Err(v),
-        }
+    match SyscallError::from_usize(result) {
+        Some(v) => Err(v),
+        None => Err(SyscallError::UnknownResult),
     }
 }
+
+impl Error for SyscallError {}
 
 impl RawValue for SyscallResult {
     type Raw = result_t;
 
     #[inline]
     fn into_raw(&self) -> Self::Raw {
-        *self as result_t
+        match self {
+            Ok(()) => 0,
+            Err(e) => *e as result_t,
+        }
     }
 
     #[inline]
     fn from_raw(raw: Self::Raw) -> Result<Self, TryFromRawError> {
-        FromPrimitive::from_usize(raw).ok_or(TryFromRawError::InvalidValue)
+        if raw == 0 {
+            return Ok(Ok(()));
+        }
+        FromPrimitive::from_usize(raw)
+            .ok_or(TryFromRawError::InvalidValue)
+            .map(Err)
     }
 }
 

@@ -121,15 +121,15 @@ impl DiskControllerImpl for DiskControllerHandler {
         for w in common.waiters.iter_mut() {
             let (l, r) = Channel::new();
             match chan.send(&l) {
-                kernel_sys::types::SyscallResult::Ok => (),
-                e => {
+                Ok(()) => (),
+                Err(e) => {
                     warn!("error sending {e}");
                     return;
                 }
             }
             match w.send(&r) {
-                kernel_sys::types::SyscallResult::Ok => (),
-                e => {
+                Ok(()) => (),
+                Err(e) => {
                     warn!("error sending {e}");
                     return;
                 }
@@ -147,15 +147,15 @@ impl DiskControllerImpl for DiskControllerHandler {
         for disk in common.disks.iter_mut() {
             let (l, r) = Channel::new();
             match send.send(&l) {
-                kernel_sys::types::SyscallResult::Ok => (),
-                e => {
+                Ok(()) => (),
+                Err(e) => {
                     warn!("error sending {e}");
                     return res;
                 }
             }
             match disk.send(&r) {
-                kernel_sys::types::SyscallResult::Ok => (),
-                e => {
+                Ok(()) => (),
+                Err(e) => {
                     warn!("error sending {e}");
                     return res;
                 }
@@ -194,15 +194,15 @@ impl FSControllerImpl for FSControllerHandler {
         for w in common.waiters.iter_mut() {
             let (l, r) = Channel::new();
             match chan.send(&l) {
-                kernel_sys::types::SyscallResult::Ok => (),
-                e => {
+                Ok(()) => (),
+                Err(e) => {
                     warn!("error sending {e}");
                     return;
                 }
             }
             match w.send(&r) {
-                kernel_sys::types::SyscallResult::Ok => (),
-                e => {
+                Ok(()) => (),
+                Err(e) => {
                     warn!("error sending {e}");
                     return;
                 }
@@ -220,15 +220,15 @@ impl FSControllerImpl for FSControllerHandler {
         for disk in common.disks.iter_mut() {
             let (l, r) = Channel::new();
             match send.send(&l) {
-                kernel_sys::types::SyscallResult::Ok => (),
-                e => {
+                Ok(()) => (),
+                Err(e) => {
                     warn!("error sending {e}");
                     return res;
                 }
             }
             match disk.send(&r) {
-                kernel_sys::types::SyscallResult::Ok => (),
-                e => {
+                Ok(()) => (),
+                Err(e) => {
                     warn!("error sending {e}");
                     return res;
                 }
