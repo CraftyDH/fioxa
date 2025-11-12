@@ -341,18 +341,28 @@ extern "C" fn out_of_bounds(number: usize) -> ! {
     kill_bad_task();
 }
 
-extern "C" fn handle_sys_echo(val: usize) -> usize {
+extern "C" fn handle_sys_echo(val: usize, val2: *mut usize) -> SyscallResult {
     info!("ECHO {val}");
-    val
+    let task = unsafe { CPULocalStorageRW::get_current_task() };
+    let bounds = get_current_bounds(task.process());
+
+    if !val2.is_null() {
+        let mut result = kunwrap!(unsafe { UserPtrMut::new(val2, bounds) });
+        result.write(val);
+    }
+
+    SyscallResult::Ok
 }
 
-unsafe extern "C" fn handle_sys_yield() {
+unsafe extern "C" fn handle_sys_yield() -> SyscallResult {
     let thread = unsafe { CPULocalStorageRW::get_current_task() };
     let mut sched = thread.sched().lock();
     enter_sched(&mut sched);
+
+    SyscallResult::Ok
 }
 
-unsafe extern "C" fn handle_sys_sleep(ms: u64) -> u64 {
+unsafe extern "C" fn handle_sys_sleep(ms: u64, slept: *mut u64) -> SyscallResult {
     let start = uptime();
     let time = start + ms;
     let thread = unsafe { CPULocalStorageRW::get_current_task() };
@@ -368,7 +378,14 @@ unsafe extern "C" fn handle_sys_sleep(ms: u64) -> u64 {
         }));
 
     enter_sched(&mut sched);
-    uptime() - start
+
+    if !slept.is_null() {
+        let bounds = get_current_bounds(thread.process());
+        let mut s = kunwrap!(unsafe { UserPtrMut::new(slept, bounds) });
+        s.write(uptime() - start);
+    }
+
+    SyscallResult::Ok
 }
 
 unsafe extern "C" fn handle_sys_exit() -> ! {
@@ -443,7 +460,11 @@ unsafe extern "C" fn handle_sys_unmap(address: vaddr_t, length: usize) -> Syscal
     }
 }
 
-unsafe extern "C" fn handle_sys_read_args(buffer: *mut u8, len: usize) -> usize {
+unsafe extern "C" fn handle_sys_read_args(
+    buffer: *mut u8,
+    len: usize,
+    out: *mut usize,
+) -> SyscallResult {
     let task = unsafe { CPULocalStorageRW::get_current_task() };
     let bounds = get_current_bounds(task.process());
 
@@ -455,22 +476,39 @@ unsafe extern "C" fn handle_sys_read_args(buffer: *mut u8, len: usize) -> usize 
     let proc = task.process();
     let bytes = &proc.args;
 
-    if buffer.is_null() || len != bytes.len() {
-        return bytes.len();
+    if !out.is_null() {
+        kunwrap!(unsafe { UserPtrMut::new(out, bounds) }).write(bytes.len());
+    }
+
+    if buffer.is_null() {
+        return SyscallResult::Ok;
+    }
+
+    if len != bytes.len() {
+        return SyscallResult::BadInputPointer;
     }
 
     result.write(bytes);
 
-    usize::MAX
+    SyscallResult::Ok
 }
 
-unsafe extern "C" fn handle_sys_pid() -> pid_t {
-    unsafe {
-        CPULocalStorageRW::get_current_task()
-            .process()
-            .pid
-            .into_raw()
+unsafe extern "C" fn handle_sys_pid(pid: *mut pid_t) -> SyscallResult {
+    let task = unsafe { CPULocalStorageRW::get_current_task() };
+    let bounds = get_current_bounds(task.process());
+
+    if !pid.is_null() {
+        let mut result = kunwrap!(unsafe { UserPtrMut::new(pid, bounds) });
+        unsafe {
+            let val = CPULocalStorageRW::get_current_task()
+                .process()
+                .pid
+                .into_raw();
+            result.write(val);
+        }
     }
+
+    SyscallResult::Ok
 }
 
 unsafe extern "C" fn handle_sys_log(
@@ -479,7 +517,7 @@ unsafe extern "C" fn handle_sys_log(
     target_len: usize,
     message: *const u8,
     message_len: usize,
-) {
+) -> SyscallResult {
     unsafe {
         let task = CPULocalStorageRW::get_current_task();
         let bounds = get_current_bounds(task.process());
@@ -517,6 +555,8 @@ unsafe extern "C" fn handle_sys_log(
 
         print_log(level, target, &format_args!("{message}"));
     }
+
+    SyscallResult::Ok
 }
 
 // handle
@@ -680,7 +720,10 @@ unsafe extern "C" fn handle_sys_object_wait_port(
 
 // channel
 
-unsafe extern "C" fn handle_sys_channel_create(left: *mut hid_t, right: *mut hid_t) {
+unsafe extern "C" fn handle_sys_channel_create(
+    left: *mut hid_t,
+    right: *mut hid_t,
+) -> SyscallResult {
     let thread = unsafe { CPULocalStorageRW::get_current_task() };
 
     let bounds = get_current_bounds(thread.process());
@@ -699,6 +742,8 @@ unsafe extern "C" fn handle_sys_channel_create(left: *mut hid_t, right: *mut hid
 
     left.write(l.into_raw());
     right.write(r.into_raw());
+
+    SyscallResult::Ok
 }
 
 unsafe extern "C" fn handle_sys_channel_read(
@@ -788,12 +833,16 @@ unsafe extern "C" fn handle_sys_channel_write(
     chan.send(msg)
 }
 
-unsafe extern "C" fn handle_sys_interrupt_create() -> hid_t {
+unsafe extern "C" fn handle_sys_interrupt_create(out: *mut hid_t) -> SyscallResult {
     let thread = unsafe { CPULocalStorageRW::get_current_task() };
+
+    let bounds = get_current_bounds(thread.process());
+    let mut data = unsafe { kunwrap!(UserPtrMut::new(out, bounds)) };
 
     let interrupt = KInterruptHandle::new();
     let id = thread.process().add_value(Arc::new(interrupt).into());
-    id.0.get()
+    data.write(id.0.get());
+    SyscallResult::Ok
 }
 
 unsafe extern "C" fn handle_sys_interrupt_wait(handle: hid_t) -> SyscallResult {
@@ -845,12 +894,16 @@ unsafe extern "C" fn handle_sys_interrupt_set_port(
 
 // port
 
-unsafe extern "C" fn handle_sys_port_create() -> hid_t {
+unsafe extern "C" fn handle_sys_port_create(out: *mut hid_t) -> SyscallResult {
     let thread = unsafe { CPULocalStorageRW::get_current_task() };
+
+    let bounds = get_current_bounds(thread.process());
+    let mut data = unsafe { kunwrap!(UserPtrMut::new(out, bounds)) };
 
     let interrupt = KPort::new();
     let id = thread.process().add_value(Arc::new(interrupt).into());
-    id.0.get()
+    data.write(id.0.get());
+    SyscallResult::Ok
 }
 
 unsafe extern "C" fn handle_sys_port_wait(
@@ -891,8 +944,23 @@ unsafe extern "C" fn handle_sys_port_push(
 
 // process
 
-unsafe extern "C" fn handle_sys_process_spawn_thread(func: *const (), arg: *const ()) -> tid_t {
-    unsafe { taskmanager::spawn_thread(func as usize, arg as usize).into_raw() }
+unsafe extern "C" fn handle_sys_process_spawn_thread(
+    func: *const (),
+    arg: *const (),
+    out: *mut tid_t,
+) -> SyscallResult {
+    unsafe {
+        let tid = taskmanager::spawn_thread(func as usize, arg as usize).into_raw();
+
+        if !out.is_null() {
+            let thread = CPULocalStorageRW::get_current_task();
+            let bounds = get_current_bounds(thread.process());
+            let mut value = kunwrap!(UserPtrMut::new(out, bounds));
+
+            value.write(tid);
+        }
+    }
+    SyscallResult::Ok
 }
 
 unsafe extern "C" fn handle_sys_process_exit_code(
@@ -918,20 +986,26 @@ unsafe extern "C" fn handle_sys_process_exit_code(
 
 // message
 
-unsafe extern "C" fn handle_sys_message_create(data: *const u8, len: usize) -> hid_t {
+unsafe extern "C" fn handle_sys_message_create(
+    data: *const u8,
+    len: usize,
+    out: *mut hid_t,
+) -> SyscallResult {
     let thread = unsafe { CPULocalStorageRW::get_current_task() };
     let bounds = get_current_bounds(thread.process());
-    let data = unsafe { UserBytes::new(data, len, bounds) };
-    let Some(data) = data else {
-        warn!("Bad message ptr");
-        kill_bad_task();
-    };
+    let data = unsafe { kunwrap!(UserBytes::new(data, len, bounds)) };
 
     let msg = Arc::new(KMessage {
         data: data.read_to_box(),
     });
 
-    thread.process().add_value(msg.into()).into_raw()
+    let res = thread.process().add_value(msg.into());
+
+    if !out.is_null() {
+        let mut out = unsafe { kunwrap!(UserPtrMut::new(out, bounds)) };
+        out.write(res.into_raw());
+    }
+    SyscallResult::Ok
 }
 
 unsafe extern "C" fn handle_sys_message_size(handle: hid_t, size: *mut usize) -> SyscallResult {
@@ -973,7 +1047,11 @@ unsafe extern "C" fn handle_sys_message_read(
 
 // vmo
 
-unsafe extern "C" fn handle_sys_vmo_mmap_create(base: *mut (), length: usize) -> hid_t {
+unsafe extern "C" fn handle_sys_vmo_mmap_create(
+    base: *mut (),
+    length: usize,
+    out: *mut hid_t,
+) -> SyscallResult {
     unsafe {
         let thread = CPULocalStorageRW::get_current_task();
 
@@ -983,16 +1061,26 @@ unsafe extern "C" fn handle_sys_vmo_mmap_create(base: *mut (), length: usize) ->
         }
 
         let vmo = Arc::new(Spinlock::new(VMO::new_mmap(base as usize, length)));
-        thread
+        let res = thread
             .process()
             .references
             .lock()
             .insert(vmo.into())
-            .into_raw()
+            .into_raw();
+        if !out.is_null() {
+            let bounds = get_current_bounds(thread.process());
+            let mut out = kunwrap!(UserPtrMut::new(out, bounds));
+            out.write(res);
+        }
     }
+    SyscallResult::Ok
 }
 
-unsafe extern "C" fn handle_sys_vmo_anonymous_create(length: usize, flags: u32) -> hid_t {
+unsafe extern "C" fn handle_sys_vmo_anonymous_create(
+    length: usize,
+    flags: u32,
+    out: *mut hid_t,
+) -> SyscallResult {
     let thread = unsafe { CPULocalStorageRW::get_current_task() };
 
     let flags = VMOAnonymousFlags::from_bits_truncate(flags);
@@ -1005,12 +1093,18 @@ unsafe extern "C" fn handle_sys_vmo_anonymous_create(length: usize, flags: u32) 
     }
 
     let vmo = Arc::new(Spinlock::new(VMO::new_anonymous(length, flags)));
-    thread
+    let res = thread
         .process()
         .references
         .lock()
         .insert(vmo.into())
-        .into_raw()
+        .into_raw();
+    if !out.is_null() {
+        let bounds = get_current_bounds(thread.process());
+        let mut out = unsafe { kunwrap!(UserPtrMut::new(out, bounds)) };
+        out.write(res);
+    };
+    SyscallResult::Ok
 }
 
 unsafe extern "C" fn handle_sys_vmo_anonymous_pinned_addresses(

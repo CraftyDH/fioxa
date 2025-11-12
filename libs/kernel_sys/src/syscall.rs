@@ -13,17 +13,24 @@ use super::types::*;
 
 #[inline]
 pub fn sys_echo(val: usize) -> usize {
-    unsafe { raw_sys_echo(val) }
+    let mut v = 0;
+    unsafe { SyscallResult::create(raw_sys_echo(val, &mut v)).unwrap() };
+    v
 }
 
 #[inline]
 pub fn sys_yield() {
-    unsafe { raw_sys_yield() }
+    // Who cares about the result
+    unsafe {
+        raw_sys_yield();
+    }
 }
 
 #[inline]
 pub fn sys_sleep(time: Duration) -> Duration {
-    unsafe { Duration::from_millis(raw_sys_sleep(time.as_millis() as u64)) }
+    let mut out = 0;
+    unsafe { SyscallResult::create(raw_sys_sleep(time.as_millis() as u64, &mut out)).unwrap() };
+    Duration::from_millis(out)
 }
 
 #[inline]
@@ -69,16 +76,21 @@ pub unsafe fn sys_unmap(addr: vaddr_t, length: usize) -> SyscallResult {
 #[inline]
 pub fn sys_read_args() -> Vec<u8> {
     unsafe {
-        let size = raw_sys_read_args(null_mut(), 0);
+        let mut size = 0;
+        SyscallResult::create(raw_sys_read_args(null_mut(), 0, &mut size)).unwrap();
         if size == 0 {
             return Vec::new();
         }
 
         let mut buffer: Vec<u8> = Vec::with_capacity(size);
-        assert_eq!(
-            raw_sys_read_args(buffer.as_mut_ptr(), buffer.capacity()),
-            usize::MAX
-        );
+
+        SyscallResult::create(raw_sys_read_args(
+            buffer.as_mut_ptr(),
+            buffer.capacity(),
+            null_mut(),
+        ))
+        .unwrap();
+
         buffer.set_len(size);
         buffer
     }
@@ -91,12 +103,15 @@ pub fn sys_read_args_string() -> String {
 
 #[inline]
 pub fn sys_pid() -> Pid {
-    unsafe { Pid::from_raw(raw_sys_pid()).unwrap() }
+    let mut out = 0;
+    unsafe { SyscallResult::create(raw_sys_pid(&mut out)).unwrap() }
+    Pid::from_raw(out).unwrap()
 }
 
 #[inline]
 pub fn sys_log(level: u32, target: &str, message: &str) {
     unsafe {
+        // ignore status
         raw_sys_log(
             level,
             target.as_ptr(),
@@ -297,7 +312,9 @@ pub fn sys_channel_write_val<V: Sized>(handle: Hid, val: &V, handles: &[Hid]) ->
 
 #[inline]
 pub fn sys_interrupt_create() -> Hid {
-    unsafe { Hid::from_raw(raw_sys_interrupt_create()).unwrap() }
+    let mut out = 0;
+    unsafe { SyscallResult::create(raw_sys_interrupt_create(&mut out)).unwrap() };
+    Hid::from_raw(out).unwrap()
 }
 
 #[inline]
@@ -331,7 +348,9 @@ pub fn sys_interrupt_set_port(handle: Hid, port: Hid, key: u64) -> SyscallResult
 
 #[inline]
 pub fn sys_port_create() -> Hid {
-    unsafe { Hid::from_raw(raw_sys_port_create()).unwrap() }
+    let mut out = 0;
+    unsafe { SyscallResult::create(raw_sys_port_create(&mut out)).unwrap() };
+    Hid::from_raw(out).unwrap()
 }
 
 #[inline]
@@ -384,7 +403,13 @@ where
     unsafe {
         let boxed_func: Box<dyn FnOnce()> = Box::new(func);
         let raw = Box::into_raw(Box::new(boxed_func)) as *mut usize;
-        let tid = raw_sys_process_spawn_thread(sys_thread_bootstrapper as *const (), raw.cast());
+        let mut tid = 0;
+        SyscallResult::create(raw_sys_process_spawn_thread(
+            sys_thread_bootstrapper as *const (),
+            raw.cast(),
+            &mut tid,
+        ))
+        .unwrap();
         Tid::from_raw(tid).unwrap()
     }
 }
@@ -402,7 +427,11 @@ pub fn sys_process_exit_code(handle: Hid) -> Result<usize, SyscallResult> {
 
 #[inline]
 pub fn sys_message_create(data: &[u8]) -> Hid {
-    unsafe { Hid::from_raw(raw_sys_message_create(data.as_ptr(), data.len())).unwrap() }
+    let mut out = 0;
+    unsafe {
+        SyscallResult::create(raw_sys_message_create(data.as_ptr(), data.len(), &mut out)).unwrap()
+    }
+    Hid::from_raw(out).unwrap()
 }
 
 #[inline]
@@ -434,12 +463,18 @@ pub fn sys_message_read(handle: Hid, buf: &mut [u8]) -> SyscallResult {
 /// The caller must ensure it has rights to directly access the region and that it is a valid physical address range
 #[inline]
 pub unsafe fn sys_vmo_mmap_create(base: *mut (), length: usize) -> Hid {
-    unsafe { Hid::from_raw(raw_sys_vmo_mmap_create(base, length)).unwrap() }
+    let mut out = 0;
+    unsafe { SyscallResult::create(raw_sys_vmo_mmap_create(base, length, &mut out)).unwrap() }
+    Hid::from_usize(out).unwrap()
 }
 
 #[inline]
 pub fn sys_vmo_anonymous_create(length: usize, flags: VMOAnonymousFlags) -> Hid {
-    unsafe { Hid::from_raw(raw_sys_vmo_anonymous_create(length, flags.bits())).unwrap() }
+    let mut out = 0;
+    unsafe {
+        SyscallResult::create(raw_sys_vmo_anonymous_create(length, flags.bits(), &mut out)).unwrap()
+    }
+    Hid::from_usize(out).unwrap()
 }
 
 #[inline]
