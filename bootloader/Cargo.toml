@@ -9,6 +9,7 @@ edition = "2024"
 default = ["uefi/global_allocator", "uefi/panic_handler"]
 
 [dependencies]
+elf = { version = "0.8.0", default-features = false }
 uefi = { version = "0.35", features = ["alloc", "logger"] }
 log = "0.4"
 

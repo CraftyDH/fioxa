@@ -31,6 +31,12 @@ pub static TSS: Lazy<TaskStateSegment> = Lazy::new(|| {
         let stack_start = VirtAddr::from_ptr(core::ptr::addr_of!(STACK));
         stack_start + TSS_STACK_SIZE as u64
     };
+    tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = {
+        static mut STACK: [u8; TSS_STACK_SIZE] = [0; TSS_STACK_SIZE];
+
+        let stack_start = VirtAddr::from_ptr(core::ptr::addr_of!(STACK));
+        stack_start + TSS_STACK_SIZE as u64
+    };
     tss
 });
 

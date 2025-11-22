@@ -32,7 +32,7 @@ pub enum UnMapMemoryError {
 
 #[repr(C, align(0x1000))]
 pub struct PhysPageTable {
-    entries: [PageDirectoryEntry; 512],
+    pub entries: [PageDirectoryEntry; 512],
 }
 
 impl PhysPageTable {
@@ -143,6 +143,8 @@ pub trait Mapper<P: PageSize> {
     ) -> Result<Flusher, MapMemoryError> {
         self.map(alloc, page, page, flags)
     }
+
+    fn get_page_addresses(&self, f: impl FnMut(Page<Size4KB>));
 }
 
 macro_rules! gen_base_tables {
@@ -168,6 +170,10 @@ macro_rules! gen_base_tables {
 
                 fn address_of(&self, page: Page<<$table as TableLevelMap>::Size>) -> Option<Page<<$table as TableLevelMap>::Size>> {
                     self.address_of_inner(page)
+                }
+
+                fn get_page_addresses(&self, f: impl FnMut(Page<Size4KB>)) {
+                    self.get_page_addresses_inner(f);
                 }
             }
         )*
@@ -226,7 +232,7 @@ impl<L: TableLevel> PageTable<L> {
 
     // TODO: Fix
     #[allow(clippy::mut_from_ref)]
-    fn table(&self) -> &mut PhysPageTable {
+    pub fn table(&self) -> &mut PhysPageTable {
         unsafe { &mut *virt_addr_offset_mut(self.table) }
     }
 }
@@ -293,6 +299,8 @@ impl<L: TableLevel + TableLevelMap> PageTable<L> {
             None
         }
     }
+
+    pub fn get_page_addresses_inner(&self, _f: impl FnMut(Page<Size4KB>)) {}
 }
 
 impl<L: TableLevel + TableLevelNext, P: PageSize> Mapper<P> for PageTable<L>
@@ -371,6 +379,19 @@ where
             next.address_of(page)
         } else {
             None
+        }
+    }
+
+    fn get_page_addresses(&self, mut f: impl FnMut(Page<Size4KB>)) {
+        let table = self.table();
+
+        for e in &table.entries {
+            if e.present() && !e.larger_pages() {
+                let next: PageTable<L::Next> =
+                    unsafe { PageTable::from_raw(e.get_address() as *mut PhysPageTable) };
+                f(Page::new(e.get_address()));
+                next.get_page_addresses(&mut f);
+            }
         }
     }
 }

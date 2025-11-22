@@ -1,4 +1,6 @@
-use alloc::{sync::Arc, vec::Vec};
+use core::{hint::spin_loop, sync::atomic::AtomicI32};
+
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use kernel_sys::{
     syscall::sys_process_spawn_thread,
     types::{SysPortNotification, SysPortNotificationValue, SyscallResult},
@@ -10,20 +12,26 @@ use kernel_userspace::{
     service::ServiceExecutor,
 };
 use spin::Lazy;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::{
+    instructions::{hlt, interrupts},
+    structures::idt::{InterruptDescriptorTable, InterruptStackFrame},
+};
 
 pub mod exceptions;
 // pub mod hardware;
 pub mod pic;
 
 use crate::{
+    boot_aps::LAPIC_IDS,
     cpu_localstorage::CPULocalStorageRW,
-    kassert, lapic,
+    ioapic::{BOOT_BSP_ID, get_current_core_id, send_ipi_to},
+    kassert,
+    lapic::{self, disable_localapic},
     mutex::Spinlock,
     port::KPort,
     scheduling::{
         process::{Thread, ThreadState},
-        taskmanager::enter_sched,
+        taskmanager::{enter_sched, reset_sse},
         with_held_interrupts,
     },
     syscall,
@@ -111,6 +119,7 @@ pub fn init_idt() {
     IDT.lock()[LAPIC_INT].set_handler_fn(lapic::tick_handler);
     // set_irq_handler(101, task_switch_handler);
     set_irq_handler(100, ipi_interrupt_handler);
+    set_irq_handler(0xFE, kexec_handler);
     set_irq_handler(0xFF, spurious_handler);
 }
 
@@ -124,6 +133,94 @@ interrupt_handler!(spurious => spurious_handler);
 
 pub fn spurious(s: InterruptStackFrame) {
     debug!("Spurious {s:?}")
+}
+
+pub static KEXEC_COUNT: AtomicI32 = AtomicI32::new(-1);
+pub static mut KEXEC_FN: Option<Box<dyn FnOnce() + Send + Sync>> = None;
+
+interrupt_handler!(kevec_int => kexec_handler);
+
+fn kevec_int(_: InterruptStackFrame) {
+    unsafe {
+        interrupts::disable();
+        core::ptr::write_volatile((crate::lapic::LAPIC_ADDR + 0xb0) as *mut u32, 0);
+        perform_kexec_handler()
+    };
+}
+
+pub unsafe fn perform_kexec_handler() -> ! {
+    unsafe { reset_sse() };
+
+    let our_id = get_current_core_id();
+
+    if BOOT_BSP_ID.get().is_some_and(|&id| id == our_id) {
+        KEXEC_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let len = LAPIC_IDS.get().unwrap().len();
+
+        let mut i = 0;
+        loop {
+            let c = KEXEC_COUNT.load(core::sync::atomic::Ordering::Acquire) as usize;
+            if c == len {
+                break;
+            }
+            i -= 1;
+            if i <= 0 {
+                i = 1000;
+                info!("Waiting for cores to shutdown: {}/{}", c, len);
+            }
+            spin_loop();
+        }
+
+        unsafe {
+            let f = core::ptr::replace(&raw mut KEXEC_FN, None);
+            (f.unwrap())();
+        }
+    } else {
+        unsafe {
+            disable_localapic();
+        }
+        KEXEC_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    loop {
+        hlt();
+    }
+}
+
+pub fn execute_kexec(f: impl FnOnce() + Send + Sync + 'static) -> ! {
+    interrupts::disable();
+    if let Some(ids) = LAPIC_IDS.get() {
+        let r = KEXEC_COUNT.compare_exchange(
+            -1,
+            0,
+            core::sync::atomic::Ordering::Acquire,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        // handle other core beat us
+        if r.is_err() {
+            interrupts::enable();
+            loop {
+                hlt();
+            }
+        }
+        unsafe {
+            core::ptr::replace(&raw mut KEXEC_FN, Some(Box::new(f)));
+            let our_id = get_current_core_id();
+            info!("kexec core id: {our_id}");
+            for &id in ids {
+                if id == our_id {
+                    continue;
+                }
+                send_ipi_to(id, 0xFE);
+            }
+            perform_kexec_handler();
+        }
+    } else {
+        // single core
+        f();
+        loop {
+            hlt();
+        }
+    }
 }
 
 #[inline(always)]

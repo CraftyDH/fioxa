@@ -14,6 +14,7 @@ input = {path = "../libs/input"}
 acpi = "5.2.0"
 bit_field = "0.10"
 bitflags = { version = "2.9.0", default-features = false }
+elf = { version = "0.8.0", default-features = false, features = ["alloc"] }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
 heapless = "0.9.1"
 lock_api = { version = "0.4.12", default-features = false }

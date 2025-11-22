@@ -49,23 +49,32 @@ pub enum MemoryLoc64bit48bits {
 }
 
 static mut MEM_OFFSET: u64 = 0;
-pub unsafe fn set_mem_offset(n: u64) {
-    unsafe { MEM_OFFSET = n }
+pub unsafe fn set_mem_offset(n: u64) -> u64 {
+    unsafe { core::ptr::replace(&raw mut MEM_OFFSET, n) }
 }
 
+pub fn get_mem_offset() -> u64 {
+    unsafe { MEM_OFFSET }
+}
+
+#[track_caller]
 pub fn virt_addr_for_phys(phys: u64) -> u64 {
+    assert_ne!(phys, 0);
     phys.checked_add(unsafe { MEM_OFFSET })
         .expect("expected phys addr")
 }
 
+#[track_caller]
 pub fn virt_addr_offset<T>(t: *const T) -> *const T {
     virt_addr_for_phys(t as u64) as *const T
 }
 
+#[track_caller]
 pub fn virt_addr_offset_mut<T>(t: *mut T) -> *mut T {
     virt_addr_for_phys(t as u64) as *mut T
 }
 
+#[track_caller]
 pub fn phys_addr_for_virt(virt: u64) -> u64 {
     virt.checked_sub(unsafe { MEM_OFFSET })
         .expect("expected virt addr")

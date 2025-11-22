@@ -11,6 +11,7 @@ extern crate log;
 use ::acpi::AcpiError;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use bootloader::uefi::boot::MemoryType;
 use bootloader::uefi::table::{set_system_table, system_table_raw};
 use bootloader::{BootInfo, entry_point};
 use kernel::acpi::FioxaAcpiHandler;
@@ -66,9 +67,9 @@ pub unsafe fn main_stage1(info: *const BootInfo) -> ! {
         x86_64::instructions::interrupts::disable();
 
         // init gdt & idt
+        init_bsp_boot_ls();
         gdt::init_bootgdt();
         interrupts::init_idt();
-        init_bsp_boot_ls();
 
         // Try connecting to COM1
         let mut serial = Serial::new(COM_1);
@@ -81,9 +82,12 @@ pub unsafe fn main_stage1(info: *const BootInfo) -> ! {
         }
 
         let boot_info = info.read();
+        set_mem_offset(boot_info.offset);
+        BOOT_INFO = info.wrapping_byte_sub(boot_info.offset as usize);
+
         // get memory map
         let mmap = MemoryMapIter::new(
-            boot_info.mmap_buf,
+            virt_addr_offset(boot_info.mmap_buf),
             boot_info.mmap_entry_size,
             boot_info.mmap_len,
         );
@@ -98,7 +102,7 @@ pub unsafe fn main_stage1(info: *const BootInfo) -> ! {
 
         // Initialize global page maps
         create_offset_map(alloc, &mut OFFSET_MAP.lock(), mmap);
-        create_kernel_map(alloc, &mut KERNEL_DATA_MAP.lock(), &boot_info);
+        create_kernel_map(alloc, &mut KERNEL_DATA_MAP.lock());
 
         // Initialize scheduler / global table
         let cr3 = {
@@ -108,8 +112,9 @@ pub unsafe fn main_stage1(info: *const BootInfo) -> ! {
             table.get_physical_address()
         };
 
-        set_mem_offset(MemoryLoc::PhysMapOffset as u64);
-        BOOT_INFO = virt_addr_offset(info);
+        let new = MemoryLoc::PhysMapOffset as u64;
+        let old = set_mem_offset(new);
+        let diff = new.wrapping_sub(old);
 
         // load and jump stack
         core::arch::asm!(
@@ -117,7 +122,7 @@ pub unsafe fn main_stage1(info: *const BootInfo) -> ! {
             "add rsp, {}",
             "mov cr3, {}",
             "jmp {}",
-            in(reg) MemoryLoc::PhysMapOffset as u64,
+            in(reg) diff,
             in(reg) cr3,
             in(reg) main_stage2,
             options(noreturn)
@@ -127,7 +132,7 @@ pub unsafe fn main_stage1(info: *const BootInfo) -> ! {
 
 /// Interrupts should be disabled before calling
 unsafe extern "C" fn main_stage2() {
-    let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
+    let boot_info = unsafe { core::ptr::read(virt_addr_offset(BOOT_INFO)) };
 
     // Initialize GOP stdout
     let font =
@@ -144,6 +149,21 @@ unsafe extern "C" fn main_stage2() {
     log::set_max_level(log::LevelFilter::Debug);
     info!("Welcome to Fioxa...");
 
+    unsafe {
+        // get memory map
+        let mmap = MemoryMapIter::new(
+            virt_addr_offset(boot_info.mmap_buf),
+            boot_info.mmap_entry_size,
+            boot_info.mmap_len,
+        );
+        let free: u64 = mmap
+            .map(|e| &*e)
+            .filter(|e| e.ty == MemoryType::CONVENTIONAL)
+            .map(|e| e.page_count)
+            .sum();
+        info!("TOTAL MEMORY MB {}", free * 0x1000 / 1024 / 1024);
+    }
+
     unsafe { init_bsp_localstorage() };
 
     let init_process = ProcessBuilder::new(ProcessMemory::new(), init as *const u64, 0)
@@ -158,7 +178,7 @@ unsafe extern "C" fn main_stage2() {
 
 unsafe fn get_and_map_config_table() -> &'static [ConfigTableEntry] {
     // read boot_info
-    let boot_info = unsafe { core::ptr::read(BOOT_INFO) };
+    let boot_info = unsafe { core::ptr::read(virt_addr_offset(BOOT_INFO)) };
 
     let process = unsafe { CPULocalStorageRW::get_current_task().process() };
     let mut mapper = process.memory.lock();
@@ -213,10 +233,12 @@ extern "C" fn init() {
             })
             .unwrap();
 
+        info!("Enable time");
         init_time(&acpi_tables);
 
         let madt = acpi_tables.find_table::<Madt>().unwrap();
 
+        info!("Enable lapic");
         enable_localapic();
         enable_apic(&madt);
 

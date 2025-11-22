@@ -27,13 +27,38 @@ impl PageTableManager {
         let pt =
             pd.and_then(|pd| Self::get_or_create_table(&mut pd.entries[indexer.pt_i as usize]));
 
-        pt.ok_or("Could not traverse pml4 tree").map(|pt| {
+        pt.ok_or("Could not traverse pml4 tree").and_then(|pt| {
             let pde = &mut pt.entries[indexer.p_i as usize];
+            // !FIX: Kernel load sections has overlapping R/RW sections :(
+            pde.set_read_write(pde.read_write() | write);
+            if pde.present() {
+                return Err("already mapped");
+            }
             pde.set_present(true);
             pde.set_address(physical_memory);
-            pde.set_read_write(write);
-            Flusher(virtual_memory)
+            Ok(Flusher(virtual_memory))
         })
+    }
+
+    pub fn protect_memory(&mut self, virtual_memory: u64) -> Result<Flusher, &str> {
+        let indexer = PageMapIndexer::new(virtual_memory);
+        let pml4 = unsafe { &mut *(self.page_lvl4_addr as *mut PageTable) };
+
+        let pdp = Self::get_or_create_table(&mut pml4.entries[indexer.pdp_i as usize]);
+
+        let pd =
+            pdp.and_then(|pdp| Self::get_or_create_table(&mut pdp.entries[indexer.pd_i as usize]));
+
+        let pt =
+            pd.and_then(|pd| Self::get_or_create_table(&mut pd.entries[indexer.pt_i as usize]));
+
+        let pte = pt.ok_or("Could not traverse pml4 tree")?;
+        let pde = &mut pte.entries[indexer.p_i as usize];
+        if !pde.present() {
+            return Err("not mapped");
+        }
+        pde.set_read_write(false);
+        Ok(Flusher(virtual_memory))
     }
 
     pub fn get_phys_addr(&self, virtual_memory: u64) -> Result<u64, &str> {

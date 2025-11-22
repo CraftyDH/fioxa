@@ -15,31 +15,31 @@ pub struct PCIExpressDevice {
 
 impl PCIDevice for PCIExpressDevice {
     unsafe fn read_u8(&self, offset: u32) -> u8 {
-        unsafe { *((self.address + offset as u64) as *const u8) }
+        unsafe { core::ptr::read_volatile((self.address + offset as u64) as *const u8) }
     }
 
     unsafe fn read_u16(&self, offset: u32) -> u16 {
         assert!(offset.is_multiple_of(2));
-        unsafe { *((self.address + offset as u64) as *const u16) }
+        unsafe { core::ptr::read_volatile((self.address + offset as u64) as *const u16) }
     }
 
     unsafe fn read_u32(&self, offset: u32) -> u32 {
         assert!(offset.is_multiple_of(4));
-        unsafe { *((self.address + offset as u64) as *const u32) }
+        unsafe { core::ptr::read_volatile((self.address + offset as u64) as *const u32) }
     }
 
     unsafe fn write_u8(&mut self, offset: u32, data: u8) {
-        unsafe { *((self.address + offset as u64) as *mut u8) = data };
+        unsafe { core::ptr::write_volatile((self.address + offset as u64) as *mut u8, data) };
     }
 
     unsafe fn write_u16(&mut self, offset: u32, data: u16) {
         assert!(offset.is_multiple_of(2));
-        unsafe { *((self.address + offset as u64) as *mut u16) = data };
+        unsafe { core::ptr::write_volatile((self.address + offset as u64) as *mut u16, data) };
     }
 
     unsafe fn write_u32(&mut self, offset: u32, data: u32) {
         assert!(offset.is_multiple_of(4));
-        unsafe { *((self.address + offset as u64) as *mut u32) = data };
+        unsafe { core::ptr::write_volatile((self.address + offset as u64) as *mut u32, data) };
     }
 }
 

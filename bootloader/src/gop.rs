@@ -17,6 +17,19 @@ pub struct GopInfo {
     pub pixel_format: PixelFormat,
 }
 
+impl Clone for GopInfo {
+    fn clone(&self) -> Self {
+        Self {
+            buffer: AtomicPtr::new(unsafe { *self.buffer.as_ptr() }),
+            buffer_size: self.buffer_size.clone(),
+            horizontal: self.horizontal.clone(),
+            vertical: self.vertical.clone(),
+            stride: self.stride.clone(),
+            pixel_format: self.pixel_format.clone(),
+        }
+    }
+}
+
 pub fn initialize_gop() -> ScopedProtocol<GraphicsOutput> {
     let mut gop = get_handle_for_protocol::<GraphicsOutput>()
         .and_then(open_protocol_exclusive::<GraphicsOutput>)

@@ -89,6 +89,7 @@ macro_rules! colour {
 
 use crate::BOOT_INFO;
 use crate::mutex::Spinlock;
+use crate::paging::virt_addr_offset;
 use crate::terminal::{Cell, Writer};
 
 use super::mouse::monitor_cursor_task;
@@ -105,7 +106,7 @@ fn redraw_screen_task() {
 }
 
 pub fn gop_entry() {
-    let gop = unsafe { &(*BOOT_INFO).gop };
+    let gop = unsafe { &(*virt_addr_offset(BOOT_INFO)).gop };
 
     let fb_ptr = unsafe { *gop.buffer.as_ptr() as usize };
     let fb_base = fb_ptr & !0xFFF;

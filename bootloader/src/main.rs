@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use bootloader::{
     BootInfo, fs, gop,
     kernel::load_kernel,
-    paging::{clone_pml4, get_uefi_active_mapper},
+    paging::{clone_pml4, get_uefi_active_mapper, page_table_manager::PageTableManager},
 };
 use uefi::{
     Status,
@@ -33,7 +33,7 @@ fn uefi_entry() -> Status {
 
     info!("Starting Fioxa bootloader...");
 
-    let map = unsafe { clone_pml4(&get_uefi_active_mapper()) };
+    let mut map = unsafe { clone_pml4(&get_uefi_active_mapper()) };
     map.load_into_cr3();
 
     let stack = unsafe {
@@ -46,7 +46,7 @@ fn uefi_entry() -> Status {
     // Create a memory region to store the boot info in
     let mut boot_info = unsafe { Box::<BootInfo>::new_uninit().assume_init() };
 
-    let entry_point = load_system(&mut boot_info);
+    let entry_point = load_system(&mut boot_info, &mut map);
 
     let mut mmap = unsafe { exit_boot_services(Some(MemoryType::LOADER_DATA)) };
     // No point printing anything since once we get the GOP buffer the UEFI sdout stops working
@@ -56,6 +56,7 @@ fn uefi_entry() -> Status {
     boot_info.mmap_buf = mmap.buffer().as_ptr();
     boot_info.mmap_len = mmap.len();
     boot_info.mmap_entry_size = mmap.meta().desc_size;
+    boot_info.offset = 0;
 
     boot_info.uefi_runtime_table = system_table_raw().unwrap().as_ptr() as u64;
 
@@ -70,7 +71,7 @@ fn uefi_entry() -> Status {
     }
 }
 
-fn load_system(boot_info: &mut BootInfo) -> u64 {
+fn load_system(boot_info: &mut BootInfo, mapper: &mut PageTableManager) -> u64 {
     info!("Retrieving Root Filesystem...");
     let mut root_fs = unsafe { fs::get_root_fs() }.unwrap();
 
@@ -84,7 +85,7 @@ fn load_system(boot_info: &mut BootInfo) -> u64 {
     )
     .unwrap();
 
-    let entry_point = load_kernel(&kernel_data, boot_info);
+    let entry_point = load_kernel(&kernel_data, mapper);
 
     info!("Initializing GOP...");
     let mut gop = gop::initialize_gop();

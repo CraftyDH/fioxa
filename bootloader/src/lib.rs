@@ -23,8 +23,7 @@ pub struct BootInfo {
     pub mmap_buf: *const u8,
     pub mmap_entry_size: usize,
     pub mmap_len: usize,
-    pub kernel_start: u64,
-    pub kernel_pages: u64,
+    pub offset: u64,
 }
 
 pub type EntryPoint = unsafe fn(*const BootInfo) -> !;

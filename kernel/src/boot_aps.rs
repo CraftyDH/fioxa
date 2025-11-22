@@ -1,18 +1,19 @@
 use core::{
-    arch::x86_64::{__cpuid, _mm_pause},
+    arch::x86_64::_mm_pause,
     ptr::{read_volatile, write_volatile},
     sync::atomic::AtomicU32,
 };
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 use kernel_sys::types::VMMapFlags;
+use spin::Once;
 
 use crate::{
     assembly::AP_TRAMPOLINE,
     cpu_localstorage::{CPULocalStorageRW, new_cpu},
     gdt::CPULocalGDT,
     interrupts::IDT,
-    ioapic::Madt,
+    ioapic::{BOOT_BSP_ID, Madt, get_current_core_id},
     lapic::{LAPIC_ADDR, enable_localapic},
     mutex::Spinlock,
     paging::{
@@ -26,8 +27,12 @@ use crate::{
     vm::VMO,
 };
 
+pub static LAPIC_IDS: Once<Vec<u8>> = Once::new();
+
 /// It is assumed that 0x8000 is identity mapped before this point
 pub unsafe fn boot_aps(madt: &Madt) {
+    assert!(!LAPIC_IDS.is_completed());
+
     if !frame_alloc_exec(|a| a.captured_0x8000()) {
         warn!(
             "WARNING: SINGLE CORE BOOT -- The physical memory region `0x8000` was not available during initialization."
@@ -36,7 +41,12 @@ pub unsafe fn boot_aps(madt: &Madt) {
     }
 
     // Get current core id
-    let bsp_addr = (unsafe { __cpuid(1) }.ebx >> 24) as u8;
+    let bsp_addr = get_current_core_id();
+    assert_eq!(
+        bsp_addr,
+        *BOOT_BSP_ID.get().unwrap(),
+        "boot aps should be called from the main core"
+    );
 
     let task = unsafe { CPULocalStorageRW::get_current_task() };
 
@@ -70,6 +80,8 @@ pub unsafe fn boot_aps(madt: &Madt) {
         addr
     };
 
+    let lapic_ids = LAPIC_IDS.call_once(|| madt.get_lapid_ids());
+
     let bspdone;
     let aprunning;
     let core_local_storage;
@@ -92,8 +104,6 @@ pub unsafe fn boot_aps(madt: &Madt) {
 
     let apic_ipi_300 = (LAPIC_ADDR + 0x300) as *mut u32;
     let apic_ipi_310 = (LAPIC_ADDR + 0x310) as *mut u32;
-
-    let lapic_ids = madt.get_lapid_ids();
 
     for core in lapic_ids.iter() {
         if *core == bsp_addr {

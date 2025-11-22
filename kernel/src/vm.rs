@@ -291,6 +291,13 @@ impl VMO {
             VMO::Anonymous { pages, .. } => pages,
         }
     }
+
+    pub fn vmo_pages_mut(&mut self) -> &mut [Option<Page<Size4KB>>] {
+        match self {
+            VMO::MemoryMapped { .. } => panic!("only for anon"),
+            VMO::Anonymous { pages, .. } => pages,
+        }
+    }
 }
 
 impl Drop for VMO {

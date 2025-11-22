@@ -5,6 +5,7 @@ use x86_64::instructions::interrupts;
 
 use crate::{
     gdt::CPULocalGDT,
+    ioapic::{BOOT_BSP_ID, get_current_core_id},
     paging::{
         MemoryLoc, PER_CPU_MAP, PageAllocator, page::Page, page_allocator::global_allocator,
         page_table::Mapper, virt_addr_for_phys,
@@ -225,11 +226,16 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
 
 pub unsafe fn init_bsp_boot_ls() {
     unsafe { set_ls(&raw mut BOOTCPULS as u64) }
+    assert!(!BOOT_BSP_ID.is_completed());
+    BOOT_BSP_ID.call_once(|| get_current_core_id());
 }
 
 pub unsafe fn init_bsp_localstorage() {
+    let id = get_current_core_id();
+    assert_eq!(*BOOT_BSP_ID.get().unwrap(), id);
+
     assert_eq!(CPULocalStorageRW::hold_interrupts_depth(), 1);
-    let gs_base = unsafe { new_cpu(0) };
+    let gs_base = unsafe { new_cpu(id) };
 
     // Load new core GDT
     // TODO: Remove old GDT

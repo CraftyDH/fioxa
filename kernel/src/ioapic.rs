@@ -1,4 +1,5 @@
 use core::{
+    arch::x86_64::__cpuid,
     mem,
     ptr::{read_volatile, write_volatile},
 };
@@ -7,6 +8,8 @@ use acpi::{AcpiTable, sdt::SdtHeader};
 use alloc::{sync::Arc, vec::Vec};
 use bit_field::BitField;
 use kernel_sys::types::VMMapFlags;
+use spin::Once;
+use x86_64::instructions::interrupts::without_interrupts;
 
 use crate::{
     cpu_localstorage::CPULocalStorageRW,
@@ -17,6 +20,8 @@ use crate::{
     mutex::Spinlock,
     vm::VMO,
 };
+
+static APIC_MAPPING: Once<Arc<Spinlock<VMO>>> = Once::new();
 
 pub unsafe fn enable_apic(madt: &Madt) {
     let (_, _, io_apics, apic_ints) = madt.find_ioapic();
@@ -33,16 +38,16 @@ pub unsafe fn enable_apic(madt: &Madt) {
     let mut mem = curr_proc.memory.lock();
 
     let apic = io_apics.first().unwrap();
-    let apic_mapping = unsafe {
+    let apic_mapping = APIC_MAPPING.call_once(|| unsafe {
         Arc::new(Spinlock::new(VMO::new_mmap(
             apic.apic_addr as usize,
             0x1000,
         )))
-    };
+    });
 
     let apic_addr = mem
         .region
-        .map_vmo(apic_mapping, VMMapFlags::WRITEABLE, None)
+        .map_vmo(apic_mapping.clone(), VMMapFlags::WRITEABLE, None)
         .unwrap();
 
     // Timer is usually overridden to irq 2
@@ -63,7 +68,37 @@ pub unsafe fn enable_apic(madt: &Madt) {
     set_irq_handler(53, com1_int_handler);
     set_redirect_entry(apic_addr, 0, 4, 53, true);
 
-    unsafe { mem.region.unmap(apic_addr, 0x1000).unwrap() }
+    unsafe {
+        mem.region
+            .unmap(apic_addr, apic_mapping.lock().get_length())
+            .unwrap()
+    }
+}
+
+pub unsafe fn disable_apic() {
+    let curr_proc = unsafe { CPULocalStorageRW::get_current_task().process() };
+    let mut mem = curr_proc.memory.lock();
+
+    let apic_mapping = APIC_MAPPING.get().unwrap();
+
+    without_interrupts(|| {
+        let apic_addr = mem
+            .region
+            .map_vmo(apic_mapping.clone(), VMMapFlags::WRITEABLE, None)
+            .unwrap();
+
+        mask_redirect_entry(apic_addr, 1);
+        mask_redirect_entry(apic_addr, 12);
+        mask_redirect_entry(apic_addr, 10);
+        mask_redirect_entry(apic_addr, 11);
+        mask_redirect_entry(apic_addr, 4);
+
+        unsafe {
+            mem.region
+                .unmap(apic_addr, apic_mapping.lock().get_length())
+                .unwrap()
+        }
+    });
 }
 
 pub fn send_ipi_to(apic_id: u8, vector: u8) {
@@ -99,6 +134,12 @@ fn set_redirect_entry(apic_base: usize, processor: u32, irq: u8, vector: u8, ena
     write_ioapic_register(apic_base, 0x10 + 2 * irq, low);
 }
 
+fn mask_redirect_entry(apic_base: usize, irq: u8) {
+    let mut low = read_ioapic_register(apic_base, 0x10 + 2 * irq);
+    low.set_bit(16, true); // mask
+    write_ioapic_register(apic_base, 0x10 + 2 * irq, low);
+}
+
 fn write_ioapic_register(apic_base: usize, offset: u8, val: u32) {
     unsafe {
         write_volatile(apic_base as *mut u32, offset as u32);
@@ -111,6 +152,12 @@ fn read_ioapic_register(apic_base: usize, offset: u8) -> u32 {
         write_volatile(apic_base as *mut u32, offset as u32);
         read_volatile((apic_base + 0x10) as *mut u32)
     }
+}
+
+pub static BOOT_BSP_ID: Once<u8> = Once::new();
+
+pub fn get_current_core_id() -> u8 {
+    unsafe { (__cpuid(1).ebx >> 24) as u8 }
 }
 
 #[repr(C, packed)]

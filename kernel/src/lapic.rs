@@ -53,6 +53,9 @@ pub unsafe fn enable_localapic() {
         // Enable + Spurious vector
         write_lapic(0xF0, 1 << 8 | 0xFF);
 
+        // Ack any pending interrupt
+        *((LAPIC_ADDR + 0xb0) as *mut u32) = 0;
+
         // set timer divisor of 16
         write_lapic(0x3E0, 0x3);
 
@@ -77,8 +80,25 @@ pub unsafe fn enable_localapic() {
     });
 }
 
+pub unsafe fn disable_localapic() {
+    unsafe {
+        // mask timer
+        write_lapic(0x320, 1 << 16);
+
+        // disable lapic
+        write_lapic(0xF0, 1 << 18);
+    }
+}
+
 pub extern "x86-interrupt" fn tick_handler(_: InterruptStackFrame) {
     unsafe {
+        if !HPET.is_completed() {
+            // Normally this shouldn't be possible as we init time before lapic,
+            // But if we kexec there might exist a pending interrupt from before the reset.
+            warn!("Spurious LAPIC timer interrupt");
+            return;
+        }
+
         // Ack interrupt
         *((LAPIC_ADDR + 0xb0) as *mut u32) = 0;
 

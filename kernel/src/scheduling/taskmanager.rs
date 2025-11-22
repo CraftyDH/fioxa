@@ -281,16 +281,30 @@ unsafe fn sse_get_method(ty: SSEType) -> SSESave {
     }
 }
 
+static SSE_TYPE: Once<(SSEType, SSESave)> = Once::new();
+
 unsafe fn enable_sse() -> &'static SSESave {
     unsafe {
         let ty = enable_sse_inner();
-        static SSE_TYPE: Once<(SSEType, SSESave)> = Once::new();
         let (global_ty, method) = SSE_TYPE.call_once(|| {
             info!("SSE Type: {ty:?}");
             (ty, sse_get_method(ty))
         });
         assert_eq!(ty, *global_ty, "Each core should have the same SSE type");
         method
+    }
+}
+
+pub unsafe fn reset_sse() {
+    let sse = &SSE_TYPE.get().unwrap().1;
+    unsafe {
+        match sse.method {
+            SSESaveMethod::FxSave => _fxrstor64(sse.default.as_ptr()),
+            SSESaveMethod::XSave | SSESaveMethod::XSaveOpt => {
+                _xrstor64(sse.default.as_ptr(), u64::MAX)
+            }
+            SSESaveMethod::XSaves => _xrstors64(sse.default.as_ptr(), u64::MAX),
+        }
     }
 }
 
@@ -304,6 +318,7 @@ pub unsafe fn core_start_multitasking() {
         core::arch::asm!(
             "sti",
             "mov rsp, gs:{stack}",
+            "nop",
             "jmp {}",
             sym scheduler,
             stack = const core::mem::offset_of!(CPULocalStorage, stack_top),
