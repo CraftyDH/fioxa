@@ -21,11 +21,11 @@ impl Clone for GopInfo {
     fn clone(&self) -> Self {
         Self {
             buffer: AtomicPtr::new(unsafe { *self.buffer.as_ptr() }),
-            buffer_size: self.buffer_size.clone(),
-            horizontal: self.horizontal.clone(),
-            vertical: self.vertical.clone(),
-            stride: self.stride.clone(),
-            pixel_format: self.pixel_format.clone(),
+            buffer_size: self.buffer_size,
+            horizontal: self.horizontal,
+            vertical: self.vertical,
+            stride: self.stride,
+            pixel_format: self.pixel_format,
         }
     }
 }

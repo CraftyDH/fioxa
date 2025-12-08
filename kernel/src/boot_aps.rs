@@ -95,7 +95,7 @@ pub unsafe fn boot_aps(madt: &Madt) {
         bspdone = (end) as *mut u32;
         aprunning = &mut *((end + 4) as *mut AtomicU32);
         *((end + 8) as *mut u32) = cr3_addr;
-        *((end + 16) as *mut usize) = ap_startup_f as usize;
+        *((end + 16) as *mut usize) = ap_startup_f as *const () as usize;
         core_local_storage = (end + 24) as *mut u64;
     }
 

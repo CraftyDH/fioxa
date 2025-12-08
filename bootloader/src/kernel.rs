@@ -25,9 +25,7 @@ pub fn load_kernel(kernel_data: &[u8], mapper: &mut PageTableManager) -> u64 {
             .unwrap();
 
             // zero range
-            unsafe {
-                core::ptr::write_bytes(pages.as_ptr() as *mut u8, 0, pcount as usize * 0x1000)
-            }
+            unsafe { core::ptr::write_bytes(pages.as_ptr(), 0, pcount as usize * 0x1000) }
 
             for i in 0..pcount {
                 match mapper.map_memory(base + i * 0x1000, pages.as_ptr() as u64 + i * 0x1000, true)

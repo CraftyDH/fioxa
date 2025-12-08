@@ -406,7 +406,7 @@ impl Thread {
                 state: ThreadState::Runnable,
                 task_state: Some(SavedTaskState {
                     sp: kstack_base_virt as usize,
-                    ip: start_new_task as usize,
+                    ip: start_new_task as *const () as usize,
                 }),
                 kstack_top: VirtAddr::from_ptr((kbase + KSTACK_SIZE) as *const ()),
                 cr3_page: process.memory.lock().region.get_cr3() as u64,

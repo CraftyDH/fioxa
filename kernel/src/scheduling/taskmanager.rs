@@ -143,8 +143,7 @@ pub unsafe fn enable_syscall() {
         wrmsr(0xC0000081, star);
 
         // set lstar (the rip that it'll go to)
-        #[allow(clippy::fn_to_numeric_cast)]
-        wrmsr(0xC0000082, syscall_sysret_handler as u64);
+        wrmsr(0xC0000082, syscall_sysret_handler as *const () as u64);
 
         // set flag mask (mask everything)
         wrmsr(0xC0000084, 0x200);

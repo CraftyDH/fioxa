@@ -217,7 +217,7 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     ls.current_context = 0;
     ls.current_task_kernel_stack_top = 0;
     ls.current_task_ptr = 0;
-    ls.kernel_syscall_entry = syscall_kernel_handler as usize;
+    ls.kernel_syscall_entry = syscall_kernel_handler as *const () as usize;
 
     unsafe { crate::gdt::create_gdt_for_core(&mut *((vaddr_base + 0x1000) as *mut CPULocalGDT)) };
 
@@ -227,7 +227,7 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
 pub unsafe fn init_bsp_boot_ls() {
     unsafe { set_ls(&raw mut BOOTCPULS as u64) }
     assert!(!BOOT_BSP_ID.is_completed());
-    BOOT_BSP_ID.call_once(|| get_current_core_id());
+    BOOT_BSP_ID.call_once(get_current_core_id);
 }
 
 pub unsafe fn init_bsp_localstorage() {
