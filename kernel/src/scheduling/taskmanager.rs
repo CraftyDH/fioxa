@@ -429,7 +429,7 @@ where
     let raw = Box::into_raw(Box::new(boxed_func)) as usize;
 
     ProcessBuilder::new(
-        ProcessMemory::new(),
+        ProcessMemory::new().unwrap(),
         sys_thread_bootstrapper as *const u64,
         raw,
     )

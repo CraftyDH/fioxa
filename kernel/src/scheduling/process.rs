@@ -30,10 +30,9 @@ use crate::{
     mutex::Spinlock,
     object::{KObject, KObjectSignal},
     paging::{
-        KERNEL_STACKS_MAP, MemoryLoc, PageAllocator,
-        page::{Page, Size4KB},
+        AllocatedPage, GlobalPageAllocator, KERNEL_STACKS_MAP, MemoryLoc,
         page_allocator::global_allocator,
-        page_table::Mapper,
+        page_table::{EntryMut, MaybeOwned},
     },
     port::KPort,
     time::HPET,
@@ -103,15 +102,9 @@ pub struct ProcessMemory {
     pub region: VirtualMemoryRegion,
 }
 
-impl Default for ProcessMemory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ProcessMemory {
-    pub fn new() -> Self {
-        let mut region = VirtualMemoryRegion::new(global_allocator());
+    pub fn new() -> Option<Self> {
+        let mut region = VirtualMemoryRegion::new(global_allocator())?;
 
         static HPET_LOCATION: Lazy<(usize, Arc<Spinlock<VMO>>)> = Lazy::new(|| unsafe {
             let val = HPET.get().unwrap().info.base_address;
@@ -129,7 +122,7 @@ impl ProcessMemory {
                 .unwrap();
         }
 
-        Self { region }
+        Some(Self { region })
     }
 }
 
@@ -376,13 +369,16 @@ impl Thread {
         let alloc = global_allocator();
 
         let kbase = MemoryLoc::KernelStacks as u64 + KSTACK_SIZE * 2 * kstack_id;
+        let mut lvl3 = KERNEL_STACKS_MAP.lock();
+        let flags = VMMapFlags::WRITEABLE;
         for page in (kbase..kbase + KSTACK_SIZE).step_by(0x1000) {
-            let frame = alloc.allocate_page().unwrap();
-            KERNEL_STACKS_MAP
-                .lock()
-                .map(alloc, Page::new(page), frame, VMMapFlags::WRITEABLE)
-                .unwrap()
-                .ignore();
+            let frame = AllocatedPage::new(alloc).unwrap();
+            let addr = page as usize;
+            let lvl2 = lvl3.as_mut().get_mut(addr).try_table(flags, alloc).unwrap();
+            let lvl1 = lvl2.get_mut(addr).try_table(flags, alloc).unwrap();
+            lvl1.get_mut(addr)
+                .set_page(MaybeOwned::Owned(frame.map_alloc(GlobalPageAllocator)))
+                .set_flags(flags);
         }
 
         let kstack_base_virt = kbase + KSTACK_SIZE - 0x1000;
@@ -580,14 +576,20 @@ impl Drop for Thread {
                 .region
                 .unmap(stack_base as usize, STACK_SIZE as usize)
                 .unwrap();
-            let alloc = global_allocator();
             let ktop = self.sched.lock().kstack_top.as_u64();
+            let mut lvl3 = KERNEL_STACKS_MAP.lock();
+            let lvl3 = lvl3.as_mut();
             for page in (ktop - KSTACK_SIZE..ktop).step_by(0x1000) {
-                let page = Page::<Size4KB>::new(page);
-                let mut m = KERNEL_STACKS_MAP.lock();
-                let phys = m.address_of(page).unwrap();
-                m.unmap(alloc, page).unwrap().flush();
-                alloc.free_page(phys);
+                let addr = page as usize;
+                let EntryMut::Table(lvl2) = lvl3.get_mut(addr).entry_mut() else {
+                    panic!();
+                };
+                let EntryMut::Table(lvl1) = lvl2.get_mut(addr).entry_mut() else {
+                    panic!();
+                };
+                lvl1.get_mut(addr).take_page().unwrap();
+                lvl2.get_mut(addr).gc_table();
+                lvl3.get_mut(addr).gc_table();
             }
         }
     }

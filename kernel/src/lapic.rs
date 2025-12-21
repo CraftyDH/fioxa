@@ -9,7 +9,7 @@ use crate::{
         MemoryLoc,
         page::{Page, Size4KB},
         page_allocator::global_allocator,
-        page_table::{MapMemoryError, Mapper, PageTable, TableLevel4},
+        page_table::{Flusher, MaybeOwned, PageTable, TableLevel4},
     },
     scheduling::{taskmanager::enter_sched, with_held_interrupts},
     time::{HPET, check_sleep},
@@ -20,19 +20,25 @@ pub const PHYS_LAPIC_ADDR: u64 = 0xfee00000;
 pub const LAPIC_ADDR: u64 = MemoryLoc::PhysMapOffset as u64 + PHYS_LAPIC_ADDR;
 
 pub fn map_lapic(mapper: &mut PageTable<TableLevel4>) {
-    match mapper.map(
-        global_allocator(),
-        Page::<Size4KB>::new(LAPIC_ADDR),
-        Page::new(PHYS_LAPIC_ADDR),
-        VMMapFlags::WRITEABLE,
-    ) {
-        Ok(f) => f.flush(),
-        Err(MapMemoryError::MemAlreadyMapped {
-            from: _,
-            to,
-            current,
-        }) if to == current => info!("LAPIC was already mapped"),
-        Err(e) => panic!("cannot ident map because {e:?}"),
+    let alloc = global_allocator();
+
+    let addr = LAPIC_ADDR as usize;
+    let f = VMMapFlags::WRITEABLE;
+    let lvl3 = mapper.get_mut(addr).table_alloc(f, alloc);
+    let lvl2 = lvl3.get_mut(addr).try_table(f, alloc).unwrap();
+    let lvl1 = lvl2.get_mut(addr).try_table(f, alloc).unwrap();
+    let entry = lvl1.get_mut(addr);
+
+    let target = Page::<Size4KB>::new(PHYS_LAPIC_ADDR);
+    match entry.page() {
+        Some(page) => {
+            info!("LAPIC was already mapped");
+            assert_eq!(page.get_address(), target.get_address());
+        }
+        None => {
+            entry.set_page(MaybeOwned::Static(target)).set_flags(f);
+            Flusher::new(PHYS_LAPIC_ADDR).flush();
+        }
     }
 }
 

@@ -6,10 +6,10 @@ use acpi::HpetInfo;
 use kernel_sys::types::VMMapFlags;
 
 use crate::paging::{
-    KERNEL_LVL4, MemoryLoc,
+    MemoryLoc, OFFSET_MAP,
     page::{Page, Size4KB},
     page_allocator::global_allocator,
-    page_table::{MapMemoryError, Mapper},
+    page_table::MaybeOwned,
 };
 
 use self::bitfields::CapabilitiesIDRegister;
@@ -31,17 +31,23 @@ impl HPET {
         let hpet_base_vaddr = MemoryLoc::PhysMapOffset as usize + hpet.base_address;
 
         // Map into the global mapping
-        match KERNEL_LVL4.lock().map(
-            global_allocator(),
-            Page::<Size4KB>::new(hpet_base_vaddr as u64),
-            Page::<Size4KB>::new(hpet.base_address as u64),
-            VMMapFlags::WRITEABLE,
-        ) {
-            Ok(f) => f.flush(),
-            Err(MapMemoryError::MemAlreadyMapped { to, current, .. }) if to == current => {
-                warn!("HPET override mapping")
+        {
+            let alloc = global_allocator();
+            let f = VMMapFlags::WRITEABLE;
+            let mut offset = OFFSET_MAP.lock();
+            let lvl3 = offset.as_mut();
+            let lvl2 = lvl3.get_mut(hpet_base_vaddr).try_table(f, alloc).unwrap();
+            let lvl1 = lvl2.get_mut(hpet_base_vaddr).try_table(f, alloc).unwrap();
+            let entry = lvl1.get_mut(hpet_base_vaddr);
+
+            let target = Page::<Size4KB>::new(hpet.base_address as u64);
+            match entry.page() {
+                Some(page) => {
+                    info!("HPET was already mapped");
+                    assert_eq!(page.get_address(), target.get_address());
+                }
+                None => entry.set_page(MaybeOwned::Static(target)).set_flags(f),
             }
-            Err(e) => panic!("cannot ident map because {e:?}"),
         }
 
         let x = unsafe { core::ptr::read_volatile(hpet_base_vaddr as *const u64) };

@@ -1,6 +1,6 @@
 use modular_bitfield::{
     bitfield,
-    specifiers::{B3, B12, B40},
+    specifiers::{B3, B11, B40},
 };
 
 #[bitfield(bits = 64)]
@@ -16,8 +16,9 @@ pub struct PageDirectoryEntry {
     pub global: bool,
     pub available: B3,
     internal_address: B40,
+    pub fx_owned: bool,
     #[skip]
-    _reserved: B12,
+    _reserved: B11,
 }
 
 impl PageDirectoryEntry {

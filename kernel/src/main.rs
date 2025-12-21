@@ -101,15 +101,15 @@ pub unsafe fn main_stage1(info: *const BootInfo) -> ! {
         let alloc = global_allocator();
 
         // Initialize global page maps
-        create_offset_map(alloc, &mut OFFSET_MAP.lock(), mmap);
-        create_kernel_map(alloc, &mut KERNEL_DATA_MAP.lock());
+        create_offset_map(alloc, OFFSET_MAP.lock().as_mut(), mmap);
+        create_kernel_map(alloc, KERNEL_DATA_MAP.lock().as_mut());
 
         // Initialize scheduler / global table
         let cr3 = {
             let mut table = KERNEL_LVL4.lock();
-            map_gop(global_allocator(), &mut table, &boot_info.gop);
-            map_lapic(&mut table);
-            table.get_physical_address()
+            map_gop(global_allocator(), table.as_mut(), &boot_info.gop);
+            map_lapic(table.as_mut());
+            table.raw() as usize
         };
 
         let new = MemoryLoc::PhysMapOffset as u64;
@@ -166,7 +166,7 @@ unsafe extern "C" fn main_stage2() {
 
     unsafe { init_bsp_localstorage() };
 
-    let init_process = ProcessBuilder::new(ProcessMemory::new(), init as *const u64, 0)
+    let init_process = ProcessBuilder::new(ProcessMemory::new().unwrap(), init as *const u64, 0)
         .privilege(ProcessPrivilege::KERNEL)
         .name("INIT PROCESS")
         .build();

@@ -20,7 +20,7 @@ use crate::{
         KERNEL_LVL4, MemoryLoc,
         page::{Page, Size4KB},
         page_allocator::{frame_alloc_exec, global_allocator},
-        page_table::Mapper,
+        page_table::MaybeOwned,
     },
     scheduling::taskmanager::core_start_multitasking,
     time::spin_sleep_ms,
@@ -64,16 +64,19 @@ pub unsafe fn boot_aps(madt: &Madt) {
                 )
                 .unwrap();
         };
-        kernel_mem
-            .identity_map(
-                global_allocator(),
-                Page::<Size4KB>::new(0x8000),
-                VMMapFlags::WRITEABLE,
-            )
-            .unwrap()
-            .ignore();
 
-        let Ok(addr) = kernel_mem.get_physical_address().try_into() else {
+        let alloc = global_allocator();
+        let addr = 0x8000;
+        let f = VMMapFlags::WRITEABLE;
+        let lvl4 = kernel_mem.as_mut();
+        let lvl3 = lvl4.get_mut(addr).table_alloc(f, alloc);
+        let lvl2 = lvl3.get_mut(addr).try_table(f, alloc).unwrap();
+        let lvl1 = lvl2.get_mut(addr).try_table(f, alloc).unwrap();
+        lvl1.get_mut(addr)
+            .set_page(MaybeOwned::Static(Page::<Size4KB>::new(0x8000)))
+            .set_flags(f);
+
+        let Ok(addr) = (kernel_mem.raw() as usize).try_into() else {
             error!("KERNEL MAP SHOULD BE 32bits for AP BOOT");
             return;
         };

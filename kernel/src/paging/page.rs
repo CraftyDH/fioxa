@@ -59,6 +59,14 @@ impl<S: PageSize> Page<S> {
     pub fn containing(address: u64) -> Self {
         Self::new(address & !(S::PAGE_SIZE - 1))
     }
+
+    // HACK to get around generics
+    pub fn as_size4kb(self) -> Option<Page<Size4KB>> {
+        (S::PAGE_SIZE == Size4KB::PAGE_SIZE).then_some(Page {
+            address: self.address,
+            _size: PhantomData,
+        })
+    }
 }
 
 impl<S: PageSize> Copy for Page<S> {}

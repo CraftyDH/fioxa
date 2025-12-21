@@ -7,8 +7,8 @@ use crate::{
     gdt::CPULocalGDT,
     ioapic::{BOOT_BSP_ID, get_current_core_id},
     paging::{
-        MemoryLoc, PER_CPU_MAP, PageAllocator, page::Page, page_allocator::global_allocator,
-        page_table::Mapper, virt_addr_for_phys,
+        AllocatedPage, GlobalPageAllocator, MemoryLoc, PER_CPU_MAP, PageAllocator,
+        page_allocator::global_allocator, virt_addr_for_phys,
     },
     scheduling::process::{Thread, ThreadSched},
     syscall::syscall_kernel_handler,
@@ -200,13 +200,18 @@ pub unsafe fn init_core(core_id: u8) -> u64 {
     assert!(gdt_size + 0x1000 <= 0x10_0000);
 
     let alloc = global_allocator();
+    let mut lvl3 = PER_CPU_MAP.lock();
+    let flags = VMMapFlags::WRITEABLE;
     for page in (vaddr_base..vaddr_base + gdt_size + 0xfff).step_by(0x1000) {
-        let phys = alloc.allocate_page().unwrap();
-        PER_CPU_MAP
-            .lock()
-            .map(alloc, Page::new(page), phys, VMMapFlags::WRITEABLE)
+        let phys = AllocatedPage::new(alloc)
             .unwrap()
-            .flush();
+            .map_alloc(GlobalPageAllocator);
+
+        let addr = page as usize;
+        let lvl3 = lvl3.as_mut();
+        let lvl2 = lvl3.get_mut(addr).try_table(flags, alloc).unwrap();
+        let lvl1 = lvl2.get_mut(addr).try_table(flags, alloc).unwrap();
+        lvl1.get_mut(addr).set_page(phys.into()).set_flags(flags);
     }
 
     let ls = unsafe { &mut *(vaddr_base as *mut CPULocalStorage) };

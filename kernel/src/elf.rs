@@ -12,7 +12,6 @@ use kernel_userspace::{
     elf::LoadElfError, handle::Handle, ipc::IPCChannel, process::ProcessHandle,
 };
 
-use spin::Lazy;
 use x86_64::{align_down, align_up};
 
 use crate::BOOT_INFO;
@@ -22,13 +21,11 @@ use crate::lapic::disable_localapic;
 use crate::memory::MemoryMapIter;
 use crate::mutex::Spinlock;
 use crate::paging::offset_map::map_gop;
-use crate::paging::page::{Page, Size4KB};
 use crate::paging::page_allocator::global_allocator;
-use crate::paging::page_table::{
-    MapMemoryError, Mapper, PageTable, TableLevel, TableLevel3, TableLevel4,
-};
+use crate::paging::page_table::{MaybeOwned, PageTableOwned, TableLevel4};
 use crate::paging::{
-    MemoryLoc, OFFSET_MAP, PageAllocator, get_mem_offset, virt_addr_for_phys, virt_addr_offset,
+    GlobalPageAllocator, MemoryLoc, OFFSET_MAP, PageAllocator, get_mem_offset, virt_addr_for_phys,
+    virt_addr_offset,
 };
 use crate::vm::VMO;
 use crate::{
@@ -67,7 +64,7 @@ pub fn load_elf(data: &[u8]) -> Result<ProcessBuilder, LoadElfError> {
         return Err(LoadElfError::InternalError);
     }
 
-    let mut memory = ProcessMemory::new();
+    let mut memory = ProcessMemory::new().ok_or(LoadElfError::InternalError)?;
     let this_mem = unsafe { &CPULocalStorageRW::get_current_task().process().memory };
 
     let segments = elf_file.segments().ok_or(LoadElfError::InternalError)?;
@@ -248,25 +245,23 @@ pub fn load_kernel(data: &[u8]) {
         }
     };
 
-    let mut bootsp = PageTable::<TableLevel4>::new(global_allocator());
-    remove_page(&mut mmap, bootsp.get_physical_address() as u64);
+    let mut bootsp = PageTableOwned::<TableLevel4>::new(GlobalPageAllocator).unwrap();
+    remove_page(&mut mmap, bootsp.raw() as u64);
 
     unsafe {
         let boot_info = &*virt_addr_offset(BOOT_INFO);
-        map_gop(global_allocator(), &mut bootsp, &boot_info.gop);
+        map_gop(global_allocator(), bootsp.as_mut(), &boot_info.gop);
     }
 
-    let set = |addr, t: &Lazy<Spinlock<PageTable<TableLevel3>>>| {
-        let e = &mut bootsp.table().entries[TableLevel4::calculate_index(addr)];
-        e.set_present(true);
-        e.set_read_write(true);
-        e.set_user_super(false);
-        e.set_address(t.lock().get_physical_address() as u64);
-    };
-    set(MemoryLoc::PhysMapOffset as usize, &OFFSET_MAP);
+    bootsp
+        .as_mut()
+        .get_mut(MemoryLoc::PhysMapOffset as usize)
+        .set_table(MaybeOwned::Static(OFFSET_MAP.lock().clone()))
+        .set_flags(VMMapFlags::WRITEABLE);
 
     let this_mem = unsafe { &CPULocalStorageRW::get_current_task().process().memory };
 
+    let alloc = global_allocator();
     // Iterate over each header
     for program_header in elf_file.segments().unwrap() {
         if program_header.p_type == PT_LOAD {
@@ -293,19 +288,24 @@ pub fn load_kernel(data: &[u8]) {
 
             // Map into the new processes address space
             for (i, page) in mem.lock().vmo_pages_mut().iter_mut().enumerate() {
-                let p = page.unwrap();
+                let addr = vstart as usize + i * 0x1000;
 
-                match bootsp.map(
-                    global_allocator(),
-                    Page::new(vstart + i as u64 * 0x1000),
-                    p,
-                    vmflags,
-                ) {
-                    Ok(_) => remove_page(&mut mmap, p.get_address()),
-                    Err(MapMemoryError::MemAlreadyMapped { current, .. }) => {
+                let lvl4 = bootsp.as_mut();
+                let lvl3 = lvl4.get_mut(addr).table_alloc(vmflags, alloc);
+                let lvl2 = lvl3.get_mut(addr).try_table(vmflags, alloc).unwrap();
+                let lvl1 = lvl2.get_mut(addr).try_table(vmflags, alloc).unwrap();
+                let p = lvl1.get_mut(addr);
+
+                match p.page() {
+                    Some(pg) => {
                         // TODO: Fix
                         error!("mem already mapped?");
-                        *page = Some(Page::new(current))
+                        *page = Some(pg)
+                    }
+                    None => {
+                        let page = page.unwrap();
+                        remove_page(&mut mmap, page.get_address());
+                        p.set_page(MaybeOwned::Static(page)).set_flags(vmflags);
                     }
                 }
             }
@@ -342,7 +342,9 @@ pub fn load_kernel(data: &[u8]) {
     let stack = global_allocator().allocate_pages(16).unwrap();
     remove_pages(&mut mmap, stack.get_address(), 16);
 
-    Mapper::<Size4KB>::get_page_addresses(&bootsp, |p| remove_page(&mut mmap, p.get_address()));
+    bootsp
+        .as_ref()
+        .get_page_addresses(|p| remove_page(&mut mmap, p as u64));
 
     // Add an extra page to buffer incase allocating space for the map increases mapping count
     let pages = ((mmap.len() * size_of::<MemoryDescriptor>()).div_ceil(0x1000)) + 1;
@@ -373,7 +375,7 @@ pub fn load_kernel(data: &[u8]) {
 
     unsafe { disable_apic() };
 
-    let arg_cr3 = bootsp.get_physical_address();
+    let arg_cr3 = bootsp.raw() as usize;
     let arg_stack = virt_addr_for_phys(stack.get_address() + 16 * 0x1000);
     let arg_entry = elf_file.ehdr.e_entry;
     let arg_bootinfo = virt_addr_for_phys(boot_stuff.get_address());

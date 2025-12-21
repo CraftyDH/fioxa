@@ -9,12 +9,12 @@ use crate::{
         MemoryLoc, PageAllocator,
         page::{Page, Size4KB},
         page_allocator::{frame_alloc_exec, global_allocator},
-        page_table::{Mapper, PageTable, TableLevel4, UnMapMemoryError},
+        page_table::{EntryMut, Flusher, MaybeOwned, PageTableOwned, TableLevel4, TableOperations},
     },
 };
 
 pub struct VirtualMemoryRegion {
-    page_mapper: PageTable<TableLevel4>,
+    page_mapper: PageTableOwned<TableLevel4>,
     // Should always be ordered
     mappings: Vec<VMOMapping>,
 }
@@ -27,19 +27,22 @@ struct VMOMapping {
 }
 
 impl VirtualMemoryRegion {
-    pub fn new(alloc: &impl PageAllocator) -> Self {
-        Self {
-            page_mapper: PageTable::new_with_global(alloc),
+    pub fn new(alloc: impl PageAllocator) -> Option<Self> {
+        Some(Self {
+            page_mapper: PageTableOwned::new_with_global(alloc)?,
             mappings: Vec::new(),
-        }
+        })
     }
 
     pub fn get_cr3(&self) -> usize {
-        self.page_mapper.get_physical_address()
+        self.page_mapper.raw() as usize
     }
 
     pub fn get_phys_addr_from_vaddr(&self, address: u64) -> Option<u64> {
-        self.page_mapper.get_phys_addr_from_vaddr(address)
+        self.page_mapper
+            .as_ref()
+            .address_of(address as usize)
+            .map(|a| a as u64)
     }
 
     pub fn map_vmo(
@@ -75,10 +78,15 @@ impl VirtualMemoryRegion {
         let alloc = global_allocator();
 
         let mut map = |vaddr, page| {
-            self.page_mapper
-                .map(alloc, Page::<Size4KB>::new(vaddr as u64), page, flags)
-                .unwrap()
-                .ignore();
+            let lvl4 = self.page_mapper.as_mut();
+            let lvl3 = lvl4.get_mut(vaddr).table_alloc(flags, alloc);
+            let lvl2 = lvl3.get_mut(vaddr).try_table(flags, alloc).unwrap();
+            let lvl1 = lvl2.get_mut(vaddr).try_table(flags, alloc).unwrap();
+            // we will manage dropping the page and can be mapped in multiple spaces at once
+            lvl1.get_mut(vaddr)
+                .set_page(MaybeOwned::Static(page))
+                .set_flags(flags);
+            Flusher::new(vaddr as u64).flush();
         };
 
         let virt = (base..base + length).step_by(0x1000);
@@ -146,15 +154,23 @@ impl VirtualMemoryRegion {
                 }
             }
         };
-        // Make the mapping
-        if let Ok(f) = self.page_mapper.map(
-            global_allocator(),
-            Page::<Size4KB>::containing(address as u64),
-            phys,
-            map.map_flags,
-        ) {
-            f.flush()
+        let alloc = global_allocator();
+        let flags = map.map_flags;
+        let lvl4 = self.page_mapper.as_mut();
+        let lvl3 = lvl4.get_mut(address).table_alloc(flags, alloc);
+        let lvl2 = lvl3.get_mut(address).try_table(flags, alloc).unwrap();
+        let lvl1 = lvl2.get_mut(address).try_table(flags, alloc).unwrap();
+
+        let p = lvl1.get_mut(address);
+        match p.page() {
+            Some(page) => {
+                assert_eq!(page.get_address(), phys.get_address());
+            }
+            None => p.set_page(MaybeOwned::Static(phys)).set_flags(flags),
         }
+
+        Flusher::new(address as u64).flush();
+
         Some(())
     }
 
@@ -198,19 +214,22 @@ impl VirtualMemoryRegion {
             return Err(UnmapError::MustUnmapVMOCompletely);
         }
 
-        let alloc = global_allocator();
         for page in (map.base_vaddr..map.end_vaddr).step_by(0x1000) {
-            match self
-                .page_mapper
-                .unmap(alloc, Page::<Size4KB>::new(page as u64))
-            {
-                Ok(f) => f.flush(),
-                Err(UnMapMemoryError::MemNotMapped(_)) => (),
-                Err(e) => {
-                    error!("Failed to unmap because: {e:?}")
-                }
-            }
+            let lvl4 = self.page_mapper.as_mut();
+            let Some(lvl3) = lvl4.get_mut(page).table_mut() else {
+                continue;
+            };
+            let EntryMut::Table(lvl2) = lvl3.get_mut(page).entry_mut() else {
+                continue;
+            };
+            let EntryMut::Table(lvl1) = lvl2.get_mut(page).entry_mut() else {
+                continue;
+            };
+            lvl1.get_mut(page).take_page();
+            lvl2.get_mut(page).gc_table();
+            lvl3.get_mut(page).gc_table();
 
+            Flusher::new(page as u64).flush();
             // TODO: Send IPI to flush on other threads
         }
         Ok(())

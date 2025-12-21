@@ -2,10 +2,13 @@ use core::{mem::ManuallyDrop, ops::Deref, ptr};
 
 use page::Size4KB;
 use page_allocator::global_allocator;
-use page_table::{PageTable, TableLevel3, TableLevel4};
+use page_table::{TableLevel3, TableLevel4};
 use spin::Lazy;
 
-use crate::mutex::Spinlock;
+use crate::{
+    mutex::Spinlock,
+    paging::page_table::{PageTableOwned, PageTableStatic},
+};
 
 use self::page::Page;
 
@@ -16,19 +19,23 @@ pub mod page_directory;
 pub mod page_table;
 
 /// KERNEL map for context 0 / scheduler
-pub static KERNEL_LVL4: Lazy<Spinlock<PageTable<TableLevel4>>> =
-    Lazy::new(|| Spinlock::new(PageTable::new_with_global(global_allocator())));
-
-pub static OFFSET_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
-    Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
-pub static KERNEL_DATA_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
-    Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
-pub static KERNEL_STACKS_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
-    Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
-pub static KERNEL_HEAP_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
-    Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
-pub static PER_CPU_MAP: Lazy<Spinlock<PageTable<TableLevel3>>> =
-    Lazy::new(|| Spinlock::new(PageTable::new(global_allocator())));
+pub static KERNEL_LVL4: Lazy<Spinlock<PageTableStatic<TableLevel4>>> = Lazy::new(|| {
+    Spinlock::new(
+        PageTableOwned::new_with_global(GlobalPageAllocator)
+            .unwrap()
+            .leak(),
+    )
+});
+pub static OFFSET_MAP: Lazy<Spinlock<PageTableStatic<TableLevel3>>> =
+    Lazy::new(|| Spinlock::new(PageTableOwned::new(GlobalPageAllocator).unwrap().leak()));
+pub static KERNEL_DATA_MAP: Lazy<Spinlock<PageTableStatic<TableLevel3>>> =
+    Lazy::new(|| Spinlock::new(PageTableOwned::new(GlobalPageAllocator).unwrap().leak()));
+pub static KERNEL_STACKS_MAP: Lazy<Spinlock<PageTableStatic<TableLevel3>>> =
+    Lazy::new(|| Spinlock::new(PageTableOwned::new(GlobalPageAllocator).unwrap().leak()));
+pub static KERNEL_HEAP_MAP: Lazy<Spinlock<PageTableStatic<TableLevel3>>> =
+    Lazy::new(|| Spinlock::new(PageTableOwned::new(GlobalPageAllocator).unwrap().leak()));
+pub static PER_CPU_MAP: Lazy<Spinlock<PageTableStatic<TableLevel3>>> =
+    Lazy::new(|| Spinlock::new(PageTableOwned::new(GlobalPageAllocator).unwrap().leak()));
 
 pub type MemoryLoc = MemoryLoc64bit48bits;
 
@@ -103,6 +110,13 @@ impl<A: PageAllocator> AllocatedPage<A> {
     pub fn alloc(&self) -> &A {
         &self.alloc
     }
+
+    pub fn map_alloc<B: PageAllocator>(self, alloc: B) -> AllocatedPage<B> {
+        AllocatedPage {
+            page: self.into_raw(),
+            alloc,
+        }
+    }
 }
 
 impl<A: PageAllocator> Deref for AllocatedPage<A> {
@@ -129,6 +143,24 @@ pub trait PageAllocator {
     unsafe fn free_page(&self, page: Page<Size4KB>);
 
     unsafe fn free_pages(&self, page: Page<Size4KB>, count: usize);
+}
+
+impl<A: PageAllocator> PageAllocator for &A {
+    fn allocate_page(&self) -> Option<Page<Size4KB>> {
+        (*self).allocate_page()
+    }
+
+    fn allocate_pages(&self, count: usize) -> Option<Page<Size4KB>> {
+        (*self).allocate_pages(count)
+    }
+
+    unsafe fn free_page(&self, page: Page<Size4KB>) {
+        unsafe { (*self).free_page(page) };
+    }
+
+    unsafe fn free_pages(&self, page: Page<Size4KB>, count: usize) {
+        unsafe { (*self).free_pages(page, count) };
+    }
 }
 
 pub struct GlobalPageAllocator;

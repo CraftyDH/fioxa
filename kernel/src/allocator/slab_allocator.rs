@@ -5,10 +5,9 @@ use kernel_sys::types::VMMapFlags;
 use crate::{
     locked_mutex::Locked,
     paging::{
-        KERNEL_HEAP_MAP, PageAllocator,
-        page::{Page, Size4KB},
+        AllocatedPage, GlobalPageAllocator, KERNEL_HEAP_MAP,
         page_allocator::global_allocator,
-        page_table::Mapper,
+        page_table::{EntryMut, Flusher, MaybeOwned},
     },
     scheduling::with_held_interrupts,
 };
@@ -58,16 +57,21 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                         // No block exists in list => allocate new block
                         let block_size = SLAB_SIZES[index];
                         // Only works if all blocks are powers of 2
-                        let frame = alloc.allocate_page().unwrap();
+                        let frame = AllocatedPage::new(alloc)
+                            .unwrap()
+                            .map_alloc(GlobalPageAllocator);
 
                         let base = allocator.base_address;
                         allocator.base_address += 0x1000;
 
-                        KERNEL_HEAP_MAP
-                            .lock()
-                            .map(alloc, Page::new(base), frame, VMMapFlags::WRITEABLE)
-                            .unwrap()
-                            .flush();
+                        let addr = base as usize;
+                        let flags = VMMapFlags::WRITEABLE;
+                        let mut lvl3 = KERNEL_HEAP_MAP.lock();
+                        let lvl2 = lvl3.as_mut().get_mut(addr).try_table(flags, alloc).unwrap();
+                        let lvl1 = lvl2.get_mut(addr).try_table(flags, alloc).unwrap();
+                        lvl1.get_mut(addr).set_page(frame.into()).set_flags(flags);
+
+                        Flusher::new(base).flush();
 
                         let mut current_node = None;
                         for block in (base..(base + 0x1000)).step_by(block_size) {
@@ -90,13 +94,18 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
 
                     let alloc = global_allocator();
                     for page in (base..(base + length)).step_by(0x1000) {
-                        let frame = alloc.allocate_page().unwrap();
-
-                        KERNEL_HEAP_MAP
-                            .lock()
-                            .map(alloc, Page::new(page), frame, VMMapFlags::WRITEABLE)
+                        let frame = AllocatedPage::new(alloc)
                             .unwrap()
-                            .flush();
+                            .map_alloc(GlobalPageAllocator);
+
+                        let addr = page as usize;
+                        let flags = VMMapFlags::WRITEABLE;
+                        let mut lvl3 = KERNEL_HEAP_MAP.lock();
+                        let lvl2 = lvl3.as_mut().get_mut(addr).try_table(flags, alloc).unwrap();
+                        let lvl1 = lvl2.get_mut(addr).try_table(flags, alloc).unwrap();
+                        lvl1.get_mut(addr).set_page(frame.into()).set_flags(flags);
+
+                        Flusher::new(page).flush();
                     }
                     base as *mut u8
                 }
@@ -121,21 +130,29 @@ unsafe impl GlobalAlloc for Locked<SlabAllocator> {
                     new_node_ptr.write(new_node);
                     allocator.slab_heads[index] = Some(&mut *new_node_ptr);
                 },
-                None => unsafe {
+                None => {
                     let base = ptr as u64;
                     let length = ((max_size + 0xFFF) & !0xFFF) as u64;
 
-                    let alloc = global_allocator();
                     // We assume that we allocated cont pages
                     for page in (base..(base + length)).step_by(0x1000) {
-                        let page = Page::<Size4KB>::new(page);
+                        let addr = page as usize;
+                        let mut lvl3 = KERNEL_HEAP_MAP.lock();
+                        let lvl3 = lvl3.as_mut();
 
-                        let mut m = KERNEL_HEAP_MAP.lock();
-                        let phys_page = m.address_of(page).unwrap();
-                        m.unmap(alloc, page).unwrap().flush();
-                        alloc.free_page(phys_page);
+                        let EntryMut::Table(lvl2) = lvl3.get_mut(addr).entry_mut() else {
+                            panic!()
+                        };
+                        let EntryMut::Table(lvl1) = lvl2.get_mut(addr).entry_mut() else {
+                            panic!()
+                        };
+                        let MaybeOwned::Owned(_) = lvl1.get_mut(addr).take_page().unwrap() else {
+                            panic!()
+                        };
+                        lvl2.get_mut(addr).gc_table();
+                        lvl3.get_mut(addr).gc_table();
                     }
-                },
+                }
             }
         });
     }
