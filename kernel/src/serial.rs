@@ -3,6 +3,7 @@ use core::fmt::Write;
 use alloc::{string::String, vec::Vec};
 use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
 use kernel_userspace::{
+    backoff_sleep,
     channel::Channel,
     handle::Handle,
     interrupt::InterruptsService,
@@ -207,14 +208,15 @@ pub fn serial_monitor_stdin() {
 
     loop {
         while let Some(b) = { serial.lock().try_read() } {
-            if b == b'\r' {
-                stdin.write(b"\n", &[]).unwrap();
+            let c = if b == b'\r' {
+                b'\n'
             } else if b == 127 {
                 // delete character, make it backspace
-                stdin.write(&[8], &[]).unwrap();
+                8
             } else {
-                stdin.write(&[b], &[]).unwrap();
-            }
+                b
+            };
+            backoff_sleep(|| stdin.write(&[c], &[]).ok());
         }
         comm1.wait().unwrap();
     }
