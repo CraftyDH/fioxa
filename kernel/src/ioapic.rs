@@ -157,7 +157,7 @@ fn read_ioapic_register(apic_base: usize, offset: u8) -> u32 {
 pub static BOOT_BSP_ID: Once<u8> = Once::new();
 
 pub fn get_current_core_id() -> u8 {
-    unsafe { (__cpuid(1).ebx >> 24) as u8 }
+    (__cpuid(1).ebx >> 24) as u8
 }
 
 #[repr(C, packed)]
