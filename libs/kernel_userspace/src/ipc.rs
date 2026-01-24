@@ -19,7 +19,7 @@ use rkyv::{
     with::{AsOwned, InlineAsBox},
 };
 
-use crate::{backoff_sleep, channel::Channel, handle::Handle, process::INIT_HANDLE_SERVICE};
+use crate::{channel::Channel, handle::Handle, service::Service};
 
 #[derive(Archive, Serialize, Deserialize)]
 pub struct IPCBox<'a, T: ?Sized + 'a>(#[rkyv(with = InlineAsBox)] pub &'a T);
@@ -78,9 +78,7 @@ impl IPCChannel {
     }
 
     pub fn connect(name: &str) -> Self {
-        Self::from_channel(backoff_sleep(|| {
-            INIT_HANDLE_SERVICE.lock().get_service(name)
-        }))
+        Self::from_channel(Service::get_by_name(name).connect().unwrap())
     }
 
     pub fn send<'a>(

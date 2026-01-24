@@ -17,7 +17,8 @@ use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_userspace::{
     channel::Channel,
     fs::{FSControllerService, FSFile, FSFileId, FSFileType, FSServiceExecutor, FSServiceImpl},
-    ipc::{IPCChannel, IPCIterator},
+    ipc::IPCChannel,
+    service::ServiceExecutor,
 };
 use spin::Mutex;
 
@@ -436,16 +437,16 @@ pub fn read_bios_block(disk: FSPartitionDisk) {
         fs_controller.register_filesystem(client);
     }
 
-    let chan: IPCIterator<Channel> = IPCChannel::from_channel(chan).into();
-
-    for c in chan {
+    ServiceExecutor::from_channel(chan, |c| {
         let fat = fat.clone();
         sys_process_spawn_thread(move || {
             FSServiceExecutor::new(IPCChannel::from_channel(c), fat)
                 .run()
                 .unwrap();
         });
-    }
+    })
+    .run()
+    .unwrap();
 }
 
 #[derive(Clone)]

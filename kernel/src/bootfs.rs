@@ -3,7 +3,8 @@ use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_userspace::{
     channel::Channel,
     fs::{FSControllerService, FSFile, FSFileId, FSServiceExecutor, FSServiceImpl},
-    ipc::{IPCChannel, IPCIterator},
+    ipc::IPCChannel,
+    service::ServiceExecutor,
 };
 
 #[rustfmt::skip]
@@ -33,15 +34,15 @@ pub fn serve_bootfs() {
         fs_controller.register_filesystem(client);
     }
 
-    let chan: IPCIterator<Channel> = IPCChannel::from_channel(chan).into();
-
-    for c in chan {
+    ServiceExecutor::from_channel(chan, |c| {
         sys_process_spawn_thread(move || {
             FSServiceExecutor::new(IPCChannel::from_channel(c), BootFs)
                 .run()
                 .unwrap();
         });
-    }
+    })
+    .run()
+    .unwrap();
 }
 
 struct BootFs;

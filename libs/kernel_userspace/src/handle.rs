@@ -1,7 +1,9 @@
 use core::ops::Deref;
 
 use kernel_sys::{
-    syscall::{sys_handle_clone, sys_handle_drop, sys_object_wait, sys_object_wait_port},
+    syscall::{
+        sys_handle_clone, sys_handle_drop, sys_object_type, sys_object_wait, sys_object_wait_port,
+    },
     types::{Hid, ObjectSignal},
 };
 
@@ -12,7 +14,7 @@ use crate::port::Port;
 #[repr(transparent)]
 pub struct Handle(Hid);
 
-pub const FIRST_HANDLE: Handle = unsafe { Handle::from_id(Hid::from_usize(1).unwrap()) };
+pub const FIRST_HANDLE: Hid = Hid::from_usize(1).unwrap();
 
 impl Handle {
     /// Construct a handle from an Hid
@@ -38,6 +40,10 @@ impl Handle {
         key: u64,
     ) -> Result<(), kernel_sys::types::SyscallError> {
         sys_object_wait_port(self.0, port.handle().0, on, key)
+    }
+
+    pub fn get_type(&self) -> kernel_sys::types::KernelObjectType {
+        sys_object_type(self.0).unwrap()
     }
 }
 

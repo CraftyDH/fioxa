@@ -35,7 +35,7 @@ pub fn main() {
 
     let mut current_fs: Option<(usize, FSService, FSFileId)> = None;
 
-    'main: loop {
+    loop {
         match current_fs {
             Some((id, ..)) => print!("{id}:{cwd} "),
             None => print!(":{cwd} "),
@@ -104,21 +104,23 @@ pub fn main() {
             "disk" => {
                 let c = rest.trim();
                 let num = c.parse::<usize>();
-                let fs = fs_controller.get_filesystems(false);
+                let mut fs = fs_controller.get_filesystems(false);
 
                 match num {
-                    Ok(num) => {
-                        for (i, mut fs) in fs.enumerate() {
-                            if i == num {
-                                let root = fs.stat_root().id;
-                                current_fs = Some((i, fs, root));
-                                cwd.clear();
-                                cwd.push('/');
-                                continue 'main;
-                            }
+                    Ok(num) => match fs.nth(num) {
+                        Some(fs) => {
+                            let mut fs = FSService::from_channel(IPCChannel::from_channel(
+                                fs.connect().unwrap(),
+                            ));
+                            let root = fs.stat_root().id;
+                            current_fs = Some((num, fs, root));
+                            cwd.clear();
+                            cwd.push('/');
                         }
-                        println!("Unknown disk")
-                    }
+                        None => {
+                            println!("Unknown disk")
+                        }
+                    },
                     Err(_) => {
                         println!("Drives:");
                         for (i, _) in fs.enumerate() {
@@ -262,7 +264,7 @@ pub fn main() {
                     &contents,
                     args.as_bytes(),
                     &[
-                        INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
+                        INIT_HANDLE_SERVICE.0.handle(),
                         STDIN_CHANNEL.handle(),
                         STDOUT_CHANNEL.handle(),
                         STDERR_CHANNEL.handle(),

@@ -12,9 +12,9 @@ use alloc::{boxed::Box, sync::Arc};
 use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_userspace::{
     channel::Channel,
+    handle::FIRST_HANDLE,
     ipc::IPCChannel,
     pci::{PCIDeviceExecutor, PCIDeviceImpl},
-    process::INIT_HANDLE_SERVICE,
 };
 use mcfg::MCFG;
 mod express;
@@ -219,7 +219,7 @@ fn enumerate_function(pci_bus: &mut impl PCIBus, segment: u16, bus: u8, device: 
                 elf::load_elf(early_bootfs_get("amd_pcnet").unwrap())
                     .unwrap()
                     .references(ProcessReferences::from_refs(&[
-                        **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
+                        FIRST_HANDLE,
                         **sid.handle(),
                     ]))
                     .privilege(crate::scheduling::process::ProcessPrivilege::KERNEL)

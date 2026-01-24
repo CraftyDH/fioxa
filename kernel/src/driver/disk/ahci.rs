@@ -14,7 +14,8 @@ use kernel_sys::{
 use kernel_userspace::{
     channel::Channel,
     disk::{DiskControllerService, DiskServiceExecutor, DiskServiceImpl, ata::ATADiskIdentify},
-    ipc::{IPCChannel, IPCIterator},
+    ipc::IPCChannel,
+    service::ServiceExecutor,
 };
 use spin::Mutex;
 use volatile::Volatile;
@@ -142,16 +143,18 @@ impl AHCIDriver {
                     let (chan, client) = Channel::new();
                     disk_controller.register_disk(client);
                     let port = ArcPort(Arc::new(Mutex::new(Port::new(port))));
-                    let chan: IPCIterator<Channel> = IPCChannel::from_channel(chan).into();
-
-                    for c in chan {
-                        let port = port.clone();
-                        sys_process_spawn_thread(move || {
-                            DiskServiceExecutor::new(IPCChannel::from_channel(c), port)
-                                .run()
-                                .unwrap();
-                        });
-                    }
+                    sys_process_spawn_thread(move || {
+                        ServiceExecutor::from_channel(chan, |c| {
+                            let port = port.clone();
+                            sys_process_spawn_thread(move || {
+                                DiskServiceExecutor::new(IPCChannel::from_channel(c), port)
+                                    .run()
+                                    .unwrap();
+                            });
+                        })
+                        .run()
+                        .unwrap();
+                    });
                 }
             }
         }

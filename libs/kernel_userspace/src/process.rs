@@ -7,19 +7,16 @@ use rkyv::{
     rancor::{Error, Source},
     with::InlineAsBox,
 };
-use spin::{Lazy, Mutex};
 
 use crate::{
     channel::Channel,
     handle::{FIRST_HANDLE, Handle},
     ipc::IPCChannel,
+    service::Service,
 };
 
-pub static INIT_HANDLE_SERVICE: Lazy<Mutex<InitHandleService>> = Lazy::new(|| {
-    Mutex::new(InitHandleService::from_channel(IPCChannel::from_channel(
-        Channel::from_handle(FIRST_HANDLE),
-    )))
-});
+pub static INIT_HANDLE_SERVICE: Service =
+    unsafe { Service(Channel::from_handle(Handle::from_id(FIRST_HANDLE))) };
 
 #[derive(Debug, Clone, PartialEq, Eq, Archive, Serialize, Deserialize)]
 pub struct ProcessHandle(Handle);
@@ -57,9 +54,8 @@ impl ProcessHandle {
 
 #[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub enum InitHandleMessage<'a> {
-    GetService(#[rkyv(with = InlineAsBox)] &'a str),
-    PublishService(#[rkyv(with = InlineAsBox)] &'a str, Channel),
-    Clone,
+    GetHandle(#[rkyv(with = InlineAsBox)] &'a str),
+    PublishHandle(#[rkyv(with = InlineAsBox)] &'a str, Handle),
 }
 
 pub struct InitHandleService(IPCChannel);
@@ -69,22 +65,22 @@ impl InitHandleService {
         Self(chan)
     }
 
-    pub fn get_service(&mut self, name: &str) -> Option<Channel> {
-        self.0.send(&InitHandleMessage::GetService(name)).unwrap();
+    pub fn connect() -> Self {
+        Self(IPCChannel::from_channel(
+            INIT_HANDLE_SERVICE.connect().unwrap(),
+        ))
+    }
+
+    pub fn get_handle(&mut self, name: &str) -> Option<Handle> {
+        self.0.send(&InitHandleMessage::GetHandle(name)).unwrap();
         let mut msg = self.0.recv().unwrap();
         msg.deserialize().unwrap()
     }
 
-    pub fn publish_service(&mut self, name: &str, handle: Channel) -> bool {
+    pub fn publish_handle(&mut self, name: &str, handle: Handle) -> bool {
         self.0
-            .send(&InitHandleMessage::PublishService(name, handle))
+            .send(&InitHandleMessage::PublishHandle(name, handle))
             .unwrap();
-        let mut msg = self.0.recv().unwrap();
-        msg.deserialize().unwrap()
-    }
-
-    pub fn clone_init_service(&mut self) -> Channel {
-        self.0.send(&InitHandleMessage::Clone).unwrap();
         let mut msg = self.0.recv().unwrap();
         msg.deserialize().unwrap()
     }
@@ -110,16 +106,13 @@ impl<I: InitHandleServiceImpl> InitHandleServiceExecutor<I> {
             let (msg, des) = msg.access::<ArchivedInitHandleMessage>()?;
 
             match msg {
-                ArchivedInitHandleMessage::GetService(name) => {
-                    let res = self.service.get_service(name);
+                ArchivedInitHandleMessage::GetHandle(name) => {
+                    let res = self.service.get_handle(name);
                     self.channel.send(&res)
                 }
-                ArchivedInitHandleMessage::PublishService(name, handle) => {
-                    let res = self.service.publish_service(name, handle.deserialize(des)?);
+                ArchivedInitHandleMessage::PublishHandle(name, handle) => {
+                    let res = self.service.publish_handle(name, handle.deserialize(des)?);
                     self.channel.send(&res)
-                }
-                ArchivedInitHandleMessage::Clone => {
-                    self.channel.send(&self.service.clone_init_service())
                 }
             }
             .map_err(Error::new)?;
@@ -128,9 +121,7 @@ impl<I: InitHandleServiceImpl> InitHandleServiceExecutor<I> {
 }
 
 pub trait InitHandleServiceImpl {
-    fn get_service(&mut self, name: &str) -> Option<Channel>;
+    fn get_handle(&mut self, name: &str) -> Option<Handle>;
 
-    fn publish_service(&mut self, name: &str, handle: Channel) -> bool;
-
-    fn clone_init_service(&mut self) -> Channel;
+    fn publish_handle(&mut self, name: &str, handle: Handle) -> bool;
 }

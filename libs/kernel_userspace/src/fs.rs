@@ -15,6 +15,7 @@ use rkyv::{
 use crate::{
     channel::Channel,
     ipc::{IPCChannel, IPCIterator, TypedIPCMessage},
+    service::Service,
 };
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Archive, Serialize, Deserialize)]
@@ -167,24 +168,12 @@ impl FSControllerService {
         self.chan.recv().unwrap().deserialize().unwrap()
     }
 
-    pub fn get_filesystems(&mut self, updates: bool) -> FSIterator {
+    pub fn get_filesystems(&mut self, updates: bool) -> IPCIterator<Service> {
         self.chan
             .send(&FSControllerMessage::GetFilesystems { updates })
             .unwrap();
         let chan: Channel = self.chan.recv().unwrap().deserialize().unwrap();
-        FSIterator(IPCIterator::from(IPCChannel::from_channel(chan)))
-    }
-}
-
-pub struct FSIterator(IPCIterator<Channel>);
-
-impl Iterator for FSIterator {
-    type Item = FSService;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0
-            .next()
-            .map(|e| FSService::from_channel(IPCChannel::from_channel(e)))
+        IPCIterator::from(IPCChannel::from_channel(chan))
     }
 }
 

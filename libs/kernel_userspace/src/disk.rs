@@ -9,6 +9,7 @@ use crate::{
     channel::Channel,
     disk::ata::ATADiskIdentify,
     ipc::{IPCChannel, IPCIterator, TypedIPCMessage},
+    service::Service,
 };
 
 pub mod ata;
@@ -102,24 +103,12 @@ impl DiskControllerService {
         self.chan.recv().unwrap().deserialize().unwrap()
     }
 
-    pub fn get_disks(&mut self, updates: bool) -> DiskIterator {
+    pub fn get_disks(&mut self, updates: bool) -> IPCIterator<Service> {
         self.chan
             .send(&DiskControllerMessage::GetDisks { updates })
             .unwrap();
         let chan: Channel = self.chan.recv().unwrap().deserialize().unwrap();
-        DiskIterator(IPCIterator::from(IPCChannel::from_channel(chan)))
-    }
-}
-
-pub struct DiskIterator(IPCIterator<Channel>);
-
-impl Iterator for DiskIterator {
-    type Item = DiskService;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0
-            .next()
-            .map(|e| DiskService::from_channel(IPCChannel::from_channel(e)))
+        IPCIterator::from(IPCChannel::from_channel(chan))
     }
 }
 

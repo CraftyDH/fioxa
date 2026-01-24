@@ -13,7 +13,8 @@ use kernel_userspace::{
     interrupt::{InterruptVector, InterruptsService},
     ipc::IPCChannel,
     port::Port,
-    process::INIT_HANDLE_SERVICE,
+    process::InitHandleService,
+    service::run_service_iter,
 };
 use userspace::log::info;
 use x86_64::instructions::port::{PortReadOnly, PortWriteOnly};
@@ -48,20 +49,13 @@ pub fn main() {
     let ms_srv_cbk = 4;
 
     let (kb_service, kb_right) = Channel::new();
-    assert!(
-        !INIT_HANDLE_SERVICE
-            .lock()
-            .publish_service("INPUT:KB", kb_right)
-    );
-    let mut kb_service = IPCChannel::from_channel(kb_service);
-
     let (ms_service, ms_right) = Channel::new();
-    assert!(
-        !INIT_HANDLE_SERVICE
-            .lock()
-            .publish_service("INPUT:MOUSE", ms_right)
-    );
-    let mut ms_service = IPCChannel::from_channel(ms_service);
+
+    {
+        let mut init = InitHandleService::connect();
+        assert!(!init.publish_handle("INPUT:KB", kb_right.into_inner()));
+        assert!(!init.publish_handle("INPUT:MOUSE", ms_right.into_inner()));
+    };
 
     let port = Port::new();
 
@@ -73,12 +67,10 @@ pub fn main() {
     info!("PS2 Ready");
 
     kb_service
-        .channel()
         .handle()
         .wait_port(&port, ObjectSignal::READABLE, kb_srv_cbk)
         .unwrap();
     ms_service
-        .channel()
         .handle()
         .wait_port(&port, ObjectSignal::READABLE, ms_srv_cbk)
         .unwrap();
@@ -101,20 +93,14 @@ pub fn main() {
             }
             ms_ev.acknowledge().unwrap();
         } else if ev.key == kb_srv_cbk {
-            let chan: Channel = kb_service.recv().unwrap().deserialize().unwrap();
-            kb_service.send(&()).unwrap();
-            kb_listeners.push(chan);
+            run_service_iter(&kb_service, |chan| kb_listeners.push(chan)).unwrap();
             kb_service
-                .channel()
                 .handle()
                 .wait_port(&port, ObjectSignal::READABLE, kb_srv_cbk)
                 .unwrap();
         } else if ev.key == ms_srv_cbk {
-            let chan: Channel = ms_service.recv().unwrap().deserialize().unwrap();
-            ms_service.send(&()).unwrap();
-            ms_listeners.push(chan);
+            run_service_iter(&ms_service, |chan| ms_listeners.push(chan)).unwrap();
             ms_service
-                .channel()
                 .handle()
                 .wait_port(&port, ObjectSignal::READABLE, ms_srv_cbk)
                 .unwrap();

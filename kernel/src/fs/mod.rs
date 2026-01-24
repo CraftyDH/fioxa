@@ -50,6 +50,7 @@ pub fn file_system_partition_loader() {
     for disk in controller.get_disks(true) {
         // TODO: Work out why some disks don't answer the request
         // info!("{:?}", disk.identify());
+        let disk = DiskService::from_channel(IPCChannel::from_channel(disk.connect().unwrap()));
         read_partitions(Arc::new(Mutex::new(disk)));
     }
 
@@ -97,7 +98,7 @@ pub fn fs_controller() {
 }
 
 struct DiskControllerData {
-    disks: Vec<IPCChannel>,
+    disks: Vec<Channel>,
     waiters: Vec<IPCChannel>,
 }
 
@@ -117,17 +118,8 @@ struct DiskControllerHandler {
 impl DiskControllerImpl for DiskControllerHandler {
     fn register_disk(&mut self, chan: Channel) {
         let mut common = self.common.lock();
-        let mut chan = IPCChannel::from_channel(chan);
         for w in common.waiters.iter_mut() {
-            let (l, r) = Channel::new();
-            match chan.send(&l) {
-                Ok(()) => (),
-                Err(e) => {
-                    warn!("error sending {e}");
-                    return;
-                }
-            }
-            match w.send(&r) {
+            match w.send(&chan) {
                 Ok(()) => (),
                 Err(e) => {
                     warn!("error sending {e}");
@@ -145,15 +137,7 @@ impl DiskControllerImpl for DiskControllerHandler {
         let mut send = IPCChannel::from_channel(send);
 
         for disk in common.disks.iter_mut() {
-            let (l, r) = Channel::new();
-            match send.send(&l) {
-                Ok(()) => (),
-                Err(e) => {
-                    warn!("error sending {e}");
-                    return res;
-                }
-            }
-            match disk.send(&r) {
+            match send.send(disk) {
                 Ok(()) => (),
                 Err(e) => {
                     warn!("error sending {e}");
@@ -170,7 +154,7 @@ impl DiskControllerImpl for DiskControllerHandler {
 }
 
 struct FSControllerData {
-    disks: Vec<IPCChannel>,
+    disks: Vec<Channel>,
     waiters: Vec<IPCChannel>,
 }
 
@@ -190,17 +174,8 @@ struct FSControllerHandler {
 impl FSControllerImpl for FSControllerHandler {
     fn register_filesystem(&mut self, chan: Channel) {
         let mut common = self.common.lock();
-        let mut chan = IPCChannel::from_channel(chan);
         for w in common.waiters.iter_mut() {
-            let (l, r) = Channel::new();
-            match chan.send(&l) {
-                Ok(()) => (),
-                Err(e) => {
-                    warn!("error sending {e}");
-                    return;
-                }
-            }
-            match w.send(&r) {
+            match w.send(&chan) {
                 Ok(()) => (),
                 Err(e) => {
                     warn!("error sending {e}");
@@ -217,16 +192,8 @@ impl FSControllerImpl for FSControllerHandler {
         let (send, res) = Channel::new();
         let mut send = IPCChannel::from_channel(send);
 
-        for disk in common.disks.iter_mut() {
-            let (l, r) = Channel::new();
-            match send.send(&l) {
-                Ok(()) => (),
-                Err(e) => {
-                    warn!("error sending {e}");
-                    return res;
-                }
-            }
-            match disk.send(&r) {
+        for disk in common.disks.iter() {
+            match send.send(disk) {
                 Ok(()) => (),
                 Err(e) => {
                     warn!("error sending {e}");

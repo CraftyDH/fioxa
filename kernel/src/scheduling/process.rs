@@ -126,6 +126,7 @@ impl ProcessMemory {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ProcessReferences(Slab<KernelValue>);
 
 impl ProcessReferences {

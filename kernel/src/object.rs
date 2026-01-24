@@ -6,9 +6,10 @@ use kernel_sys::{
 };
 use kernel_userspace::{
     channel::Channel,
+    handle::Handle,
     ipc::IPCChannel,
     process::{InitHandleServiceExecutor, InitHandleServiceImpl},
-    service::Service,
+    service::ServiceExecutor,
 };
 use spin::Mutex;
 
@@ -84,28 +85,35 @@ pub trait KObject {
 }
 
 struct InitSharedData {
-    handles: HashMap<String, Service>,
+    handles: HashMap<String, Handle>,
 }
 
-pub fn init_handle_new_proc(mut channels: Vec<Channel>) {
-    let shared = Arc::new(Mutex::new(InitSharedData {
-        handles: HashMap::new(),
-    }));
+pub fn serve_init_service() -> Channel {
+    let (left, right) = Channel::new();
 
-    while let Some(c) = channels.pop() {
-        launch(c, shared.clone());
-    }
-}
-
-fn launch(chan: Channel, shared: Arc<Mutex<InitSharedData>>) {
     sys_process_spawn_thread(move || {
-        match InitHandleServiceExecutor::new(IPCChannel::from_channel(chan), InitHandler { shared })
-            .run()
-        {
-            Ok(()) => (),
-            Err(e) => warn!("error handling init service: {e}"),
-        }
+        let shared = Arc::new(Mutex::new(InitSharedData {
+            handles: HashMap::new(),
+        }));
+        ServiceExecutor::from_channel(right, |chan| {
+            let shared = shared.clone();
+            sys_process_spawn_thread(|| {
+                match InitHandleServiceExecutor::new(
+                    IPCChannel::from_channel(chan),
+                    InitHandler { shared },
+                )
+                .run()
+                {
+                    Ok(()) => (),
+                    Err(e) => warn!("error handling init service: {e}"),
+                }
+            });
+        })
+        .run()
+        .unwrap();
     });
+
+    left
 }
 
 struct InitHandler {
@@ -113,28 +121,17 @@ struct InitHandler {
 }
 
 impl InitHandleServiceImpl for InitHandler {
-    fn get_service(&mut self, name: &str) -> Option<Channel> {
+    fn get_handle(&mut self, name: &str) -> Option<Handle> {
+        trace!("get handle: {name}");
         let mut shared = self.shared.lock();
-        let channel = shared.handles.get_mut(name)?;
-
-        let (l, r) = Channel::new();
-        channel.send_consumer(r);
-
-        Some(l)
+        let handle = shared.handles.get_mut(name)?;
+        Some(handle.clone())
     }
 
-    fn publish_service(&mut self, name: &str, handle: Channel) -> bool {
+    fn publish_handle(&mut self, name: &str, handle: Handle) -> bool {
+        trace!("pub handle: {name}");
         let mut shared = self.shared.lock();
-        let old = shared.handles.insert(
-            name.into(),
-            Service::from_channel(IPCChannel::from_channel(handle)),
-        );
+        let old = shared.handles.insert(name.into(), handle);
         old.is_some()
-    }
-
-    fn clone_init_service(&mut self) -> Channel {
-        let (l, r) = Channel::new();
-        launch(r, self.shared.clone());
-        l
     }
 }

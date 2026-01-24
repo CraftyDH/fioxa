@@ -5,10 +5,10 @@ use kernel_sys::syscall::{sys_exit, sys_process_spawn_thread};
 use kernel_userspace::{
     backoff_sleep,
     channel::Channel,
-    handle::Handle,
+    handle::{FIRST_HANDLE, Handle},
     interrupt::InterruptsService,
     ipc::IPCChannel,
-    process::{INIT_HANDLE_SERVICE, ProcessHandle},
+    process::ProcessHandle,
 };
 use spin::Once;
 use x86_64::instructions::{interrupts::without_interrupts, port::Port};
@@ -171,7 +171,7 @@ pub fn serial_monitor_stdin() {
             let proc = load_elf(early_bootfs_get("terminal").unwrap())
                 .unwrap()
                 .references(ProcessReferences::from_refs(&[
-                    **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
+                    FIRST_HANDLE,
                     **cin.handle(),
                     **cout.handle(),
                     **cout.handle(),

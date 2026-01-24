@@ -10,11 +10,11 @@ use kernel_sys::{
     types::{ObjectSignal, SyscallError},
 };
 use kernel_userspace::{
-    backoff_sleep,
     channel::Channel,
-    handle::Handle,
+    handle::{FIRST_HANDLE, Handle},
     input::InputServiceMessage,
-    process::{INIT_HANDLE_SERVICE, ProcessHandle},
+    process::ProcessHandle,
+    service::Service,
 };
 
 use crate::{
@@ -41,7 +41,7 @@ pub fn run_console() {
         }
     });
 
-    let keyboard = backoff_sleep(|| INIT_HANDLE_SERVICE.lock().get_service("INPUT:KB"));
+    let keyboard = Service::get_by_name("INPUT:KB").connect().unwrap();
 
     let mut kb_decoder = KBInputDecoder::new();
 
@@ -50,7 +50,7 @@ pub fn run_console() {
             let proc = load_elf(early_bootfs_get("terminal").unwrap())
                 .unwrap()
                 .references(ProcessReferences::from_refs(&[
-                    **INIT_HANDLE_SERVICE.lock().clone_init_service().handle(),
+                    FIRST_HANDLE,
                     **cin.handle(),
                     **cout.handle(),
                     **cout.handle(),

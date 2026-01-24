@@ -10,7 +10,6 @@ extern crate log;
 
 use ::acpi::AcpiError;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use bootloader::uefi::boot::MemoryType;
 use bootloader::uefi::table::{set_system_table, system_table_raw};
 use bootloader::{BootInfo, entry_point};
@@ -29,7 +28,7 @@ use kernel::logging::KERNEL_LOGGER;
 use kernel::memory::MemoryMapIter;
 use kernel::mutex::Spinlock;
 use kernel::net::ethernet::userspace_networking_main;
-use kernel::object::init_handle_new_proc;
+use kernel::object::serve_init_service;
 use kernel::paging::offset_map::{create_kernel_map, create_offset_map, map_gop};
 use kernel::paging::page_allocator::global_allocator;
 use kernel::paging::{
@@ -54,7 +53,6 @@ use bootloader::uefi::table::cfg::{ACPI2_GUID, ConfigTableEntry};
 
 use kernel_sys::syscall::sys_exit;
 use kernel_sys::types::{RawValue, VMMapFlags};
-use kernel_userspace::channel::Channel;
 
 // #[no_mangle]
 entry_point!(main_stage1);
@@ -251,56 +249,57 @@ extern "C" fn init() {
     //     println!("RECLAIMED MEMORY: {}Mb", reclaim * 0x1000 / 1024 / 1024);
     // }
 
-    let mut init_handles = Vec::new();
+    let init_handle = serve_init_service();
 
-    let mut get_init = || {
-        let (l, r) = Channel::new();
-        init_handles.push(l);
-        ProcessReferences::from_refs(&[**r.handle()])
-    };
+    let init = ProcessReferences::from_refs(&[**init_handle.handle()]);
 
-    spawn_process(run_console).references(get_init()).build();
+    spawn_process(run_console).references(init.clone()).build();
 
     spawn_process(check_interrupts)
-        .references(get_init())
+        .references(init.clone())
         .build();
 
     spawn_process(elf::elf_new_process_loader)
-        .references(get_init())
+        .references(init.clone())
         .build();
 
-    spawn_process(gop::gop_entry).references(get_init()).build();
+    spawn_process(gop::gop_entry)
+        .references(init.clone())
+        .build();
 
     spawn_process(userspace_networking_main)
-        .references(get_init())
+        .references(init.clone())
         .build();
 
-    spawn_process(after_boot_pci).references(get_init()).build();
+    spawn_process(after_boot_pci)
+        .references(init.clone())
+        .build();
 
     spawn_process(serial_monitor_stdin)
-        .references(get_init())
+        .references(init.clone())
         .build();
 
     spawn_process(disk_controller)
-        .references(get_init())
+        .references(init.clone())
         .build();
 
-    spawn_process(fs_controller).references(get_init()).build();
+    spawn_process(fs_controller)
+        .references(init.clone())
+        .build();
 
-    spawn_process(serve_bootfs).references(get_init()).build();
+    spawn_process(serve_bootfs).references(init.clone()).build();
 
     spawn_process(file_system_partition_loader)
-        .references(get_init())
+        .references(init.clone())
         .build();
 
     // TODO: Use IO permissions instead of kernel
     load_elf(early_bootfs_get("ps2").unwrap())
         .unwrap()
-        .references(get_init())
+        .references(init.clone())
         .privilege(ProcessPrivilege::KERNEL)
         .build();
 
-    init_handle_new_proc(init_handles);
     sys_exit();
 }
 
