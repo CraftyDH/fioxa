@@ -4,9 +4,8 @@ use rkyv::{
     Archive, Deserialize, Serialize,
     rancor::{Error, Source},
 };
-use spin::Mutex;
 
-use crate::ipc::IPCChannel;
+use crate::{ipc::IPCChannel, mutex::Mutex};
 
 #[derive(Debug, Clone, Archive, Serialize, Deserialize)]
 pub enum PCIDevCmd {

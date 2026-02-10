@@ -1,9 +1,8 @@
 use core::fmt::Write;
 
 use alloc::string::String;
-use kernel_userspace::sys::syscall::sys_log;
+use kernel_userspace::{mutex::Mutex, sys::syscall::sys_log};
 use log::Log;
-use spin::mutex::Mutex;
 
 pub static USERSPACE_LOGGER: UserspaceLogger = UserspaceLogger {
     str_buffer: Mutex::new(String::new()),

@@ -20,6 +20,7 @@ define_syscalls! {
     RawSysEcho @ raw_sys_echo(val: usize, val2: *mut usize),
     RawSysYield @ raw_sys_yield(),
     RawSysSleep @ raw_sys_sleep(ms: u64, slept: *mut u64),
+    RawSysUptime @ raw_sys_uptime(time: *mut u64),
     RawSysExit @ raw_sys_exit(),
     RawSysMap @ raw_sys_map(vmo: /*optional*/ hid_t, flags: u32, hint: vaddr_t, length: usize, result: *mut vaddr_t),
     RawSysUnmap @ raw_sys_unmap(address: vaddr_t, length: usize),
@@ -66,4 +67,8 @@ define_syscalls! {
     RawSysVMOMMAPCreate @ raw_sys_vmo_mmap_create(base: *mut (), length: usize, out: *mut hid_t),
     RawSysVMOAnonCreate @ raw_sys_vmo_anonymous_create(length: usize, flags: u32, out: *mut hid_t),
     RawSysVMOAnonPinned @ raw_sys_vmo_anonymous_pinned_addresses(handle: hid_t, offset: usize, length: usize, result: *mut usize),
+
+    // futex
+    RawSysFutexWait @ raw_sys_futex_wait(addr: *const usize, flags: u32, val: usize),
+    RawSysFutexWake @ raw_sys_futex_wake(addr: *const usize, flags: u32, count: usize, woken: *mut usize),
 }

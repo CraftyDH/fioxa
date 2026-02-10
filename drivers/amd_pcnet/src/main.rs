@@ -20,10 +20,10 @@ use kernel_sys::{
 };
 use kernel_userspace::{
     interrupt::InterruptsService,
+    mutex::Mutex,
     net::{NetworkInterfaceServiceExecutor, NetworkInterfaceServiceImpl},
     service::ServiceExecutor,
 };
-use spin::Mutex;
 use userspace::log::{error, info};
 use x86_64::instructions::port::Port;
 

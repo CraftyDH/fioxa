@@ -15,9 +15,9 @@ use kernel_userspace::{
     channel::Channel,
     disk::{DiskControllerService, DiskServiceExecutor, DiskServiceImpl, ata::ATADiskIdentify},
     ipc::IPCChannel,
+    mutex::Mutex,
     service::ServiceExecutor,
 };
-use spin::Mutex;
 use volatile::Volatile;
 
 use crate::pci::PCIHeaderCommon;

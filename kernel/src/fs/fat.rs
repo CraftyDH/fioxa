@@ -18,9 +18,9 @@ use kernel_userspace::{
     channel::Channel,
     fs::{FSControllerService, FSFile, FSFileId, FSFileType, FSServiceExecutor, FSServiceImpl},
     ipc::IPCChannel,
+    mutex::Mutex,
     service::ServiceExecutor,
 };
-use spin::Mutex;
 
 use crate::fs::FSPartitionDisk;
 

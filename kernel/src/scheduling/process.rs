@@ -7,11 +7,14 @@ use core::{
 
 use alloc::{
     boxed::Box,
-    collections::BTreeMap,
+    collections::{BTreeMap, vec_deque::VecDeque},
     sync::{Arc, Weak},
     vec::Vec,
 };
-use kernel_sys::types::{Hid, KernelObjectType, Pid, RawValue, Tid, VMMapFlags, VMOAnonymousFlags};
+use hashbrown::HashMap;
+use kernel_sys::types::{
+    FutexFlags, Hid, KernelObjectType, Pid, RawValue, Tid, VMMapFlags, VMOAnonymousFlags,
+};
 use slab::Slab;
 use spin::Lazy;
 use x86_64::{
@@ -40,6 +43,10 @@ use crate::{
 };
 
 use super::taskmanager::{PROCESSES, SCHEDULER, ThreadSchedGlobalData};
+
+pub type FutexMap = Spinlock<HashMap<usize, VecDeque<Arc<Thread>>>>;
+
+pub static GLOBAL_FUTEX_MAP: Lazy<FutexMap> = Lazy::new(|| Spinlock::new(HashMap::new()));
 
 pub const STACK_ADDR: u64 = 0x100_000_000_000;
 
@@ -89,6 +96,7 @@ pub struct Process {
     pub references: Spinlock<ProcessReferences>,
     pub exit_status: Spinlock<Option<usize>>,
     pub signals: Spinlock<KObjectSignal>,
+    pub futex: FutexMap,
     pub name: &'static str,
 }
 
@@ -192,6 +200,7 @@ impl Process {
             references: Spinlock::new(references),
             exit_status: Spinlock::new(None),
             signals: Default::default(),
+            futex: Default::default(),
             name,
         })
     }
@@ -202,6 +211,20 @@ impl Process {
 
     pub fn get_value(&self, id: Hid) -> Option<KernelValue> {
         self.references.lock().get(id).cloned()
+    }
+
+    pub fn get_futex_map(&self, addr: usize, flags: FutexFlags) -> Option<(&FutexMap, usize)> {
+        if flags.contains(FutexFlags::GLOBAL) {
+            // look up the global address
+            let mem = self
+                .memory
+                .lock()
+                .region
+                .get_phys_addr_from_vaddr(addr as u64)?;
+            Some((&*GLOBAL_FUTEX_MAP, mem as usize))
+        } else {
+            Some((&self.futex, addr))
+        }
     }
 }
 

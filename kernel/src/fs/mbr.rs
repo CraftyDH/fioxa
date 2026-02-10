@@ -1,7 +1,6 @@
 use alloc::sync::Arc;
 use kernel_sys::syscall::sys_process_spawn_thread;
-use kernel_userspace::disk::DiskService;
-use spin::Mutex;
+use kernel_userspace::{disk::DiskService, mutex::Mutex};
 
 use crate::fs::{FSPartitionDisk, fat::read_bios_block};
 

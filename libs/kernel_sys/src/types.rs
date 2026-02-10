@@ -247,3 +247,11 @@ bitflags::bitflags! {
         const WRITEABLE = 1 << 1;
     }
 }
+
+bitflags::bitflags! {
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    pub struct FutexFlags: u32 {
+        // Use the global futex cache, instead of process local
+        const GLOBAL = 1 << 0;
+    }
+}

@@ -7,5 +7,4 @@ edition = "2024"
 
 [dependencies]
 kernel_sys.workspace = true
-
-spin.workspace = true
+kernel_userspace.workspace = true

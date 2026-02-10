@@ -1,9 +1,11 @@
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use alloc::{sync::Arc, vec::Vec};
 use kernel_sys::{
     raw::{syscall::*, types::result_t},
     types::{
-        Hid, ObjectSignal, RawValue, SysPortNotification, SysPortNotificationValue, SyscallError,
-        SyscallResult, VMMapFlags, VMOAnonymousFlags,
+        FutexFlags, Hid, ObjectSignal, RawValue, SysPortNotification, SysPortNotificationValue,
+        SyscallError, SyscallResult, VMMapFlags, VMOAnonymousFlags,
     },
 };
 use log::Level;
@@ -343,6 +345,12 @@ impl DispatchSyscall for SyscallContext<'_> {
 
         enter_sched(&mut sched);
         slept.write(|| uptime() - start);
+        Ok(())
+    }
+
+    fn raw_sys_uptime(&mut self, req: &RawSysUptime) -> SyscallResult {
+        let mut time = unsafe { kunwrap!(UserPtrMut::new(req.time, self.bounds)) };
+        time.write(uptime);
         Ok(())
     }
 
@@ -896,6 +904,78 @@ impl DispatchSyscall for SyscallContext<'_> {
                 }
             }
         }
+
+        Ok(())
+    }
+
+    fn raw_sys_futex_wait(&mut self, req: &RawSysFutexWait) -> SyscallResult {
+        // check bounds
+        let _ = unsafe { kunwrap!(UserPtr::new(req.addr, self.bounds)) };
+
+        let addr = unsafe { &*(req.addr as *const AtomicUsize) };
+
+        // fast check
+        let val = addr.load(Ordering::Acquire);
+        if val != req.val {
+            return Ok(());
+        }
+
+        let flags = FutexFlags::from_bits_retain(req.flags);
+
+        let mut sched = self.thread.sched().lock();
+
+        let (futex, futex_addr) = kunwrap!(
+            self.thread
+                .process()
+                .get_futex_map(req.addr as usize, flags)
+        );
+
+        {
+            let mut f = futex.lock();
+
+            // check again now that we have the lock
+            let val = addr.load(Ordering::Acquire);
+            if val != req.val {
+                return Ok(());
+            }
+
+            f.entry(futex_addr)
+                .or_default()
+                .push_back(self.thread.thread());
+        }
+
+        sched.state = ThreadState::Sleeping;
+        enter_sched(&mut sched);
+        Ok(())
+    }
+
+    fn raw_sys_futex_wake(&mut self, req: &RawSysFutexWake) -> SyscallResult {
+        // check bounds
+        let _ = unsafe { kunwrap!(UserPtr::new(req.addr, self.bounds)) };
+
+        let mut woken = unsafe { kunwrap!(UserPtrMut::new(req.woken, self.bounds)) };
+
+        let flags = FutexFlags::from_bits_retain(req.flags);
+
+        let (futex, futex_addr) = kunwrap!(
+            self.thread
+                .process()
+                .get_futex_map(req.addr as usize, flags)
+        );
+
+        let mut w = 0;
+        if let Some(queue) = futex.lock().get_mut(&futex_addr) {
+            while w < req.count {
+                if let Some(t) = queue.pop_front() {
+                    t.wake();
+                    w += 1;
+                } else {
+                    break;
+                }
+            }
+        };
+
+        woken.write(|| w);
 
         Ok(())
     }

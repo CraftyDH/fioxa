@@ -6,11 +6,12 @@ use core::{
 use kernel_userspace::{
     channel::Channel,
     handle::Handle,
+    mutex::Mutex,
     sys::{syscall::sys_sleep, types::Hid},
 };
 
 use log::warn;
-use spin::{Lazy, Mutex};
+use spin::Lazy;
 
 pub struct Writer<'a> {
     channel: &'a Channel,

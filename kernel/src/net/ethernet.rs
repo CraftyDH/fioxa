@@ -8,13 +8,13 @@ use kernel_sys::syscall::sys_process_spawn_thread;
 use kernel_userspace::{
     channel::Channel,
     ipc::IPCChannel,
+    mutex::Mutex,
     net::{
         IPAddr, NetServiceExecutor, NetServiceImpl, NetworkInterfaceService, NotSameSubnetError,
     },
     service::ServiceExecutor,
 };
 use modular_bitfield::{bitfield, specifiers::B48};
-use spin::Mutex;
 
 use crate::{
     net::arp::{ARP, ARP_TABLE},

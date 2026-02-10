@@ -1,5 +1,6 @@
 use core::mem::MaybeUninit;
 use core::ptr::null_mut;
+use core::sync::atomic::AtomicUsize;
 use core::time::Duration;
 
 use alloc::boxed::Box;
@@ -31,6 +32,13 @@ pub fn sys_sleep(time: Duration) -> Duration {
     let mut out = 0;
     unsafe { syscall_result(raw_sys_sleep(time.as_millis() as u64, &mut out)).unwrap() };
     Duration::from_millis(out)
+}
+
+#[inline]
+pub fn sys_uptime() -> u64 {
+    let mut out = 0;
+    unsafe { syscall_result(raw_sys_uptime(&mut out)).unwrap() };
+    out
 }
 
 #[inline]
@@ -486,4 +494,34 @@ pub fn sys_vmo_anonymous_pinned_addresses(
             result.as_mut_ptr(),
         ))
     }
+}
+
+// futex
+
+/// # Safety
+///
+/// The caller must ensure that addr is valid
+#[inline]
+pub unsafe fn sys_futex_wait_raw(addr: *const usize, flags: FutexFlags, val: usize) {
+    unsafe { syscall_result(raw_sys_futex_wait(addr, flags.bits(), val)).unwrap() }
+}
+
+#[inline]
+pub fn sys_futex_wait(addr: &AtomicUsize, flags: FutexFlags, val: usize) {
+    unsafe { sys_futex_wait_raw(addr.as_ptr(), flags, val) }
+}
+
+#[inline]
+/// # Safety
+///
+/// The caller must ensure that addr is valid
+pub unsafe fn sys_futex_wake_raw(addr: *const usize, flags: FutexFlags, count: usize) -> usize {
+    let mut woken = 0;
+    unsafe { syscall_result(raw_sys_futex_wake(addr, flags.bits(), count, &mut woken)).unwrap() };
+    woken
+}
+
+#[inline]
+pub fn sys_futex_wake(addr: &AtomicUsize, flags: FutexFlags, count: usize) -> usize {
+    unsafe { sys_futex_wake_raw(addr.as_ptr(), flags, count) }
 }

@@ -1,6 +1,6 @@
-use spin::{Mutex, MutexGuard};
+use kernel_userspace::mutex::{Mutex, MutexGuard};
 
-// A trait that locks an arbitrary item behind a spin mutex
+// A trait that locks an arbitrary item behind a mutex
 pub struct Locked<A> {
     inner: Mutex<A>,
 }

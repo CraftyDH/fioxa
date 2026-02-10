@@ -8,10 +8,10 @@ use kernel_userspace::{
     channel::Channel,
     handle::Handle,
     ipc::IPCChannel,
+    mutex::Mutex,
     process::{InitHandleServiceExecutor, InitHandleServiceImpl},
     service::ServiceExecutor,
 };
-use spin::Mutex;
 
 use crate::{port::KPort, scheduling::process::Thread};
 

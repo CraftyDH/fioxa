@@ -8,9 +8,9 @@ use kernel_userspace::{
     disk::{DiskControllerExecutor, DiskControllerImpl, DiskControllerService, DiskService},
     fs::{FSControllerExecutor, FSControllerImpl},
     ipc::IPCChannel,
+    mutex::Mutex,
     service::ServiceExecutor,
 };
-use spin::Mutex;
 
 use crate::fs::mbr::read_partitions;
 
