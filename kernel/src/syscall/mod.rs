@@ -413,33 +413,6 @@ impl DispatchSyscall for SyscallContext<'_> {
         }
     }
 
-    fn raw_sys_read_args(&mut self, req: &RawSysReadArgs) -> SyscallResult {
-        let RawSysReadArgs {
-            buffer,
-            len,
-            out_len,
-        } = *req;
-        let mut result = unsafe { kunwrap!(UserBytesMut::new(buffer, len, self.bounds)) };
-        let mut out_len = unsafe { kunwrap!(UserPtrMut::new(out_len, self.bounds)) };
-
-        let proc = self.thread.process();
-        let bytes = &proc.args;
-
-        out_len.write(|| bytes.len());
-
-        if buffer.is_null() {
-            return Ok(());
-        }
-
-        if len != bytes.len() {
-            return Err(SyscallError::BadInputPointer);
-        }
-
-        result.write(bytes);
-
-        Ok(())
-    }
-
     fn raw_sys_pid(&mut self, req: &RawSysPid) -> SyscallResult {
         let mut pid = unsafe { kunwrap!(UserPtrMut::new(req.pid, self.bounds)) };
         pid.write(|| self.thread.process().pid.into_raw());

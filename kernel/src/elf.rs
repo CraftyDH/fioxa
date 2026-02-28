@@ -399,7 +399,6 @@ impl ElfLoaderServiceImpl for ElfLoader {
     fn spawn(
         &mut self,
         elf: kernel_userspace::message::MessageHandle,
-        args: &[u8],
         initial_refs: &[Handle],
     ) -> Result<ProcessHandle, LoadElfError> {
         let elf = elf.read_vec();
@@ -410,7 +409,6 @@ impl ElfLoaderServiceImpl for ElfLoader {
 
         let process = process
             .references(ProcessReferences::from_refs(&hids))
-            .args(args.to_vec())
             .build();
 
         let proc = with_held_interrupts(|| unsafe {

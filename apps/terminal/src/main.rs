@@ -260,14 +260,16 @@ pub fn main() {
                     }
                 };
 
+                let args = MessageHandle::create(args.as_bytes());
+
                 let proc = elf_loader.spawn(
                     &contents,
-                    args.as_bytes(),
                     &[
                         INIT_HANDLE_SERVICE.0.handle(),
                         STDIN_CHANNEL.handle(),
                         STDOUT_CHANNEL.handle(),
                         STDERR_CHANNEL.handle(),
+                        args.handle(),
                     ],
                 );
 

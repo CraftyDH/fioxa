@@ -23,8 +23,6 @@ pub enum LoadElfError {
 pub struct SpawnElfProcess<'a> {
     pub elf: CowAsOwned<'a, MessageHandle>,
     #[rkyv(with = InlineAsBox)]
-    pub args: &'a [u8],
-    #[rkyv(with = InlineAsBox)]
     pub initial_refs: &'a [CowAsOwned<'a, Handle>],
 }
 
@@ -38,14 +36,12 @@ impl ElfLoaderService {
     pub fn spawn(
         &mut self,
         elf: &MessageHandle,
-        args: &[u8],
         initial_refs: &[&Handle],
     ) -> Result<ProcessHandle, LoadElfError> {
         let initial_refs: heapless::Vec<_, 31> = initial_refs.iter().map(|e| (*e).into()).collect();
 
         let spawn = SpawnElfProcess {
             elf: elf.into(),
-            args,
             initial_refs: &initial_refs,
         };
 
@@ -82,7 +78,7 @@ impl<I: ElfLoaderServiceImpl> ElfLoaderServiceExecutor<I> {
                 .flat_map(|h| h.0.deserialize(des))
                 .collect();
 
-            let res = self.service.spawn(elf, &spawn.args, &hids);
+            let res = self.service.spawn(elf, &hids);
             self.channel.send(&res).map_err(Error::new)?;
         }
     }
@@ -92,7 +88,6 @@ pub trait ElfLoaderServiceImpl {
     fn spawn(
         &mut self,
         elf: MessageHandle,
-        args: &[u8],
         initial_refs: &[Handle],
     ) -> Result<ProcessHandle, LoadElfError>;
 }

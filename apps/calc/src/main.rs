@@ -2,8 +2,7 @@
 #![no_main]
 
 use alloc::{format, string::String};
-use kernel_userspace::sys::syscall::sys_read_args_string;
-use userspace::print::STDIN_CHANNEL;
+use userspace::{ARGS, print::STDIN_CHANNEL};
 
 extern crate alloc;
 #[macro_use]
@@ -95,7 +94,8 @@ impl<'a> Iterator for InputLines<'a> {
 }
 
 pub fn main() {
-    let args = sys_read_args_string();
+    let args = ARGS.read_vec();
+    let args = str::from_utf8(&args).unwrap();
 
     eprintln!("WARN: Evaluating left to right, so no order of operations :(");
 

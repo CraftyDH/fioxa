@@ -9,7 +9,6 @@ use alloc::{
     boxed::Box,
     collections::{BTreeMap, vec_deque::VecDeque},
     sync::{Arc, Weak},
-    vec::Vec,
 };
 use hashbrown::HashMap;
 use kernel_sys::types::{
@@ -91,7 +90,6 @@ pub struct Process {
     pub pid: Pid,
     pub threads: Spinlock<ProcessThreads>,
     pub privilege: ProcessPrivilege,
-    pub args: Vec<u8>,
     pub memory: Spinlock<ProcessMemory>,
     pub references: Spinlock<ProcessReferences>,
     pub exit_status: Spinlock<Option<usize>>,
@@ -188,13 +186,11 @@ impl Process {
         privilege: ProcessPrivilege,
         memory: ProcessMemory,
         references: ProcessReferences,
-        args: Vec<u8>,
         name: &'static str,
     ) -> Arc<Self> {
         Arc::new(Self {
             pid: generate_next_process_id(),
             privilege,
-            args,
             memory: Spinlock::new(memory),
             threads: Default::default(),
             references: Spinlock::new(references),
@@ -278,7 +274,6 @@ pub struct ProcessBuilder {
     vm: ProcessMemory,
     entry_point: *const u64,
     arg: usize,
-    args: Vec<u8>,
 }
 
 impl ProcessBuilder {
@@ -286,7 +281,6 @@ impl ProcessBuilder {
         Self {
             name: "",
             privilege: ProcessPrivilege::USER,
-            args: Vec::new(),
             vm,
             entry_point,
             references: None,
@@ -304,11 +298,6 @@ impl ProcessBuilder {
         self
     }
 
-    pub fn args(mut self, args: Vec<u8>) -> Self {
-        self.args = args;
-        self
-    }
-
     pub fn references(mut self, refs: ProcessReferences) -> Self {
         self.references = Some(refs);
         self
@@ -319,7 +308,6 @@ impl ProcessBuilder {
             self.privilege,
             self.vm,
             self.references.unwrap_or_default(),
-            self.args,
             self.name,
         );
         PROCESSES.lock().insert(proc.pid, proc.clone());

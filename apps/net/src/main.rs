@@ -4,8 +4,8 @@
 use kernel_userspace::{
     ipc::IPCChannel,
     net::{IPAddr, NetService},
-    sys::syscall::sys_read_args_string,
 };
+use userspace::ARGS;
 
 extern crate alloc;
 #[macro_use]
@@ -15,7 +15,8 @@ extern crate userspace_slaballoc;
 init_userspace!(main);
 
 pub fn main() {
-    let args = sys_read_args_string();
+    let args = ARGS.read_vec();
+    let args = str::from_utf8(&args).unwrap();
 
     let mut args = args.split_whitespace();
 

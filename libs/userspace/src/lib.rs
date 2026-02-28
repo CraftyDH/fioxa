@@ -33,6 +33,14 @@ macro_rules! init_userspace {
     };
 }
 
+#[cfg(feature = "console")]
+pub static ARGS: kernel_userspace::message::MessageHandle =
+    kernel_userspace::message::MessageHandle::from_handle(unsafe {
+        kernel_userspace::handle::Handle::from_id(
+            kernel_userspace::sys::types::Hid::from_usize(5).unwrap(),
+        )
+    });
+
 #[panic_handler]
 fn panic(i: &core::panic::PanicInfo) -> ! {
     #[cfg(feature = "console")]

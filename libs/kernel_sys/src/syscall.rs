@@ -4,7 +4,6 @@ use core::sync::atomic::AtomicUsize;
 use core::time::Duration;
 
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec::Vec;
 use num_traits::FromPrimitive;
 
@@ -82,34 +81,6 @@ pub unsafe fn sys_map(
 #[inline]
 pub unsafe fn sys_unmap(addr: vaddr_t, length: usize) -> Result<(), SyscallError> {
     unsafe { syscall_result(raw_sys_unmap(addr, length)) }
-}
-
-#[inline]
-pub fn sys_read_args() -> Vec<u8> {
-    unsafe {
-        let mut size = 0;
-        syscall_result(raw_sys_read_args(null_mut(), 0, &mut size)).unwrap();
-        if size == 0 {
-            return Vec::new();
-        }
-
-        let mut buffer: Vec<u8> = Vec::with_capacity(size);
-
-        syscall_result(raw_sys_read_args(
-            buffer.as_mut_ptr(),
-            buffer.capacity(),
-            null_mut(),
-        ))
-        .unwrap();
-
-        buffer.set_len(size);
-        buffer
-    }
-}
-
-#[inline]
-pub fn sys_read_args_string() -> String {
-    String::from_utf8(sys_read_args()).unwrap()
 }
 
 #[inline]

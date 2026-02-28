@@ -24,7 +24,6 @@ define_syscalls! {
     RawSysExit @ raw_sys_exit(),
     RawSysMap @ raw_sys_map(vmo: /*optional*/ hid_t, flags: u32, hint: vaddr_t, length: usize, result: *mut vaddr_t),
     RawSysUnmap @ raw_sys_unmap(address: vaddr_t, length: usize),
-    RawSysReadArgs @ raw_sys_read_args(buffer: *mut u8, len: usize, out_len: *mut usize),
     RawSysPid @ raw_sys_pid(pid: *mut pid_t),
     RawSysLog @ raw_sys_log(level: u32, target: *const u8, target_len: usize, message: *const u8, message_len: usize),
 
