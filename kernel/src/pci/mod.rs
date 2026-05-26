@@ -305,12 +305,7 @@ fn pci_dev_handler(
 ) -> Channel {
     let device = pci_bus.get_device_raw(segment, bus, device, function);
     let (left, right) = Channel::new();
-    sys_process_spawn_thread(
-        move || match fioxa_rpc::server::RPCServer::new(left, device).run() {
-            Ok(()) => (),
-            Err(e) => warn!("error handling  service: {e}"),
-        },
-    );
+    sys_process_spawn_thread(move || fioxa_rpc::server::RPCServer::new(left, device).run());
 
     right
 }

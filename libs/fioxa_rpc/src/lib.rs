@@ -182,12 +182,12 @@ macro_rules! generate_rpc {
         }
 
         impl<T: $service> $crate::server::RPCServiceHandler<$interface> for T {
-            fn dispatch<'a, A: ::capnp::message::Allocator>(
+            fn dispatch<'a>(
                 &mut self,
                 req: $crate::rpc_capnp::call::Reader<'a>,
                 req_handles: ::alloc::vec::Vec<::kernel_userspace::handle::Handle>,
-                res: &mut ::capnp::message::Builder<A>,
-                res_handles: &mut $crate::RPCHandleBuilder<'static>,
+                res: ::capnp::any_pointer::Builder<'a>,
+                res_handles: &'a mut $crate::RPCHandleBuilder<'static>,
             ) -> Result<(), capnp::Error> {
                 if req.get_interface_id() != <$interface as capnp::traits::HasTypeId>::TYPE_ID {
                     return Err(capnp::Error::failed("interface id doesn't match".into()));
@@ -199,7 +199,7 @@ macro_rules! generate_rpc {
                             self.$serv(
                                 req.get_payload().get_as()?,
                                 req_handles,
-                                res.init_root(),
+                                res.init_as(),
                                 res_handles,
                             )
                         },

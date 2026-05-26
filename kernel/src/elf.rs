@@ -458,12 +458,7 @@ impl fioxa_rpc::elf::Service for ElfLoader {
 
 pub fn elf_new_process_loader() {
     ServiceExecutor::with_name("ELF_LOADER", |chan| {
-        sys_process_spawn_thread({
-            || match fioxa_rpc::server::RPCServer::new(chan, ElfLoader).run() {
-                Ok(()) => (),
-                Err(e) => error!("Error running elf service: {e}"),
-            }
-        });
+        sys_process_spawn_thread(|| fioxa_rpc::server::RPCServer::new(chan, ElfLoader).run());
     })
     .run()
     .unwrap();

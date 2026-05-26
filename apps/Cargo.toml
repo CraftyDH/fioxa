@@ -12,5 +12,6 @@ userspace = { path = "../libs/userspace", features = ["console"] }
 userspace_slaballoc = { path = "../libs/userspace_slaballoc" }
 fioxa_rpc = { path = "../libs/fioxa_rpc" }
 
+anyhow = { version = "1.0.102", default-features = false }
 capnp = { version = "0.25.3", default-features = false, features = ["alloc"] }
 numeric-sort = "0.1.5"

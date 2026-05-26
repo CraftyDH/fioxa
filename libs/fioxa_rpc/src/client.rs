@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use alloc::vec::Vec;
+use alloc::{format, vec::Vec};
 use capnp::message::TypedBuilder;
 use kernel_userspace::{
     channel::Channel,
@@ -8,7 +8,7 @@ use kernel_userspace::{
     sys::types::{Hid, SyscallError},
 };
 
-use crate::{RPCHandleBuilder, RPCHandles, RPCMethod};
+use crate::{RPCHandleBuilder, RPCHandles, RPCMethod, rpc_capnp};
 
 pub struct RPCClient<I> {
     channel: Channel,
@@ -137,6 +137,33 @@ pub struct RPCMessageReturnReply<'a, T> {
 
 impl<'a, T: capnp::traits::Owned> RPCMessageReturnReply<'a, T> {
     pub fn get_message(&'a mut self) -> Result<T::Reader<'a>, capnp::Error> {
-        self.reader.get_root()
+        let reader = self.reader.get_root::<rpc_capnp::return_::Reader>()?;
+        match reader.which()? {
+            rpc_capnp::return_::Which::Results(r) => Ok(r.get_as()?),
+            rpc_capnp::return_::Which::Error(e) => Err(remote_exception_to_error(e?)),
+        }
+    }
+}
+
+fn remote_exception_to_error(exception: rpc_capnp::error::Reader) -> capnp::Error {
+    let (kind, reason) = match (exception.get_type(), exception.get_reason()) {
+        (Ok(rpc_capnp::error::Type::Failed), Ok(reason)) => (::capnp::ErrorKind::Failed, reason),
+        (Ok(rpc_capnp::error::Type::Overloaded), Ok(reason)) => {
+            (::capnp::ErrorKind::Overloaded, reason)
+        }
+        (Ok(rpc_capnp::error::Type::Disconnected), Ok(reason)) => {
+            (::capnp::ErrorKind::Disconnected, reason)
+        }
+        (Ok(rpc_capnp::error::Type::Unimplemented), Ok(reason)) => {
+            (::capnp::ErrorKind::Unimplemented, reason)
+        }
+        _ => (::capnp::ErrorKind::Failed, "(malformed error)".into()),
+    };
+    let reason_str = reason
+        .to_str()
+        .unwrap_or("<malformed utf-8 in error reason>");
+    capnp::Error {
+        extra: format!("remote exception: {reason_str}"),
+        kind,
     }
 }

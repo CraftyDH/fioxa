@@ -125,12 +125,7 @@ pub fn userspace_networking_main() {
     ServiceExecutor::with_name("NETWORKING", |chan| {
         let network = pcnet.clone();
 
-        sys_process_spawn_thread(move || {
-            match RPCServer::new(chan, NetHandler { mac, network }).run() {
-                Ok(()) => (),
-                Err(e) => error!("Error running service: {e}"),
-            }
-        });
+        sys_process_spawn_thread(move || RPCServer::new(chan, NetHandler { mac, network }).run());
     })
     .run()
     .unwrap();

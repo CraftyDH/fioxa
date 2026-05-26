@@ -26,11 +26,7 @@ pub fn main() {
 
     let (left, right) = Channel::new();
 
-    sys_process_spawn_thread(|| {
-        fioxa_rpc::server::RPCServer::new(right, Echo)
-            .run()
-            .unwrap();
-    });
+    sys_process_spawn_thread(|| fioxa_rpc::server::RPCServer::new(right, Echo).run());
 
     let mut client = fioxa_rpc::client::RPCClient::new(left);
 

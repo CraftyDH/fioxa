@@ -9,5 +9,8 @@ capnpc = "0.25.3"
 [dependencies]
 kernel_userspace.workspace = true
 
+anyhow.workspace = true
 capnp = { version = "0.25.3", default-features = false, features = ["alloc"] }
 numeric-sort.workspace = true
+log.workspace = true
+

@@ -141,9 +141,7 @@ impl AHCIDriver {
                     sys_process_spawn_thread(move || {
                         ServiceExecutor::with_name("DISK", |c| {
                             let port = port.clone();
-                            sys_process_spawn_thread(move || {
-                                RPCServer::new(c, port).run().unwrap();
-                            });
+                            sys_process_spawn_thread(move || RPCServer::new(c, port).run());
                         })
                         .run()
                         .unwrap();
@@ -257,9 +255,7 @@ impl fioxa_rpc::disk::Service for ArcPort {
         sys_process_spawn_thread(move || {
             ServiceExecutor::from_channel(right, |c| {
                 let port = port.clone();
-                sys_process_spawn_thread(move || {
-                    RPCServer::new(c, port).run().unwrap();
-                });
+                sys_process_spawn_thread(move || RPCServer::new(c, port).run());
             })
             .run()
             .unwrap();

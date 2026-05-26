@@ -28,7 +28,7 @@ use kernel_sys::{
     types::{Hid, KernelObjectType, VMMapFlags, VMOAnonymousFlags},
 };
 use kernel_userspace::mutex::Mutex;
-use userspace::log::{error, info};
+use userspace::log::info;
 use x86_64::instructions::port::Port;
 
 use kernel_userspace::{channel::Channel, handle::Handle};
@@ -85,12 +85,7 @@ pub fn main() {
     ServiceExecutor::with_name("ETHERNET", |chan| {
         let pcnet = pcnet.clone();
 
-        sys_process_spawn_thread(move || {
-            match RPCServer::new(chan, NetworkInterface { pcnet }).run() {
-                Ok(()) => (),
-                Err(e) => error!("Error running service: {e}"),
-            }
-        });
+        sys_process_spawn_thread(move || RPCServer::new(chan, NetworkInterface { pcnet }).run());
     })
     .run()
     .unwrap();

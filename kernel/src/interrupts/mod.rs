@@ -291,10 +291,7 @@ impl fioxa_rpc::interrupt::Service for InterruptService {
 pub fn check_interrupts() {
     ServiceExecutor::with_name("INTERRUPTS", |channel| {
         sys_process_spawn_thread({
-            move || match fioxa_rpc::server::RPCServer::new(channel, InterruptService).run() {
-                Ok(()) => (),
-                Err(e) => error!("Error running service: {e}"),
-            }
+            move || fioxa_rpc::server::RPCServer::new(channel, InterruptService).run()
         });
     })
     .run()

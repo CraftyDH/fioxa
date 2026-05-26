@@ -99,10 +99,7 @@ pub fn serve_init_service() -> Channel {
         ServiceExecutor::from_channel(right, |chan| {
             let shared = shared.clone();
             sys_process_spawn_thread(|| {
-                match fioxa_rpc::server::RPCServer::new(chan, InitHandler { shared }).run() {
-                    Ok(()) => (),
-                    Err(e) => warn!("error handling init service: {e}"),
-                }
+                fioxa_rpc::server::RPCServer::new(chan, InitHandler { shared }).run()
             });
         })
         .run()

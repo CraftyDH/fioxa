@@ -29,20 +29,16 @@ pub fn serve_bootfs() {
         let (l, r) = Channel::new();
         hash.insert(e.0, Arc::new(l.into_inner()));
         sys_process_spawn_thread(move || {
-            ServiceExecutor::from_channel(r, |chan| {
-                RPCServer::new(chan, BootFsFile(e.1)).run().unwrap();
-            })
-            .run()
-            .unwrap()
+            ServiceExecutor::from_channel(r, |chan| RPCServer::new(chan, BootFsFile(e.1)).run())
+                .run()
+                .unwrap()
         });
     }
 
     let map = Arc::new(hash);
     ServiceExecutor::with_name("FS", |c| {
         let map = map.clone();
-        sys_process_spawn_thread(move || {
-            RPCServer::new(c, BootFsRoot(map)).run().unwrap();
-        });
+        sys_process_spawn_thread(move || RPCServer::new(c, BootFsRoot(map)).run());
     })
     .run()
     .unwrap();

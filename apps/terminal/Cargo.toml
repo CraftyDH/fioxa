@@ -11,4 +11,7 @@ kernel_userspace.workspace = true
 userspace_slaballoc.workspace = true
 userspace.workspace = true
 
+anyhow.workspace = true
+capnp.workspace = true
 numeric-sort.workspace = true
+
