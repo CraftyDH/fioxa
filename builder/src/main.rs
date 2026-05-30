@@ -58,9 +58,50 @@ fn main() -> Result<()> {
     for (package, member, out) in TO_BUILD {
         let exec_path = build(package, *member, release, native)
             .with_context(|| format!("Failed to build {package}-{member:?}"))?;
-        copy(exec_path, format!("fioxa/{out}")).with_context(|| {
-            format!("Failed to copy the output of {package}-{member:?} to fioxa/{out}",)
-        })?;
+
+        if *package == "bootloader" {
+            copy(exec_path, format!("fioxa/{out}")).with_context(|| {
+                format!("Failed to copy the output of {package}-{member:?} to fioxa/{out}",)
+            })?;
+        } else {
+            let meta = std::fs::metadata(&exec_path)
+                .with_context(|| format!("get metadata for {package}-{member:?}"))?;
+
+            let mtime = meta.modified().unwrap();
+
+            let debug_path = format!("fioxa/{out}.debug");
+            let debug_fresh =
+                std::fs::metadata(&debug_path).is_ok_and(|m| m.modified().unwrap() >= mtime);
+
+            if !debug_fresh {
+                Command::new("objcopy")
+                    .arg("--only-keep-debug")
+                    .arg("--compress-debug-sections")
+                    .arg(&exec_path)
+                    .arg(debug_path)
+                    .status()
+                    .with_context(|| {
+                        format!(
+                            "failed to objcopy debug symbols of {package}-{member:?} to fioxa/{out}.debug"
+                        )
+                    })?;
+            }
+
+            let target_path = format!("fioxa/{out}");
+            let target_fresh =
+                std::fs::metadata(&target_path).is_ok_and(|m| m.modified().unwrap() >= mtime);
+
+            if !target_fresh {
+                Command::new("objcopy")
+                    .arg("--strip-debug")
+                    .arg(&exec_path)
+                    .arg(target_path)
+                    .status()
+                    .with_context(|| {
+                        format!("failed to objcopy {package}-{member:?} to fioxa/{out}")
+                    })?;
+            }
+        }
     }
 
     if args().any(|a| a == "qemu") {
