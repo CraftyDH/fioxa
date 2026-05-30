@@ -13,6 +13,7 @@ kernel_userspace = { path = "kernel_userspace" }
 userspace = { path = "userspace" }
 userspace_slaballoc = { path = "userspace_slaballoc" }
 
+anyhow = { version = "1.0.102", default-features = false }
 bitflags = { version = "2.9.0", default-features = false }
 hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
 heapless = "0.9.1"
