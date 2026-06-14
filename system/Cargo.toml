@@ -1,17 +1,19 @@
 [workspace]
 resolver = "3"
-members = ["calc", "net", "shell", "test", "test_capnp"]
+members = ["fat"]
 
 [workspace.package]
 edition = "2024"
 
 [workspace.dependencies]
+fioxa_rpc = { path = "../libs/fioxa_rpc" }
 kernel_sys = { path = "../libs/kernel_sys" }
 kernel_userspace = { path = "../libs/kernel_userspace" }
-userspace = { path = "../libs/userspace", features = ["console"] }
+userspace = { path = "../libs/userspace" }
 userspace_slaballoc = { path = "../libs/userspace_slaballoc" }
-fioxa_rpc = { path = "../libs/fioxa_rpc" }
 
-anyhow = { version = "1.0.102", default-features = false }
 capnp = { version = "0.25.3", default-features = false, features = ["alloc"] }
-numeric-sort = "0.1.5"
+hashbrown = { version = "0.15", default-features = false, features = ["default-hasher"] }
+log = "0.4"
+spin = "0.10.0"
+x86_64 = "0.15"

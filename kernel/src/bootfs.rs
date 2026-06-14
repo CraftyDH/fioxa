@@ -7,10 +7,10 @@ use kernel_userspace::{channel::Channel, handle::Handle};
 #[rustfmt::skip]
 pub const LOOKUP: &[(&str, &[u8])] = &[
     ("font.psf",    include_bytes!("../../builder/assets/zap-light16.psf")),
-    ("terminal",    include_bytes!("../../builder/fioxa/apps/terminal")),
+    ("shell",       include_bytes!("../../builder/fioxa/apps/shell")),
     ("amd_pcnet",   include_bytes!("../../builder/fioxa/drivers/amd_pcnet")),
     ("ps2",         include_bytes!("../../builder/fioxa/drivers/ps2")),
-    ("fat",         include_bytes!("../../builder/fioxa/drivers/fat")),
+    ("fat",         include_bytes!("../../builder/fioxa/system/fat")),
 ];
 
 pub fn early_bootfs_get(file: &str) -> Option<&'static [u8]> {

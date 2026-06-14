@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["amd_pcnet", "fat", "ps2"]
+members = ["amd_pcnet", "ps2"]
 
 [workspace.package]
 edition = "2024"

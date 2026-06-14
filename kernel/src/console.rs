@@ -47,7 +47,7 @@ pub fn run_console() {
 
     sys_process_spawn_thread(move || {
         loop {
-            let proc = load_elf(early_bootfs_get("terminal").unwrap())
+            let proc = load_elf(early_bootfs_get("shell").unwrap())
                 .unwrap()
                 .references(ProcessReferences::from_refs(
                     [
@@ -66,7 +66,7 @@ pub fn run_console() {
             };
 
             proc.blocking_exit_code();
-            warn!("Terminal exited")
+            warn!("Shell exited")
         }
     });
 

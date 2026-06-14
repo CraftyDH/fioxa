@@ -24,12 +24,12 @@ const TO_BUILD: &[(&str, Option<&str>, &str)] = &[
     ("bootloader", None, "EFI/BOOT/BOOTx64.efi"),
     ("apps", Some("calc"), "apps/calc"),
     ("apps", Some("net"), "apps/net"),
+    ("apps", Some("shell"), "apps/shell"),
     ("apps", Some("test"), "apps/test"),
     ("apps", Some("test_capnp"), "apps/test_capnp"),
-    ("apps", Some("terminal"), "apps/terminal"),
     ("drivers", Some("amd_pcnet"), "drivers/amd_pcnet"),
     ("drivers", Some("ps2"), "drivers/ps2"),
-    ("drivers", Some("fat"), "drivers/fat"),
+    ("system", Some("fat"), "system/fat"),
     // ! MUST BE LAST
     ("kernel", None, "fioxa.elf"),
 ];
@@ -47,6 +47,7 @@ fn main() -> Result<()> {
     dirs.recursive(true).create("fioxa/EFI/BOOT")?;
     dirs.recursive(true).create("fioxa/apps")?;
     dirs.recursive(true).create("fioxa/drivers")?;
+    dirs.recursive(true).create("fioxa/system")?;
 
     copy("assets/startup.nsh", "fioxa/startup.nsh")?;
     copy("assets/zap-light16.psf", "fioxa/font.psf")?;
